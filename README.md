@@ -1,73 +1,80 @@
-# React + TypeScript + Vite
+# FinceptTerminal 📈
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**FinceptTerminal** es una aplicación web de análisis técnico diseñada para proporcionar señales de trading a corto plazo (intradía, operaciones que duran un día o como máximo una semana). Su objetivo principal es analizar activos altamente volátiles para capturar subidas (o bajadas) mediante algoritmos y estrategias basadas en indicadores matemáticos.
 
-Currently, two official plugins are available:
+[**Ver Demo en Producción**](https://terminal-web-orpin.vercel.app)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## 🚀 Características Principales
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+* **Gráficos Ultra Rápidos (Lightweight Charts):** Representación visual de velas japonesas y volumen con un rendimiento excepcional usando TradingView's lightweight-charts.
+* **Leyenda Flotante Dinámica (OHLC & BB):** Panel interactivo que se mueve con el cursor (`crosshair`) para mostrar datos del precio exacto e información de expansión de las Bandas de Bollinger sin causar costosos re-renderizados en React (manipulación directa del DOM).
+* **Watchlist Paralelizada:** Carga múltiple de tickers de manera concurrente para asegurar tiempos de espera mínimos.
+* **Multi-Soporte de Mercados:**
+  * **Criptomonedas:** Obtención de datos en tiempo real mediante la API pública de Binance (ej. `BTCUSDT`).
+  * **Mercados Tradicionales/Stocks:** Integración con Yahoo Finance V8 API (ej. `TSLA`, `MSFT`).
+* **Feed de Noticias Relevantes:** Muestra hasta 3 noticias recientes curadas desde Yahoo Finance del activo seleccionado, permitiendo entender rápidamente los fundamentales que mueven el precio.
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## 🧠 Modelos de Señales Integrados
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+La aplicación cuenta con 3 agrupaciones principales que analizan los datos en tiempo real:
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
+2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa:
+   - **Tendencia:** Posición frente a las EMA y confirmación de la tendencia macro.
+   - **RSI:** Análisis de sobrecompra/sobreventa usando suavizado (RMA/Wilder's Smoothing).
+   - **Bollinger (%B):** Análisis de la posición del precio dentro de las bandas (posibles rebotes o rupturas).
+   - **Volumen:** Presión compradora/vendedora usando VWAP en temporalidades cortas (5m, 1h) y OBV en gráficas diarias.
+   - **Vela (Price Action):** Fuerza y confirmación del cuerpo de las velas japonesas.
+3. **Standard Voting:** Agrupa diversas confirmaciones e integra fuertemente la **EMA 200** como filtro principal para bloquear operaciones en contra de la tendencia dominante.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+---
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 🛠 Tecnologías Utilizadas
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- **[React 19](https://react.dev/):** Biblioteca principal para la UI, usando Hooks (`useState`, `useEffect`, `useRef`, `useCallback`) con un enfoque en rendimiento puro sin estados intermedios lentos.
+- **[TypeScript](https://www.typescriptlang.org/):** Tipado estricto (cero `any` implícitos) que garantiza seguridad al mapear datos de los proveedores financieros.
+- **[Vite](https://vitejs.dev/):** Entorno de desarrollo ultrarápido.
+- **[TradingView Lightweight Charts](https://tradingview.github.io/lightweight-charts/):** Lienzo en HTML5 de alto rendimiento.
+- **[Lucide React](https://lucide.dev/):** Iconografía minimalista y limpia.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+---
+
+## 🏗 Instalación y Desarrollo Local
+
+1. Clona este repositorio:
+   ```bash
+   git clone https://github.com/bluecold/terminal-web.git
+   ```
+
+2. Navega al directorio del proyecto:
+   ```bash
+   cd terminal-web
+   ```
+
+3. Instala las dependencias necesarias:
+   ```bash
+   npm install
+   ```
+
+4. Ejecuta el servidor de desarrollo:
+   ```bash
+   npm run dev
+   ```
+
+5. Abre [http://localhost:5173](http://localhost:5173) en tu navegador para ver la aplicación.
+
+---
+
+## 📈 Tareas Pendientes / Mejoras Futuras
+
+- [ ] **Backtesting en Tiempo Real:** Mejorar el módulo de evaluación de éxito y `win-rate` para los algoritmos usando histórico profundo.
+- [ ] **Gestión de Riesgos Dinámica:** Emisión de `Stop Loss` y `Take Profit` automatizados basados en el rango verdadero promedio (ATR - Average True Range).
+- [ ] **Alertas Push/Webhooks:** Notificaciones proactivas cuando un cruce o el *Scoring Multicapa* detecte oportunidades con alta probabilidad (90%+).
+
+---
+
+*Desarrollado con ❤️ para los mercados volátiles.*
