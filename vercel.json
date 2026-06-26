@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/yahoo/(.*)",
+      "destination": "https://query2.finance.yahoo.com/$1"
+    }
+  ]
+}
