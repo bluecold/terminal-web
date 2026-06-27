@@ -6,6 +6,8 @@ import {
   calculateExperimentalSignal,
   calculateScoringSignal,
   calculateEMA,
+  calculateSupertrend,
+  calculateStochRSI,
   type ScoringWeights,
 } from './indicators';
 
@@ -93,23 +95,32 @@ function evaluateOutcome(
 }
 
 // ─── Standard Voting Signal ────────────────────────────────────────────────
-// Replicates the vote logic from SignalPanel: RSI + MACD + BB + Volume
-function standardVotingSignal(closes: number[]): 'BUY' | 'SELL' | 'NEUTRAL' {
+// Replicates the vote logic from SignalPanel: RSI + MACD + BB + Supertrend + StochRSI
+function standardVotingSignal(klines: Kline[]): 'BUY' | 'SELL' | 'NEUTRAL' {
+  const closes = klines.map(k => k.close);
   if (closes.length < 35) return 'NEUTRAL'; // MACD needs 35 candles now
 
   const rsi  = calculateRSI(closes);
   const macd = calculateMACD(closes);
   const bb   = calculateBollingerBands(closes);
+  const supertrend = calculateSupertrend(klines);
+  const stochRsi = calculateStochRSI(closes);
 
-  const votes: Array<'BUY' | 'SELL' | 'NEUTRAL'> = [rsi.signal, macd.signal, bb.signal];
+  const votes: Array<'BUY' | 'SELL' | 'NEUTRAL'> = [
+    rsi.signal, 
+    macd.signal, 
+    bb.signal,
+    supertrend.signal,
+    stochRsi.signal
+  ];
 
   let buy = 0, sell = 0;
   votes.forEach(v => { if (v === 'BUY') buy++; if (v === 'SELL') sell++; });
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  if (buy >= 2 && sell === 0) signal = 'BUY';
+  if (buy >= 3 && sell === 0) signal = 'BUY';
   else if (buy > sell)             signal = 'BUY';
-  else if (sell >= 2 && buy === 0) signal = 'SELL';
+  else if (sell >= 3 && buy === 0) signal = 'SELL';
   else if (sell > buy)             signal = 'SELL';
 
   // Apply EMA 200 trend filter
@@ -189,8 +200,7 @@ function runBacktestGeneric(
 
 export function backtestStandard(klines: Kline[], interval: string): BacktestResult {
   return runBacktestGeneric(klines, interval, (subset) => {
-    const closes = subset.map(k => k.close);
-    return standardVotingSignal(closes);
+    return standardVotingSignal(subset);
   });
 }
 

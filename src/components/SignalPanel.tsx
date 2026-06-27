@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateRSI, calculateMACD, calculateBollingerBands, calculateExperimentalSignal, calculateScoringSignal, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import { calculateRSI, calculateMACD, calculateBollingerBands, calculateExperimentalSignal, calculateScoringSignal, calculateSupertrend, calculateStochRSI, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import { backtestStandard, backtestConfluencia, backtestScoring, getTrendFilter } from '../utils/backtester';
 import { fetchNews } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
@@ -31,11 +31,13 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
     loadNews();
   }, [symbol]);
   
-  const rsi  = useMemo(() => calculateRSI(closes), [closes]);
-  const macd  = useMemo(() => calculateMACD(closes), [closes]);
-  const bb    = useMemo(() => calculateBollingerBands(closes), [closes]);
-  const exp   = useMemo(() => calculateExperimentalSignal(klines, interval), [klines, interval]);
-  const score = useMemo(() => calculateScoringSignal(klines, interval, weights), [klines, interval, weights]);
+  const rsi        = useMemo(() => calculateRSI(closes), [closes]);
+  const macd       = useMemo(() => calculateMACD(closes), [closes]);
+  const bb         = useMemo(() => calculateBollingerBands(closes), [closes]);
+  const supertrend = useMemo(() => calculateSupertrend(klines), [klines]);
+  const stochRsi   = useMemo(() => calculateStochRSI(closes), [closes]);
+  const exp        = useMemo(() => calculateExperimentalSignal(klines, interval), [klines, interval]);
+  const score      = useMemo(() => calculateScoringSignal(klines, interval, weights), [klines, interval, weights]);
 
   // ── Backtest results (heavy computation, memoized) ──────────────────────
   const btStandard    = useMemo(() => klines.length > 20 ? backtestStandard(klines, interval)    : null, [klines, interval]);
@@ -49,6 +51,8 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
     { name: 'RSI (14)', value: rsi.value, signal: rsi.signal, color: rsi.signal === 'BUY' ? 'var(--accent-green)' : rsi.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)' },
     { name: 'MACD (12,26,9)', value: macd.value, signal: macd.signal, color: macd.signal === 'BUY' ? 'var(--accent-green)' : macd.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)' },
     { name: 'Bollinger Bands', value: bb.current.toFixed(2), signal: bb.signal, color: bb.signal === 'BUY' ? 'var(--accent-green)' : bb.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)' },
+    { name: 'Supertrend (10,3)', value: `ST: $${supertrend.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${supertrend.direction})`, signal: supertrend.signal, color: supertrend.signal === 'BUY' ? 'var(--accent-green)' : 'var(--accent-red)' },
+    { name: 'Stochastic RSI', value: `%K: ${stochRsi.k.toFixed(1)} · %D: ${stochRsi.d.toFixed(1)}`, signal: stochRsi.signal, color: stochRsi.signal === 'BUY' ? 'var(--accent-green)' : stochRsi.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)' },
     { name: 'Volume', value: volume > 1000000 ? (volume/1000000).toFixed(1) + 'M' : volume.toFixed(0), signal: volumeSignal, color: volumeSignal === 'BUY' ? 'var(--accent-green)' : 'var(--text-primary)' },
   ];
 
@@ -61,11 +65,11 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
   });
 
   let rawSignal = 'NEUTRAL';
-  if (buyVotes >= 2 && sellVotes === 0) {
+  if (buyVotes >= 3 && sellVotes === 0) {
     rawSignal = 'STRONG BUY';
   } else if (buyVotes > sellVotes) {
     rawSignal = 'BUY';
-  } else if (sellVotes >= 2 && buyVotes === 0) {
+  } else if (sellVotes >= 3 && buyVotes === 0) {
     rawSignal = 'STRONG SELL';
   } else if (sellVotes > buyVotes) {
     rawSignal = 'SELL';

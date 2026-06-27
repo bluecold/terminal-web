@@ -604,3 +604,234 @@ export function calculateScoringSignal(
     }
   };
 }
+
+export function calculateRSISeries(data: number[], period: number = 14): number[] {
+  const rsiSeries: number[] = new Array(data.length).fill(NaN);
+  if (!data || data.length < period + 1) return rsiSeries;
+
+  let avgGain = 0;
+  let avgLoss = 0;
+
+  // First RMA value
+  for (let i = 1; i <= period; i++) {
+    const diff = data[i] - data[i - 1];
+    if (diff > 0) {
+      avgGain += diff;
+    } else {
+      avgLoss -= diff;
+    }
+  }
+
+  avgGain /= period;
+  avgLoss /= period;
+  rsiSeries[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+
+  // Subsequent RMA values
+  for (let i = period + 1; i < data.length; i++) {
+    const diff = data[i] - data[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    
+    if (avgLoss === 0) {
+      rsiSeries[i] = avgGain === 0 ? 50 : 100;
+    } else {
+      const rs = avgGain / avgLoss;
+      rsiSeries[i] = 100 - (100 / (1 + rs));
+    }
+  }
+
+  return rsiSeries;
+}
+
+export interface SupertrendResult {
+  value: number;
+  direction: 'UP' | 'DOWN';
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
+}
+
+export function calculateSupertrend(klines: Kline[], period: number = 10, multiplier: number = 3): SupertrendResult {
+  if (!klines || klines.length < period + 1) {
+    return { value: 0, direction: 'UP', signal: 'NEUTRAL' };
+  }
+
+  const length = klines.length;
+  
+  // 1. Calculate TR (True Range)
+  const tr: number[] = [0];
+  tr[0] = klines[0].high - klines[0].low;
+  for (let i = 1; i < length; i++) {
+    const hl = klines[i].high - klines[i].low;
+    const hpc = Math.abs(klines[i].high - klines[i - 1].close);
+    const lpc = Math.abs(klines[i].low - klines[i - 1].close);
+    tr.push(Math.max(hl, hpc, lpc));
+  }
+
+  // 2. Calculate ATR Series
+  const atr: number[] = new Array(length).fill(0);
+  let sumTr = 0;
+  for (let i = 0; i < period; i++) {
+    sumTr += tr[i];
+  }
+  atr[period - 1] = sumTr / period;
+  for (let i = period; i < length; i++) {
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+  }
+
+  // 3. Calculate Supertrend
+  const upperBand: number[] = new Array(length).fill(0);
+  const lowerBand: number[] = new Array(length).fill(0);
+  const finalUpperBand: number[] = new Array(length).fill(0);
+  const finalLowerBand: number[] = new Array(length).fill(0);
+  const superTrend: number[] = new Array(length).fill(0);
+  const direction: number[] = new Array(length).fill(1); // 1 = UP, -1 = DOWN
+
+  for (let i = 0; i < length; i++) {
+    const hl2 = (klines[i].high + klines[i].low) / 2;
+    upperBand[i] = hl2 + multiplier * atr[i];
+    lowerBand[i] = hl2 - multiplier * atr[i];
+  }
+
+  // Initialize first valid index
+  const startIdx = period - 1;
+  finalUpperBand[startIdx] = upperBand[startIdx];
+  finalLowerBand[startIdx] = lowerBand[startIdx];
+  superTrend[startIdx] = lowerBand[startIdx];
+  direction[startIdx] = 1;
+
+  for (let i = startIdx + 1; i < length; i++) {
+    // Final Upper Band
+    if (upperBand[i] < finalUpperBand[i - 1] || klines[i - 1].close > finalUpperBand[i - 1]) {
+      finalUpperBand[i] = upperBand[i];
+    } else {
+      finalUpperBand[i] = finalUpperBand[i - 1];
+    }
+
+    // Final Lower Band
+    if (lowerBand[i] > finalLowerBand[i - 1] || klines[i - 1].close < finalLowerBand[i - 1]) {
+      finalLowerBand[i] = lowerBand[i];
+    } else {
+      finalLowerBand[i] = finalLowerBand[i - 1];
+    }
+
+    // Supertrend & Direction
+    if (klines[i].close > finalUpperBand[i - 1]) {
+      direction[i] = 1;
+    } else if (klines[i].close < finalLowerBand[i - 1]) {
+      direction[i] = -1;
+    } else {
+      direction[i] = direction[i - 1];
+    }
+
+    if (direction[i] === 1) {
+      superTrend[i] = finalLowerBand[i];
+    } else {
+      superTrend[i] = finalUpperBand[i];
+    }
+  }
+
+  const latestVal = superTrend[length - 1];
+  const latestDir = direction[length - 1] === 1 ? 'UP' : 'DOWN';
+  const signal: 'BUY' | 'SELL' | 'NEUTRAL' = latestDir === 'UP' ? 'BUY' : 'SELL';
+
+  return {
+    value: Number(latestVal.toFixed(2)),
+    direction: latestDir,
+    signal
+  };
+}
+
+export interface StochRSIResult {
+  k: number;
+  d: number;
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
+}
+
+export function calculateStochRSI(
+  closes: number[],
+  rsiPeriod: number = 14,
+  stochPeriod: number = 14,
+  kPeriod: number = 3,
+  dPeriod: number = 3
+): StochRSIResult {
+  const defaultResult: StochRSIResult = { k: 50, d: 50, signal: 'NEUTRAL' };
+  const minRequired = rsiPeriod + stochPeriod + Math.max(kPeriod, dPeriod);
+  if (!closes || closes.length < minRequired) return defaultResult;
+
+  // 1. Calculate RSI Series
+  const rsiSeries = calculateRSISeries(closes, rsiPeriod);
+
+  // 2. Calculate Raw StochRSI
+  const stochRsiRaw: number[] = new Array(closes.length).fill(NaN);
+  for (let i = rsiPeriod + stochPeriod - 1; i < closes.length; i++) {
+    const window = rsiSeries.slice(i - stochPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length < stochPeriod) continue;
+    
+    const minRsi = Math.min(...validWindow);
+    const maxRsi = Math.max(...validWindow);
+    const currentRsi = rsiSeries[i];
+    
+    if (maxRsi === minRsi) {
+      stochRsiRaw[i] = 50;
+    } else {
+      stochRsiRaw[i] = ((currentRsi - minRsi) / (maxRsi - minRsi)) * 100;
+    }
+  }
+
+  // 3. Calculate %K (SMA of stochRsiRaw)
+  const kSeries: number[] = new Array(closes.length).fill(NaN);
+  for (let i = 0; i < closes.length; i++) {
+    if (i < kPeriod - 1) continue;
+    const window = stochRsiRaw.slice(i - kPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length === kPeriod) {
+      kSeries[i] = validWindow.reduce((a, b) => a + b, 0) / kPeriod;
+    }
+  }
+
+  // 4. Calculate %D (SMA of %K)
+  const dSeries: number[] = new Array(closes.length).fill(NaN);
+  for (let i = 0; i < closes.length; i++) {
+    if (i < dPeriod - 1) continue;
+    const window = kSeries.slice(i - dPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length === dPeriod) {
+      dSeries[i] = validWindow.reduce((a, b) => a + b, 0) / dPeriod;
+    }
+  }
+
+  const latestK = kSeries[kSeries.length - 1];
+  const latestD = dSeries[dSeries.length - 1];
+
+  if (isNaN(latestK) || isNaN(latestD)) return defaultResult;
+
+  // Signal:
+  // BUY: oversold (< 20) and %K crosses above %D in the last 2 candles
+  // SELL: overbought (> 80) and %K crosses below %D in the last 2 candles
+  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  const len = kSeries.length;
+  
+  if (len >= 2) {
+    const prevK = kSeries[len - 2];
+    const prevD = dSeries[len - 2];
+    const currK = kSeries[len - 1];
+    const currD = dSeries[len - 1];
+
+    if (!isNaN(prevK) && !isNaN(prevD)) {
+      if (currK < 20 && prevK <= prevD && currK > currD) {
+        signal = 'BUY';
+      } else if (currK > 80 && prevK >= prevD && currK < currD) {
+        signal = 'SELL';
+      }
+    }
+  }
+
+  return {
+    k: Number(latestK.toFixed(2)),
+    d: Number(latestD.toFixed(2)),
+    signal
+  };
+}
