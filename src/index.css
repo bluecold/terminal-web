@@ -1,15 +1,35 @@
 :root {
-  --bg-dark: #000000;
-  --bg-panel: #0d0d0d;
-  --bg-panel-hover: #1a1a1a;
-  --text-primary: #e0e0e0;
-  --text-secondary: #888888;
-  --border-color: #333333;
-  --accent-green: #00ff00;
-  --accent-red: #ff0000;
-  --accent-blue: #0088ff;
-  --accent-yellow: #ffcc00;
-  --font-family: 'Consolas', 'Courier New', monospace;
+  /* Color Palette - Cyberpunk Dark Slate */
+  --bg-dark: #05070c;
+  --bg-panel: rgba(13, 17, 28, 0.5);
+  --bg-panel-hover: rgba(30, 41, 59, 0.55);
+  --bg-panel-solid: #0d111d;
+  --bg-dark-solid: #05070c;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-color-glow: rgba(59, 130, 246, 0.2);
+  --accent-green: #10b981;
+  --accent-green-bg: rgba(16, 185, 129, 0.1);
+  --accent-red: #f43f5e;
+  --accent-red-bg: rgba(244, 63, 94, 0.1);
+  --accent-blue: #3b82f6;
+  --accent-blue-bg: rgba(59, 130, 246, 0.15);
+  --accent-yellow: #f59e0b;
+  --accent-yellow-bg: rgba(245, 158, 11, 0.1);
+  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  --shadow-glow: 0 0 15px rgba(59, 130, 246, 0.15);
+  --shadow-glow-green: 0 0 15px rgba(16, 185, 129, 0.15);
+  --shadow-glow-red: 0 0 15px rgba(244, 63, 94, 0.15);
+  --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
 }
 
 * {
@@ -20,8 +40,13 @@
 
 body {
   background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.05) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(16, 185, 129, 0.03) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(244, 63, 94, 0.02) 0px, transparent 50%);
+  background-attachment: fixed;
   color: var(--text-primary);
-  font-family: var(--font-family);
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -35,13 +60,15 @@ body {
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-weight: normal;
+  font-family: var(--font-sans);
+  font-weight: 600;
   margin: 0;
 }
 
 a {
   color: var(--text-primary);
   text-decoration: none;
+  transition: var(--transition-smooth);
 }
 
 button {
@@ -50,22 +77,24 @@ button {
   color: inherit;
   font: inherit;
   cursor: pointer;
+  transition: var(--transition-smooth);
 }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-dark);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: var(--accent-blue);
 }

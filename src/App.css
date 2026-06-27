@@ -10,110 +10,172 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 16px;
-  height: 48px;
+  padding: 0 20px;
+  height: 56px;
   background-color: var(--bg-panel);
+  backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border-color);
+  z-index: 100;
 }
 
 .top-bar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 20px;
 }
 
 .logo {
-  font-weight: bold;
-  font-size: 1.2rem;
-  color: var(--accent-blue);
-  letter-spacing: 1px;
+  font-weight: 800;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  letter-spacing: 1.5px;
+  background: linear-gradient(135deg, #fff 0%, var(--accent-blue) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(59, 130, 246, 0.2);
+}
+
+.asset-search-container {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .asset-search {
-  background: var(--bg-dark);
+  background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
   color: var(--text-primary);
-  padding: 4px 8px;
-  font-family: var(--font-family);
+  padding: 6px 12px 6px 32px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
   outline: none;
-  width: 200px;
+  width: 180px;
+  transition: var(--transition-smooth);
 }
 
 .asset-search:focus {
   border-color: var(--accent-blue);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+  background: rgba(0, 0, 0, 0.4);
+  width: 220px;
 }
 
 .top-bar-right {
   display: flex;
-  gap: 16px;
-  font-size: 0.9rem;
+  gap: 20px;
+  font-size: 0.85rem;
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--accent-green);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.05);
+}
+
+.status-indicator.loading {
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
 }
 
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background-color: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+  animation: pulse-green 2s infinite;
+}
+
+.status-indicator.loading .dot {
+  background-color: var(--accent-blue);
+  box-shadow: 0 0 8px var(--accent-blue);
+  animation: pulse-blue 2s infinite;
+}
+
+@keyframes pulse-green {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+  70% { transform: scale(1); box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+@keyframes pulse-blue {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  70% { transform: scale(1); box-shadow: 0 0 0 5px rgba(59, 130, 246, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 
 .main-content {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .sidebar-left {
-  width: 250px;
+  width: 260px;
   background-color: var(--bg-panel);
+  backdrop-filter: blur(20px);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  z-index: 10;
 }
 
 .chart-area {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-dark);
+  background-color: transparent;
+  position: relative;
 }
 
 .chart-container {
   flex: 1;
   position: relative;
-}
-
-.indicators-panel {
-  height: 150px;
-  border-top: 1px solid var(--border-color);
-  background-color: var(--bg-panel);
-  padding: 16px;
+  margin: 12px;
+  background: rgba(13, 17, 28, 0.3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
 }
 
 .sidebar-right {
-  width: 300px;
+  width: 340px;
   background-color: var(--bg-panel);
+  backdrop-filter: blur(20px);
   border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  z-index: 10;
 }
 
 /* Common panel headers */
 .panel-header {
-  padding: 8px 16px;
-  background-color: var(--bg-dark);
+  padding: 12px 20px;
+  background-color: rgba(0, 0, 0, 0.15);
   border-bottom: 1px solid var(--border-color);
-  font-weight: bold;
-  font-size: 0.9rem;
+  font-weight: 700;
+  font-size: 0.75rem;
   text-transform: uppercase;
+  letter-spacing: 1px;
   color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
+/* Custom transitions and scrollbars in SignalPanel */
 .signal-panel-content::-webkit-scrollbar {
   width: 4px;
 }
@@ -123,7 +185,7 @@
 }
 
 .signal-panel-content::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 10px;
 }
 
@@ -131,67 +193,81 @@
   background: var(--accent-blue);
 }
 
+/* Watchlist active transition */
+.watchlist-item {
+  transition: var(--transition-smooth) !important;
+}
+
 /* ================================================== */
 /*                MOBILE RESPONSIVE CSS               */
 /* ================================================== */
 
 @media (max-width: 768px) {
-  /* Let the container grow or scroll if needed, though main-content handles it */
   .app-container {
-    height: 100dvh; /* use dynamic viewport height for mobile browsers */
+    height: 100dvh;
   }
 
-  /* Shrink top bar text to fit */
+  .top-bar {
+    height: 52px;
+    padding: 0 12px;
+  }
+
   .logo {
-    font-size: 0.9rem;
+    font-size: 0.95rem;
+    letter-spacing: 0.8px;
   }
   
   .asset-search {
-    width: 120px;
+    width: 110px;
     font-size: 0.8rem;
+    padding-left: 28px;
+  }
+
+  .asset-search:focus {
+    width: 140px;
   }
   
   .top-bar-right span {
-    display: none; /* Hide the "CONNECTED (LIVE)" text on mobile to save space */
+    display: none; 
   }
 
-  /* Make main content flow vertically and scrollable */
   .main-content {
     flex-direction: column;
     overflow-y: auto;
     overflow-x: hidden;
   }
 
-  /* 
-     ORDERING ON MOBILE:
-     1. Chart Area
-     2. Signals (Right Sidebar)
-     3. Watchlist (Left Sidebar)
-  */
   .chart-area {
     order: 1;
     width: 100vw;
-    min-height: 450px;
-    flex: none; /* Don't flex-grow, respect min-height */
-    border-bottom: 2px solid var(--bg-dark);
+    height: 400px;
+    min-height: 400px;
+    flex: none;
+  }
+
+  .chart-container {
+    margin: 8px;
   }
 
   .sidebar-right {
     order: 2;
     width: 100vw;
     border-left: none;
-    border-bottom: 2px solid var(--bg-dark);
+    border-bottom: 1px solid var(--border-color);
+    backdrop-filter: none;
+    background-color: var(--bg-panel-solid);
   }
 
   .sidebar-left {
     order: 3;
     width: 100vw;
     border-right: none;
+    backdrop-filter: none;
+    background-color: var(--bg-panel-solid);
   }
 
-  /* Adjust panel header fonts on mobile */
   .panel-header {
-    font-size: 0.8rem;
-    padding: 6px 12px;
+    font-size: 0.75rem;
+    padding: 10px 16px;
   }
 }

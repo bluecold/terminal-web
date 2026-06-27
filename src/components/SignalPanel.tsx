@@ -93,25 +93,43 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
     overallColor = 'var(--accent-red)';
   }
 
+  let overallColorGlow = 'rgba(255, 255, 255, 0.01)';
+  let overallBorder = 'var(--border-color)';
+  let overallBg = 'linear-gradient(135deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.1) 100%)';
+  if (!isFiltered && closes.length > 0) {
+    if (overallSignal.includes('BUY')) {
+      overallColorGlow = '0 0 20px rgba(16, 185, 129, 0.12)';
+      overallBorder = 'rgba(16, 185, 129, 0.25)';
+      overallBg = 'linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, rgba(16, 185, 129, 0.01) 100%)';
+    } else if (overallSignal.includes('SELL')) {
+      overallColorGlow = '0 0 20px rgba(244, 63, 94, 0.12)';
+      overallBorder = 'rgba(244, 63, 94, 0.25)';
+      overallBg = 'linear-gradient(135deg, rgba(244, 63, 94, 0.06) 0%, rgba(244, 63, 94, 0.01) 100%)';
+    }
+  }
+
   return (
-    <div className="signal-panel-content" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
+    <div className="signal-panel-content" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
       
       {/* Main Signal */}
       <div style={{ 
-        backgroundColor: 'var(--bg-dark)', 
-        border: '1px solid var(--border-color)',
-        padding: '16px',
+        background: overallBg, 
+        border: `1px solid ${overallBorder}`,
+        boxShadow: overallColorGlow,
+        padding: '20px 16px',
         textAlign: 'center',
-        borderRadius: '4px'
+        borderRadius: 'var(--border-radius-md)',
+        transition: 'var(--transition-smooth)',
       }}>
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '8px' }}>
+        <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: '700', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '8px' }}>
           OVERALL SIGNAL FOR {symbol}
         </div>
         <div style={{ 
           color: overallColor, 
-          fontSize: '1.5rem', 
-          fontWeight: 'bold',
-          letterSpacing: '2px'
+          fontSize: '1.75rem', 
+          fontWeight: '800',
+          letterSpacing: '3px',
+          textShadow: overallSignal.includes('NEUTRAL') ? 'none' : `0 0 10px ${overallColor}`
         }}>
           {closes.length === 0 ? 'WAITING...' : overallSignal}
         </div>
@@ -119,14 +137,14 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
           <div style={{ 
             color: 'var(--accent-blue)', 
             fontSize: '0.75rem', 
-            marginTop: '8px',
+            marginTop: '12px',
             borderTop: '1px dashed var(--border-color)',
-            paddingTop: '8px',
-            lineHeight: '1.3',
+            paddingTop: '10px',
+            lineHeight: '1.4',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '4px'
+            gap: '6px'
           }}>
             <span>⚠️</span> <span>{filterReason}</span>
           </div>
@@ -135,23 +153,24 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
 
       {/* ── BACKTEST SECTION ─────────────────────────── */}
       <div style={{
-        backgroundColor: 'var(--bg-panel-hover)',
+        backgroundColor: 'var(--bg-panel)',
         border: '1px solid var(--border-color)',
-        padding: '12px',
-        borderRadius: '4px',
+        padding: '16px 14px 14px 14px',
+        borderRadius: 'var(--border-radius-md)',
         position: 'relative',
+        boxShadow: 'var(--shadow-sm)'
       }}>
-        <div style={{ position: 'absolute', top: '-8px', left: '10px', background: 'var(--bg-panel)', padding: '0 6px' }}>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: 'bold', letterSpacing: '0.5px' }}>
+        <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
             BACKTEST HISTÓRICO
           </span>
         </div>
 
-        <div style={{ marginTop: '4px', marginBottom: '10px', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
-          Aciertos sobre señales pasadas · ±1.5% umbral
+        <div style={{ marginTop: '2px', marginBottom: '12px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+          Porcentaje de acierto en velas previas (objetivo ±1.5%)
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <BacktestCard name="Standard (RSI+MACD+BB)" result={btStandard} />
           <BacktestCard name="Signal 1 · Confluencia" result={btConfluencia} />
           <BacktestCard name="Signal 2 · Scoring" result={btScoring} />
@@ -160,125 +179,144 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
 
       {/* ── BETA Box ────────────────────────────────── */}
       <div style={{
-        backgroundColor: 'var(--bg-panel-hover)',
+        backgroundColor: 'var(--bg-panel)',
         border: '1px solid var(--border-color)',
-        padding: '12px',
-        borderRadius: '4px',
-        position: 'relative'
+        padding: '18px 16px 16px 16px',
+        borderRadius: 'var(--border-radius-md)',
+        position: 'relative',
+        boxShadow: 'var(--shadow-sm)'
       }}>
-        <div style={{ position: 'absolute', top: '-8px', right: '8px', background: 'var(--accent-blue)', color: '#fff', fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>BETA</div>
+        <div style={{ position: 'absolute', top: '-10px', right: '12px', background: 'var(--accent-blue)', color: '#fff', fontSize: '8px', padding: '2px 8px', borderRadius: '20px', fontWeight: '800', letterSpacing: '0.5px' }}>BETA</div>
 
         {/* ── Signal 1: Confluencia ────────────────── */}
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '8px', fontWeight: 'bold', letterSpacing: '0.5px' }}>SIGNAL 1 · CONFLUENCIA (EMA+VWAP+VELAS)</div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-          <span style={{ fontSize: '0.85rem' }}>Señal:</span>
-          <span style={{ color: exp.signal === 'BUY' ? 'var(--accent-green)' : exp.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-secondary)', fontWeight: 'bold' }}>
-            {klines.length > 0 ? exp.signal : 'WAITING...'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-          <span style={{ fontSize: '0.85rem' }}>Stop Loss:</span>
-          <span style={{ color: 'var(--text-primary)', fontSize: '0.85rem' }}>
-            {exp.stopLoss > 0 ? `$${exp.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.85rem' }}>Volumen:</span>
-          <span style={{ color: exp.validVolume ? 'var(--accent-green)' : 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            {exp.validVolume ? 'VÁLIDO' : 'BAJO'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
-          <span style={{ fontSize: '0.85rem' }}>Cruce EMA 9/20:</span>
-          {klines.length > 0 ? (() => {
-            const c = exp.emaCrossover;
-            if (c.type === 'NONE') {
-              return <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Sin cruce reciente</span>;
-            }
-            const isBull = c.type === 'BULLISH';
-            const color  = isBull ? 'var(--accent-green)' : 'var(--accent-red)';
-            const icon   = isBull ? '▲' : '▼';
-            const label  = isBull ? 'ALCISTA' : 'BAJISTA';
-            const when   = c.barsAgo === 0 ? 'esta vela' : `hace ${c.barsAgo} vela${c.barsAgo > 1 ? 's' : ''}`;
-            return (
-              <span style={{ color, fontSize: '0.85rem', fontWeight: 'bold' }}>
-                {icon} {label} <span style={{ fontWeight: 'normal', color: 'var(--text-secondary)' }}>({when})</span>
-              </span>
-            );
-          })() : <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>-</span>}
+        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 1 · CONFLUENCIA (EMA+VWAP+VELAS)</div>
+        
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
+            <span style={{ 
+              color: exp.signal === 'BUY' ? 'var(--accent-green)' : exp.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', 
+              fontWeight: '700',
+              fontSize: '0.85rem'
+            }}>
+              {klines.length > 0 ? exp.signal : 'WAITING...'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Stop Loss:</span>
+            <span style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
+              {exp.stopLoss > 0 ? `$${exp.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Volumen:</span>
+            <span style={{ 
+              color: exp.validVolume ? 'var(--accent-green)' : 'var(--text-muted)', 
+              fontSize: '0.8rem',
+              fontWeight: '600',
+              background: exp.validVolume ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
+              padding: exp.validVolume ? '2px 6px' : '0',
+              borderRadius: '4px'
+            }}>
+              {exp.validVolume ? 'VÁLIDO' : 'BAJO'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Cruce EMA 9/20:</span>
+            {klines.length > 0 ? (() => {
+              const c = exp.emaCrossover;
+              if (c.type === 'NONE') {
+                return <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Sin cruce</span>;
+              }
+              const isBull = c.type === 'BULLISH';
+              const color  = isBull ? 'var(--accent-green)' : 'var(--accent-red)';
+              const icon   = isBull ? '▲' : '▼';
+              const label  = isBull ? 'ALCISTA' : 'BAJISTA';
+              const when   = c.barsAgo === 0 ? 'esta vela' : `hace ${c.barsAgo} vela${c.barsAgo > 1 ? 's' : ''}`;
+              return (
+                <span style={{ color, fontSize: '0.8rem', fontWeight: '700' }}>
+                  {icon} {label} <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem' }}>({when})</span>
+                </span>
+              );
+            })() : <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>}
+          </div>
         </div>
 
         {/* Divider */}
-        <div style={{ borderTop: '1px dashed var(--border-color)', margin: '10px 0' }} />
+        <div style={{ borderTop: '1px dashed var(--border-color)', margin: '14px 0' }} />
 
         {/* ── Signal 2: Scoring Multicapa ──────────── */}
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '8px', fontWeight: 'bold', letterSpacing: '0.5px' }}>SIGNAL 2 · SCORING MULTICAPA (5 CAPAS)</div>
+        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 2 · SCORING MULTICAPA (5 CAPAS)</div>
+        
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <span style={{ fontSize: '0.85rem' }}>Señal:</span>
-          <span style={{ color: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-secondary)', fontWeight: 'bold' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
+          <span style={{ color: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: '700', fontSize: '0.85rem' }}>
             {klines.length > 0 ? score.signal : 'WAITING...'}
           </span>
         </div>
 
         {/* Score bar -max to +max */}
-        <div style={{ marginBottom: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '3px' }}>
+        <div style={{ marginBottom: '10px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px', fontFamily: 'var(--font-mono)' }}>
             <span>-{score.threshold}</span>
-            <span>Score: {score.score > 0 ? '+' : ''}{score.score}</span>
+            <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Score: {score.score > 0 ? '+' : ''}{score.score}</span>
             <span>+{score.threshold}</span>
           </div>
-          <div style={{ height: '6px', borderRadius: '3px', background: 'var(--bg-dark)', position: 'relative', overflow: 'hidden' }}>
+          <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', position: 'relative', overflow: 'hidden' }}>
             <div style={{
-              position: 'absolute', top: 0, height: '100%', borderRadius: '3px',
+              position: 'absolute', top: 0, height: '100%', borderRadius: '4px',
               width: `${score.threshold > 0 ? Math.min(100, (Math.abs(score.score) / score.threshold) * 50) : 0}%`,
               left: score.score >= 0 ? '50%' : `${50 - (score.threshold > 0 ? Math.min(50, (Math.abs(score.score) / score.threshold) * 50) : 0)}%`,
               background: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--accent-blue)',
-              transition: 'width 0.4s ease'
+              transition: 'width 0.4s ease',
+              boxShadow: score.signal === 'BUY' ? '0 0 10px var(--accent-green)' : score.signal === 'SELL' ? '0 0 10px var(--accent-red)' : 'none'
             }} />
-            <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: '100%', background: 'var(--border-color)' }} />
+            <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: '100%', background: 'rgba(255, 255, 255, 0.15)' }} />
           </div>
         </div>
 
         {/* Dynamic Weight Configuration Expandable Panel */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
           <button 
             onClick={() => setShowWeightsConfig(prev => !prev)}
             style={{
-              background: 'transparent',
-              border: 'none',
               color: 'var(--accent-blue)',
               fontSize: '0.7rem',
+              fontWeight: '600',
               cursor: 'pointer',
-              textDecoration: 'underline',
-              padding: '2px 0'
+              textDecoration: 'none',
+              padding: '2px 8px',
+              borderRadius: '12px',
+              border: '1px solid rgba(59, 130, 246, 0.15)',
+              background: 'rgba(59, 130, 246, 0.03)',
             }}
           >
-            {showWeightsConfig ? 'Ocultar Config. Pesos' : 'Ajustar Pesos de Capas'}
+            {showWeightsConfig ? 'Ocultar Pesos ✕' : 'Ajustar Pesos ⚙️'}
           </button>
         </div>
 
         {showWeightsConfig && (
           <div style={{
-            backgroundColor: 'var(--bg-dark)',
+            backgroundColor: 'rgba(0, 0, 0, 0.2)',
             border: '1px solid var(--border-color)',
-            borderRadius: '4px',
-            padding: '10px',
-            marginBottom: '10px',
+            borderRadius: 'var(--border-radius-sm)',
+            padding: '12px',
+            marginBottom: '12px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '8px'
+            gap: '10px'
           }}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 'bold', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px', display: 'flex', justifyContent: 'space-between', letterSpacing: '0.5px' }}>
               <span>CAPA</span>
               <span>PESO</span>
             </div>
             {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
               const labels: Record<string, string> = { trend: 'Tendencia (EMA)', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
               return (
-                <div key={layer} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div key={layer} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
-                    <span style={{ color: 'var(--text-primary)' }}>{labels[layer]}</span>
-                    <span style={{ color: 'var(--accent-blue)', fontWeight: 'bold' }}>{weights[layer].toFixed(1)}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{labels[layer]}</span>
+                    <span style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>{weights[layer].toFixed(1)}</span>
                   </div>
                   <input
                     type="range"
@@ -311,8 +349,8 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
                   border: '1px solid var(--border-color)',
                   color: 'var(--text-secondary)',
                   fontSize: '0.65rem',
-                  padding: '2px 6px',
-                  borderRadius: '2px',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
                   cursor: 'pointer'
                 }}
               >
@@ -323,78 +361,182 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
         )}
 
         {/* Layer breakdown */}
-        {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
-          const l = score.layers[layer];
-          const icon = l.score > 0 ? '▲' : l.score < 0 ? '▼' : '─';
-          const col  = l.score > 0 ? 'var(--accent-green)' : l.score < 0 ? 'var(--accent-red)' : 'var(--text-secondary)';
-          const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
-          const weight = weights[layer];
-          return (
-            <div key={layer} style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', marginBottom: '4px', fontSize: '0.75rem' }}>
-              <span style={{ color: col, fontWeight: 'bold', minWidth: '48px', display: 'inline-flex', alignItems: 'center' }}>
-                <span>{icon}{l.score > 0 ? '+' : ''}{l.score}</span>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontWeight: 'normal', marginLeft: '3px' }}>
-                  ({weight.toFixed(1)}x)
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '12px' }}>
+          {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
+            const l = score.layers[layer];
+            const icon = l.score > 0 ? '▲' : l.score < 0 ? '▼' : '─';
+            const col  = l.score > 0 ? 'var(--accent-green)' : l.score < 0 ? 'var(--accent-red)' : 'var(--text-muted)';
+            const bgCol = l.score > 0 ? 'rgba(16, 185, 129, 0.05)' : l.score < 0 ? 'rgba(244, 63, 94, 0.05)' : 'transparent';
+            const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
+            const weight = weights[layer];
+            return (
+              <div key={layer} style={{ 
+                display: 'flex', 
+                alignItems: 'flex-start', 
+                gap: '8px', 
+                fontSize: '0.75rem',
+                padding: '6px 8px',
+                borderRadius: '4px',
+                background: bgCol,
+                border: '1px solid ' + (l.score > 0 ? 'rgba(16, 185, 129, 0.1)' : l.score < 0 ? 'rgba(244, 63, 94, 0.1)' : 'transparent')
+              }}>
+                <span style={{ 
+                  color: col, 
+                  fontWeight: '700', 
+                  minWidth: '54px', 
+                  display: 'inline-flex', 
+                  alignItems: 'center',
+                  fontFamily: 'var(--font-mono)'
+                }}>
+                  <span>{icon}{l.score > 0 ? '+' : ''}{l.score}</span>
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '3px' }}>
+                    ({weight.toFixed(1)}x)
+                  </span>
                 </span>
-              </span>
-              <div>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{labels[layer]}: </span>
-                <span style={{ color: 'var(--text-secondary)' }}>{l.note}</span>
+                <div style={{ flex: 1, lineHeight: '1.3' }}>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{labels[layer]}: </span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{l.note}</span>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {/* Indicators List */}
-      <div>
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+      <div style={{
+        backgroundColor: 'var(--bg-panel)',
+        border: '1px solid var(--border-color)',
+        padding: '16px',
+        borderRadius: 'var(--border-radius-md)'
+      }}>
+        <div style={{ 
+          color: 'var(--text-secondary)', 
+          fontSize: '0.75rem', 
+          fontWeight: '800', 
+          letterSpacing: '1px', 
+          marginBottom: '14px', 
+          borderBottom: '1px solid var(--border-color)', 
+          paddingBottom: '8px',
+          textTransform: 'uppercase'
+        }}>
           TECHNICAL INDICATORS
         </div>
         
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {indicators.map(ind => (
-            <div key={ind.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ color: 'var(--text-primary)' }}>{ind.name}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{closes.length > 0 ? ind.value : '-'}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {indicators.map(ind => {
+            const hasData = closes.length > 0;
+            const signalBg = ind.signal === 'BUY' 
+              ? 'rgba(16, 185, 129, 0.08)' 
+              : ind.signal === 'SELL' 
+                ? 'rgba(244, 63, 94, 0.08)' 
+                : 'rgba(255,255,255,0.02)';
+            
+            return (
+              <div 
+                key={ind.name} 
+                style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  padding: '8px 10px',
+                  borderRadius: '6px',
+                  background: 'rgba(255, 255, 255, 0.01)',
+                  border: '1px solid rgba(255, 255, 255, 0.03)'
+                }}
+              >
+                <div>
+                  <div style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontWeight: '600' }}>{ind.name}</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
+                    {hasData ? ind.value : '-'}
+                  </div>
+                </div>
+                <div style={{ 
+                  color: ind.color, 
+                  fontWeight: '700',
+                  padding: '4px 10px',
+                  background: signalBg,
+                  border: `1px solid ${ind.color === 'var(--text-primary)' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.0)'}`,
+                  borderRadius: '12px',
+                  fontSize: '0.7rem',
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                  {hasData ? ind.signal : '-'}
+                </div>
               </div>
-              <div style={{ 
-                color: ind.color, 
-                fontWeight: 'bold',
-                padding: '2px 6px',
-                border: `1px solid ${ind.color}`,
-                borderRadius: '2px',
-                fontSize: '0.7rem'
-              }}>
-                {closes.length > 0 ? ind.signal : '-'}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {/* News Feed */}
-      <div style={{ display: 'flex', flexDirection: 'column', marginTop: '16px' }}>
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+      <div style={{
+        backgroundColor: 'var(--bg-panel)',
+        border: '1px solid var(--border-color)',
+        padding: '16px',
+        borderRadius: 'var(--border-radius-md)'
+      }}>
+        <div style={{ 
+          color: 'var(--text-secondary)', 
+          fontSize: '0.75rem', 
+          fontWeight: '800', 
+          letterSpacing: '1px', 
+          marginBottom: '14px', 
+          borderBottom: '1px solid var(--border-color)', 
+          paddingBottom: '8px',
+          textTransform: 'uppercase'
+        }}>
           LATEST NEWS
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '0.85rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {loadingNews ? (
-            <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '16px 0' }}>Loading news...</div>
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Loading news...</div>
           ) : news.length > 0 ? (
             news.map((item, index) => (
-              <a key={index} href={item.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', display: 'block' }}>
-                <div style={{ color: 'var(--accent-blue)', marginBottom: '4px', lineHeight: '1.3' }}>{item.time} - {item.title}</div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{item.source}</div>
+              <a 
+                key={index} 
+                href={item.url} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                style={{ 
+                  textDecoration: 'none', 
+                  display: 'block',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  background: 'rgba(255, 255, 255, 0.01)',
+                  border: '1px solid rgba(255, 255, 255, 0.03)',
+                  transition: 'var(--transition-smooth)',
+                }}
+                className="news-card"
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.03)';
+                  e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.15)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.01)';
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.03)';
+                }}
+              >
+                <div style={{ 
+                  color: 'var(--accent-blue)', 
+                  marginBottom: '6px', 
+                  lineHeight: '1.4', 
+                  fontWeight: '600',
+                  fontSize: '0.8rem'
+                }}>
+                  {item.title}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                  <span>{item.source}</span>
+                  <span>{item.time}</span>
+                </div>
               </a>
             ))
           ) : (
-            <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '16px 0' }}>No recent news</div>
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>No recent news</div>
           )}
         </div>
       </div>
-
     </div>
   );
 }
