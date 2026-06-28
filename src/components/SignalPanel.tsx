@@ -97,7 +97,7 @@ export default function SignalPanel({ symbol, closes, volume, klines, interval }
     overallColor = 'var(--accent-red)';
   }
 
-  let overallColorGlow = 'rgba(255, 255, 255, 0.01)';
+  let overallColorGlow = 'none';
   let overallBorder = 'var(--border-color)';
   let overallBg = 'linear-gradient(135deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.1) 100%)';
   if (!isFiltered && closes.length > 0) {
