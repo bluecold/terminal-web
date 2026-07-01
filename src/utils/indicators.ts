@@ -108,21 +108,16 @@ export function calculateMACD(data: number[]): IndicatorResult {
   
   if (currentMacd === undefined || isNaN(currentMacd)) return { value: 0, signal: 'NEUTRAL' };
 
-  // Calculate histogram for the last few bars
+  // Calculate histogram — signalLine has same length as validMacd
+  // (first 8 entries are NaN from the EMA seed period)
   const histogramSeries: number[] = [];
-  const offsetDiff = validMacd.length - signalLine.length;
   for (let i = 0; i < validMacd.length; i++) {
-    const sigIdx = i - offsetDiff;
-    if (sigIdx >= 0 && sigIdx < signalLine.length) {
-      const macdVal = validMacd[i];
-      const sigVal = signalLine[sigIdx];
-      if (macdVal !== undefined && sigVal !== undefined && !isNaN(macdVal) && !isNaN(sigVal)) {
-        histogramSeries.push(macdVal - sigVal);
-      } else {
-        histogramSeries.push(0);
-      }
+    const macdVal = validMacd[i];
+    const sigVal = signalLine[i];
+    if (!isNaN(macdVal) && !isNaN(sigVal)) {
+      histogramSeries.push(macdVal - sigVal);
     } else {
-      histogramSeries.push(0);
+      histogramSeries.push(NaN);
     }
   }
 
@@ -393,7 +388,7 @@ export function calculateExperimentalSignal(klines: Kline[], interval: string = 
   const bearish_candle = engulfing === -1;
 
   const is_buy = curr.close > vwap && ema9 > ema20 && curr.volume > volAvg && bullish_candle;
-  const is_sell = curr.close < vwap && ema9 < ema20 && (bearish_candle || curr.close < ema20);
+  const is_sell = curr.close < vwap && ema9 < ema20 && curr.volume > volAvg && (bearish_candle || curr.close < ema20);
 
   // EMA Crossover detection
   const emaCrossover = detectEmaCrossover(closes, 9, 20, 5);
@@ -734,7 +729,20 @@ export function calculateSupertrend(klines: Kline[], period: number = 10, multip
 
   const latestVal = superTrend[length - 1];
   const latestDir = direction[length - 1] === 1 ? 'UP' : 'DOWN';
-  const signal: 'BUY' | 'SELL' | 'NEUTRAL' = latestDir === 'UP' ? 'BUY' : 'SELL';
+
+  // Only emit BUY/SELL if there was a direction flip in the last 3 candles;
+  // otherwise NEUTRAL to avoid always-voting bias in the consensus system.
+  const flipLookback = 3;
+  let recentFlip = false;
+  for (let i = 1; i <= flipLookback && (length - i) > startIdx; i++) {
+    if (direction[length - i] !== direction[length - i - 1]) {
+      recentFlip = true;
+      break;
+    }
+  }
+  const signal: 'BUY' | 'SELL' | 'NEUTRAL' = recentFlip
+    ? (latestDir === 'UP' ? 'BUY' : 'SELL')
+    : 'NEUTRAL';
 
   return {
     value: Number(latestVal.toFixed(2)),
@@ -834,4 +842,92 @@ export function calculateStochRSI(
     d: Number(latestD.toFixed(2)),
     signal
   };
+}
+
+// ==========================================
+// VOLUME SIGNAL — Bug #3 fix
+// Compares latest candle volume against the 20-period average volume.
+// ==========================================
+
+export function calculateVolumeSignal(klines: Kline[]): { value: string; signal: 'BUY' | 'SELL' | 'NEUTRAL' } {
+  if (!klines || klines.length < 21) {
+    return { value: '—', signal: 'NEUTRAL' };
+  }
+
+  const recentVols = klines.slice(-21, -1).map(k => k.volume);
+  const avgVol = recentVols.reduce((a, b) => a + b, 0) / recentVols.length;
+  const currentVol = klines[klines.length - 1].volume;
+  const ratio = avgVol > 0 ? currentVol / avgVol : 0;
+
+  const formatted = currentVol > 1_000_000
+    ? (currentVol / 1_000_000).toFixed(1) + 'M'
+    : currentVol > 1_000
+      ? (currentVol / 1_000).toFixed(1) + 'K'
+      : currentVol.toFixed(0);
+
+  // Volume spike (≥1.5× average) is a confirming signal (BUY bias since
+  // volume spikes more commonly accompany breakouts than breakdowns).
+  const signal: 'BUY' | 'SELL' | 'NEUTRAL' = ratio >= 1.5 ? 'BUY' : 'NEUTRAL';
+
+  return { value: `${formatted} (${ratio.toFixed(1)}×)`, signal };
+}
+
+// ==========================================
+// UNIFIED STANDARD VOTING — Bug #4 fix
+// Single source of truth used by both SignalPanel and Backtester.
+// ==========================================
+
+export interface StandardVotingResult {
+  indicators: Array<{
+    name: string;
+    value: string | number;
+    signal: 'BUY' | 'SELL' | 'NEUTRAL';
+    color: string;
+  }>;
+  buyVotes: number;
+  sellVotes: number;
+  rawSignal: string;
+}
+
+export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
+  const closes = klines.map(k => k.close);
+
+  const rsi        = calculateRSI(closes);
+  const macd       = calculateMACD(closes);
+  const bb         = calculateBollingerBands(closes);
+  const supertrend = calculateSupertrend(klines);
+  const stochRsi   = calculateStochRSI(closes);
+  const vol        = calculateVolumeSignal(klines);
+
+  const colorFor = (sig: string) =>
+    sig === 'BUY' ? 'var(--accent-green)' : sig === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)';
+
+  const indicators = [
+    { name: 'RSI (14)',           value: rsi.value,                                                                                           signal: rsi.signal,        color: colorFor(rsi.signal) },
+    { name: 'MACD (12,26,9)',     value: macd.value,                                                                                          signal: macd.signal,       color: colorFor(macd.signal) },
+    { name: 'Bollinger Bands',    value: bb.current.toFixed(2),                                                                               signal: bb.signal,         color: colorFor(bb.signal) },
+    { name: 'Supertrend (10,3)',  value: `ST: $${supertrend.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${supertrend.direction})`, signal: supertrend.signal, color: colorFor(supertrend.signal) },
+    { name: 'Stochastic RSI',     value: `%K: ${stochRsi.k.toFixed(1)} · %D: ${stochRsi.d.toFixed(1)}`,                                      signal: stochRsi.signal,   color: colorFor(stochRsi.signal) },
+    { name: 'Volume',             value: vol.value,                                                                                           signal: vol.signal,        color: colorFor(vol.signal) },
+  ];
+
+  let buyVotes = 0;
+  let sellVotes = 0;
+  indicators.forEach(ind => {
+    if (ind.signal === 'BUY') buyVotes++;
+    if (ind.signal === 'SELL') sellVotes++;
+  });
+
+  let rawSignal = 'NEUTRAL';
+  if (buyVotes >= 3 && sellVotes === 0) {
+    rawSignal = 'STRONG BUY';
+  } else if (buyVotes > sellVotes) {
+    rawSignal = 'BUY';
+  } else if (sellVotes >= 3 && buyVotes === 0) {
+    rawSignal = 'STRONG SELL';
+  } else if (sellVotes > buyVotes) {
+    rawSignal = 'SELL';
+  }
+
+  return { indicators, buyVotes, sellVotes, rawSignal };
 }

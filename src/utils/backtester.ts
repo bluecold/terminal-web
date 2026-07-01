@@ -1,13 +1,9 @@
 import type { Kline } from '../services/api';
 import {
-  calculateRSI,
-  calculateMACD,
-  calculateBollingerBands,
   calculateExperimentalSignal,
   calculateScoringSignal,
   calculateEMA,
-  calculateSupertrend,
-  calculateStochRSI,
+  calculateStandardVoting,
   type ScoringWeights,
 } from './indicators';
 
@@ -94,34 +90,18 @@ function evaluateOutcome(
   return 'timeout';
 }
 
-// ─── Standard Voting Signal ────────────────────────────────────────────────
-// Replicates the vote logic from SignalPanel: RSI + MACD + BB + Supertrend + StochRSI
+// ─── Standard Voting Signal (unified with SignalPanel) ─────────────────────
+// Uses the shared calculateStandardVoting from indicators.ts
 function standardVotingSignal(klines: Kline[]): 'BUY' | 'SELL' | 'NEUTRAL' {
   const closes = klines.map(k => k.close);
-  if (closes.length < 35) return 'NEUTRAL'; // MACD needs 35 candles now
+  if (closes.length < 35) return 'NEUTRAL';
 
-  const rsi  = calculateRSI(closes);
-  const macd = calculateMACD(closes);
-  const bb   = calculateBollingerBands(closes);
-  const supertrend = calculateSupertrend(klines);
-  const stochRsi = calculateStochRSI(closes);
+  const { rawSignal } = calculateStandardVoting(klines);
 
-  const votes: Array<'BUY' | 'SELL' | 'NEUTRAL'> = [
-    rsi.signal, 
-    macd.signal, 
-    bb.signal,
-    supertrend.signal,
-    stochRsi.signal
-  ];
-
-  let buy = 0, sell = 0;
-  votes.forEach(v => { if (v === 'BUY') buy++; if (v === 'SELL') sell++; });
-
+  // Normalize STRONG BUY/SELL to BUY/SELL for backtest evaluation
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  if (buy >= 3 && sell === 0) signal = 'BUY';
-  else if (buy > sell)             signal = 'BUY';
-  else if (sell >= 3 && buy === 0) signal = 'SELL';
-  else if (sell > buy)             signal = 'SELL';
+  if (rawSignal.includes('BUY'))  signal = 'BUY';
+  if (rawSignal.includes('SELL')) signal = 'SELL';
 
   // Apply EMA 200 trend filter
   const trend = getTrendFilter(closes);
