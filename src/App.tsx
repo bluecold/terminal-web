@@ -6,8 +6,8 @@ import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
 import { fetchKlines } from './services/api';
 import type { Kline } from './services/api';
-import { calculateStandardVoting } from './utils/indicators';
-import { getTrendFilter } from './utils/backtester';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal } from './utils/indicators';
+import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring } from './utils/backtester';
 
 function App() {
   const [currentAsset, setCurrentAsset] = useState(() => {
@@ -110,9 +110,13 @@ function App() {
   // Keep track of the last known signals for all scanned symbols (watchlist + active)
   const lastSignalsRef = useRef<Record<string, string>>({});
 
-  // Reset signal cache on timeframe change to prevent false crossover notifications
+  // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
+  const bestStrategyRef = useRef<Record<string, { strategy: string; timestamp: number }>>({});
+
+  // Reset caches on timeframe change to prevent false crossover notifications
   useEffect(() => {
     lastSignalsRef.current = {};
+    bestStrategyRef.current = {};
   }, [interval]);
 
   useEffect(() => {
@@ -133,25 +137,70 @@ function App() {
           if (!isMounted) return;
           if (data.length < 35) continue;
 
-          // Calculate Overall Signal (Standard Voting with Trend EMA 200 filter)
-          const voting = calculateStandardVoting(data);
+          // ── Determine best strategy (cached for 5 minutes) ──────────────
+          const now = Date.now();
+          const cached = bestStrategyRef.current[symbol];
+          let bestStrategy = 'standard';
+          let strategyLabel = 'Standard';
+
+          if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
+            // Run backtests for all 3 strategies
+            const btStd  = backtestStandard(data, interval);
+            const btConf = backtestConfluencia(data, interval);
+            const btScore = backtestScoring(data, interval);
+
+            const candidates = [
+              { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
+              { key: 'confluencia', label: 'Confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
+              { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
+            ];
+
+            // Filter: need at least 3 resolved trades and PF > 1.0 (marginally profitable)
+            const viable = candidates
+              .filter(s => s.resolved >= 3 && s.pf > 1.0)
+              .sort((a, b) => b.pf - a.pf);
+
+            if (viable.length > 0) {
+              bestStrategy = viable[0].key;
+              strategyLabel = viable[0].label;
+            }
+
+            bestStrategyRef.current[symbol] = { strategy: bestStrategy, timestamp: now };
+          } else {
+            bestStrategy = cached.strategy;
+            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : 'Standard';
+          }
+
+          // ── Calculate signal using the best strategy ─────────────────────
+          let overallSignal: string;
+
+          if (bestStrategy === 'confluencia') {
+            const result = calculateExperimentalSignal(data, interval);
+            overallSignal = result.signal;
+          } else if (bestStrategy === 'scoring') {
+            const result = calculateScoringSignal(data, interval);
+            overallSignal = result.signal;
+          } else {
+            const voting = calculateStandardVoting(data);
+            overallSignal = voting.rawSignal;
+          }
+
+          // Apply EMA 200 trend filter uniformly to all strategies
           const closes = data.map(k => k.close);
           const trend = getTrendFilter(closes);
-
-          let overallSignal = voting.rawSignal;
           if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
             overallSignal = 'NEUTRAL';
           } else if (trend === 'DOWN' && (overallSignal === 'BUY' || overallSignal === 'STRONG BUY')) {
             overallSignal = 'NEUTRAL';
           }
 
+          // ── Check for signal transition and notify ──────────────────────
           const prevSignal = lastSignalsRef.current[symbol];
 
-          // If we had a previous cached signal, and it transitioned to a tradeable state, notify!
           if (prevSignal && prevSignal !== overallSignal && (overallSignal.includes('BUY') || overallSignal.includes('SELL'))) {
             new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})`, {
-              body: `${symbol} cambió de ${prevSignal} a ${overallSignal}`,
-              tag: `${symbol}-${interval}`, // prevent notification stacking for the same asset
+              body: `${overallSignal} · vía ${strategyLabel} (mejor PF)`,
+              tag: `${symbol}-${interval}`,
             });
           }
 
