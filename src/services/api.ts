@@ -9,7 +9,7 @@ export interface Kline {
 
 export async function fetchBinanceKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   try {
-    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=300`);
+    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`);
     const data = await response.json() as Array<Array<string | number>>;
     
     return data.map((item) => ({
