@@ -38,10 +38,13 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger manipulando directamente el DOM mediante referencias (`useRef`), evitando re-renderizados lentos de React.
 - **Alertas en Segundo Plano (Watchlist)**: Se implementó un scanner en segundo plano (`checkAllSignals`) que verifica cada 60 segundos si algún activo de la Watchlist (o el activo actual) ha cambiado de señal en el timeframe activo. Envía notificaciones nativas del navegador únicamente si la estrategia ganadora para ese activo pasa un control de calidad estricto (Profit Factor >= 1.3, calificado como "Bueno" o "Excelente", y un número mínimo de operaciones resueltas dependiente del timeframe: 5m: 5, 1h: 4, 1d: 3) para evitar spam de señales de baja confianza.
 - **Rediseño Visual Premium (Glassmorphism)**: Diseño inmersivo y futurista usando fuentes de Google (Outfit y Fira Code), paneles translúcidos, y UI reactiva (Profit Factor dynamically styles rating labels).
+- **Historial Interactivo de Alertas (Watchlist)**: Registro visual persistente (vía `localStorage`) en la barra lateral izquierda que almacena las últimas 20 notificaciones del scanner, permitiendo al usuario cambiar el activo y temporalidad del gráfico al hacer clic en cualquier tarjeta de alerta.
+- **Calculadora de Gestión de Riesgo y Posición**: Panel interactivo que calcula en tiempo real el tamaño de posición sugerido (unidades/USD) y margen requerido, tomando automáticamente los niveles de Stop Loss y Take Profit calculados dinámicamente por la volatilidad real (ATR) de la estrategia del gráfico.
+- **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela, alertando si se opera a favor o en contra de la marea del precio.
+- **Catalizadores de Volatilidad (Calendario)**: Sistema de alerta que consulta online reportes de ganancias corporativas para stocks y cruza fechas clave pre-agendadas del IPC/CPI y la FOMC/Fed (2026), advirtiendo del peligro en ventanas menores a 48 horas.
 - **Despliegue y Control de Versiones**: Pipeline CI/CD activo conectado a **Vercel** para despliegues a producción.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Performance O(n) en Backtesting**: Actualmente el backtester es O(n²) debido a recálculos completos de indicadores en cada iteración del ciclo. Para reducir lag en dispositivos móviles al cambiar tickers, se debe refactorizar para pre-calcular series completas.
-- **Manejo Dinámico del Tamaño de Posición**: Posibilidad de sugerir apalancamiento basado en la fuerza del *Scoring Multicapa*.
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.
