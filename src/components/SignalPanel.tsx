@@ -1,8 +1,9 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import { backtestStandard, backtestConfluencia, backtestScoring, getTrendFilter } from '../utils/backtester';
 import { fetchNews } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
+import { Bell, BellOff } from 'lucide-react';
 import BacktestCard from './BacktestCard';
 
 interface SignalPanelProps {
@@ -20,6 +21,36 @@ export default function SignalPanel({ symbol, closes, klines, interval }: Signal
   // Custom Scoring Weights state
   const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
+
+  // Keep track of previous signal to trigger notifications only on transitions
+  const prevSignalStateRef = useRef<{ symbol: string; interval: string; signal: string } | null>(null);
+
+  // Notification setting status
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    return localStorage.getItem('terminal_notifications_enabled') === 'true';
+  });
+
+  const toggleNotifications = async () => {
+    if (!notificationsEnabled) {
+      if ('Notification' in window) {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          setNotificationsEnabled(true);
+          localStorage.setItem('terminal_notifications_enabled', 'true');
+          new Notification("🔔 Alertas Activadas", {
+            body: `Recibirás notificaciones de escritorio de señales de compra/venta para ${symbol}.`,
+          });
+        } else {
+          alert('Permiso de notificación denegado. Habilítalo en los ajustes del navegador.');
+        }
+      } else {
+        alert('Este navegador no soporta notificaciones de escritorio.');
+      }
+    } else {
+      setNotificationsEnabled(false);
+      localStorage.setItem('terminal_notifications_enabled', 'false');
+    }
+  };
 
   useEffect(() => {
     const loadNews = async () => {
@@ -67,6 +98,31 @@ export default function SignalPanel({ symbol, closes, klines, interval }: Signal
     overallColor = 'var(--accent-red)';
   }
 
+  // Trigger notifications on signal transitions for active asset/interval
+  useEffect(() => {
+    if (!closes || closes.length === 0 || overallSignal === 'NEUTRAL' || overallSignal === 'WAITING...') {
+      prevSignalStateRef.current = { symbol, interval, signal: overallSignal };
+      return;
+    }
+
+    const prev = prevSignalStateRef.current;
+
+    // Only notify if looking at the same asset and interval, and the signal has changed
+    if (prev && prev.symbol === symbol && prev.interval === interval && prev.signal !== overallSignal) {
+      if (notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+        const title = `🚨 Nueva Señal en ${symbol} (${interval})`;
+        const body = `La estrategia Standard Voting indica: ${overallSignal}`;
+        new Notification(title, {
+          body,
+          tag: `${symbol}-${interval}`, // deduplicate identical notifications
+          requireInteraction: false
+        });
+      }
+    }
+
+    prevSignalStateRef.current = { symbol, interval, signal: overallSignal };
+  }, [overallSignal, symbol, interval, notificationsEnabled, closes]);
+
   let overallColorGlow = 'none';
   let overallBorder = 'var(--border-color)';
   let overallBg = 'linear-gradient(135deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.1) 100%)';
@@ -94,7 +150,37 @@ export default function SignalPanel({ symbol, closes, klines, interval }: Signal
         textAlign: 'center',
         borderRadius: 'var(--border-radius-md)',
         transition: 'var(--transition-smooth)',
+        position: 'relative'
       }}>
+        {/* Toggle Notification Button */}
+        <button
+          onClick={toggleNotifications}
+          style={{
+            position: 'absolute',
+            top: '12px',
+            right: '12px',
+            background: 'transparent',
+            color: notificationsEnabled ? 'var(--accent-blue)' : 'var(--text-muted)',
+            cursor: 'pointer',
+            padding: '6px',
+            borderRadius: '50%',
+            transition: 'all 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: `1px solid ${notificationsEnabled ? 'rgba(0, 229, 255, 0.25)' : 'rgba(255, 255, 255, 0.05)'}`,
+            boxShadow: notificationsEnabled ? '0 0 10px rgba(0, 229, 255, 0.15)' : 'none',
+            backgroundColor: notificationsEnabled ? 'rgba(0, 229, 255, 0.03)' : 'rgba(255, 255, 255, 0.01)'
+          }}
+          title={notificationsEnabled ? "Notificaciones activadas (clic para desactivar)" : "Activar notificaciones de escritorio"}
+        >
+          {notificationsEnabled ? (
+            <Bell size={14} color="var(--accent-blue)" style={{ filter: 'drop-shadow(0 0 4px var(--accent-blue))' }} />
+          ) : (
+            <BellOff size={14} color="var(--text-muted)" />
+          )}
+        </button>
+
         <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: '700', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '8px' }}>
           OVERALL SIGNAL FOR {symbol}
         </div>
