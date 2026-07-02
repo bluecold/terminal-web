@@ -9,7 +9,29 @@ import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring } from './utils/backtester';
 
+interface AlertItem {
+  id: string;
+  symbol: string;
+  interval: string;
+  signal: string;
+  time: string;
+  pf: number;
+  strategy: string;
+}
+
 function App() {
+  const [alertsLog, setAlertsLog] = useState<AlertItem[]>(() => {
+    const saved = localStorage.getItem('terminal_alerts_log');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        console.error('Error parsing alerts log from local storage', e);
+      }
+    }
+    return [];
+  });
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
@@ -214,6 +236,23 @@ function App() {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
               tag: `${symbol}-${interval}`,
             });
+
+            const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            const newAlert: AlertItem = {
+              id: `${symbol}-${interval}-${Date.now()}`,
+              symbol,
+              interval,
+              signal: overallSignal,
+              time: timeString,
+              pf: bestPF,
+              strategy: strategyLabel
+            };
+
+            setAlertsLog(prev => {
+              const updated = [newAlert, ...prev].slice(0, 20); // Cap at 20 items
+              localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
+              return updated;
+            });
           }
 
           // Cache the latest signal
@@ -294,15 +333,148 @@ function App() {
 
       {/* Main Content Area */}
       <div className="main-content">
-        {/* Left Sidebar - Watchlist */}
+        {/* Left Sidebar - Watchlist & Alert History */}
         <aside className="sidebar-left">
-          <div className="panel-header">WATCHLIST</div>
-          <Watchlist 
-            symbols={watchlistSymbols}
-            onSelectAsset={setCurrentAsset} 
-            currentAsset={currentAsset} 
-            onRemoveAsset={(sym) => setWatchlistSymbols(prev => prev.filter(s => s !== sym))}
-          />
+          <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div className="panel-header">WATCHLIST</div>
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+              <Watchlist 
+                symbols={watchlistSymbols}
+                onSelectAsset={setCurrentAsset} 
+                currentAsset={currentAsset} 
+                onRemoveAsset={(sym) => setWatchlistSymbols(prev => prev.filter(s => s !== sym))}
+              />
+            </div>
+          </div>
+          
+          <div style={{ height: '1px', backgroundColor: 'var(--border-color)' }} />
+          
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>HISTORIAL DE ALERTAS</span>
+              {alertsLog.length > 0 && (
+                <button
+                  onClick={() => {
+                    setAlertsLog([]);
+                    localStorage.removeItem('terminal_alerts_log');
+                  }}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontSize: '9px',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontWeight: 'bold',
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.color = 'var(--accent-red)';
+                    e.currentTarget.style.borderColor = 'rgba(244, 63, 94, 0.2)';
+                    e.currentTarget.style.backgroundColor = 'rgba(244, 63, 94, 0.05)';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.color = 'var(--text-muted)';
+                    e.currentTarget.style.borderColor = 'var(--border-color)';
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                  }}
+                >
+                  LIMPIAR
+                </button>
+              )}
+            </div>
+            
+            <div style={{ 
+              flex: 1, 
+              overflowY: 'auto', 
+              padding: '10px 14px', 
+              display: 'flex', 
+              flexDirection: 'column', 
+              gap: '8px', 
+              minHeight: 0 
+            }}>
+              {alertsLog.length === 0 ? (
+                <div style={{ 
+                  fontSize: '0.75rem', 
+                  color: 'var(--text-muted)', 
+                  textAlign: 'center', 
+                  marginTop: '24px', 
+                  fontStyle: 'italic' 
+                }}>
+                  Sin alertas recientes.
+                </div>
+              ) : (
+                alertsLog.map((alert) => {
+                  const isBuy = alert.signal.includes('BUY');
+                  const signalColor = isBuy ? 'var(--accent-green)' : 'var(--accent-red)';
+                  const signalBg = isBuy ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
+                  const isStrong = alert.signal.includes('STRONG');
+                  const borderGlow = isStrong 
+                    ? `1px solid ${isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`
+                    : '1px solid var(--border-color)';
+                  
+                  return (
+                    <div 
+                      key={alert.id}
+                      onClick={() => {
+                        setCurrentAsset(alert.symbol);
+                        setTimeInterval(alert.interval);
+                      }}
+                      style={{
+                        backgroundColor: 'rgba(255, 255, 255, 0.01)',
+                        border: borderGlow,
+                        borderRadius: 'var(--border-radius-sm)',
+                        padding: '8px 10px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px',
+                        transition: 'all 0.2s',
+                        boxShadow: isStrong ? `0 0 8px ${isBuy ? 'rgba(16, 185, 129, 0.05)' : 'rgba(244, 63, 94, 0.05)'}` : 'none'
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.01)';
+                        e.currentTarget.style.borderColor = isStrong 
+                          ? (isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)')
+                          : 'var(--border-color)';
+                      }}
+                      title={`Click para abrir gráfico de ${alert.symbol} en ${alert.interval.toUpperCase()}`}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                          {alert.symbol} <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '500' }}>({alert.interval.toUpperCase()})</span>
+                        </span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          {alert.time}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.65rem' }}>
+                        <span style={{ 
+                          color: signalColor, 
+                          fontWeight: '800', 
+                          padding: '1px 5px', 
+                          backgroundColor: signalBg, 
+                          borderRadius: '3px',
+                          fontSize: '0.6rem',
+                          letterSpacing: '0.5px'
+                        }}>
+                          {alert.signal}
+                        </span>
+                        <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>
+                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {alert.pf.toFixed(1)}</span>
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </aside>
 
         {/* Center - Chart & Indicators */}
