@@ -69,11 +69,21 @@ La aplicación cuenta con 3 agrupaciones principales que analizan los datos en t
 
 ---
 
+## 📊 Motor de Backtesting (Simulación Histórica)
+
+FinceptTerminal cuenta con un motor de backtesting O(n²) integrado directamente en el frontend que permite evaluar la rentabilidad histórica de las estrategias sin necesidad de un backend pesado:
+
+- **Umbrales Adaptativos (ATR):** El `Stop Loss` y `Take Profit` se calculan dinámicamente según la volatilidad real del activo (ATR), permitiendo comparar de forma justa criptomonedas (alta volatilidad) con acciones (baja volatilidad).
+- **Manejo de Sesiones (Gaps):** Detección automática de huecos de mercado para acciones de EEUU. Las señales intradiarias que cruzarían un gap overnight son descartadas para simular una operativa realista.
+- **Métricas Avanzadas:** Calcula y expone métricas institucionales como **Profit Factor**, **Expectancy (Esperanza Matemática)**, y **Resolution Rate**, además del tradicional WinRate (basado estrictamente en operaciones resueltas).
+- **Control de Cooldown:** Previene la distorsión estadística al ignorar señales duplicadas dentro de la ventana de vida de una operación activa.
+
+---
+
 ## 📈 Tareas Pendientes / Mejoras Futuras
 
-- [ ] **Backtesting en Tiempo Real:** Mejorar el módulo de evaluación de éxito y `win-rate` para los algoritmos usando histórico profundo.
-- [ ] **Gestión de Riesgos Dinámica:** Emisión de `Stop Loss` y `Take Profit` automatizados basados en el rango verdadero promedio (ATR - Average True Range).
-- [ ] **Alertas Push/Webhooks:** Notificaciones proactivas cuando un cruce o el *Scoring Multicapa* detecte oportunidades con alta probabilidad (90%+).
+- [ ] **Performance O(n) en Backtesting:** Refactorizar el motor de simulación para pre-calcular series completas en lugar de re-evaluar iterativamente, reduciendo el lag al cambiar de activo en dispositivos móviles.
+- [ ] **Alertas Push/Webhooks:** Notificaciones proactivas cuando el *Scoring Multicapa* detecte oportunidades con alta probabilidad (90%+).
 
 ---
 

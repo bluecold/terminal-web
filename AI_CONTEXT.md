@@ -24,19 +24,23 @@ Recientemente se han realizado optimizaciones críticas en la matemática y lóg
 Actualmente existen 3 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
 2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger y VWAP. Los pesos son ajustables por el usuario. Posee un umbral adaptativo (1% para 5m, 1.2% para 1h, y 1.5% para 1d).
-3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere ahora un consenso de 3 o más votos en una dirección, integrando además el filtro macroscópico de la EMA 200.
+3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere ahora un consenso de 3 o más votos en una dirección, integrando además el filtro macroscópico de la EMA 200 y una señal de Volumen confirmatoria basada en picos inusuales vs su promedio móvil.
+
+## Sistema de Backtesting (Simulación Histórica)
+El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
+- **Umbrales Adaptativos (ATR)**: El take-profit y stop-loss ya no son porcentajes fijos, sino que se adaptan a la volatilidad real del activo midiendo su ATR (Average True Range).
+- **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones). En el caso de acciones, descarta automáticamente señales intradiarias que cruzarían el cierre de mercado para evitar gaps overnight perjudiciales.
+- **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces saltando el período de *forward window* después de cada señal activa.
+- **Métricas Avanzadas**: El sistema calcula y expone el WinRate (sobre operaciones resueltas), Resolution Rate, Profit Factor y la Esperanza Matemática (Expectancy).
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
-- **Watchlist Paralelizada**: La carga de tickers en la Watchlist se realiza concurrentemente usando `Promise.all` en lugar de llamadas secuenciales con delay, lo cual disminuyó drásticamente los tiempos de carga.
-- **Persistencia de Sesión**: El ticker seleccionado y la temporalidad (timeframe) se guardan y restauran desde el `localStorage` del navegador para una mejor experiencia de usuario al recargar la página.
-- **Noticias Relevantes**: Se ha integrado la API de CryptoCompare para obtener un feed de noticias fiable y relacionado con los activos que se visualizan.
-- **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger en tiempo real. Para evitar re-renderizados lentos de React durante los movimientos del cursor (crosshair), la actualización se realiza manipulando directamente el DOM mediante referencias (`useRef`). Además, se alerta visualmente (color naranja y símbolo de advertencia) cuando el ancho de las bandas supera el umbral de alta volatilidad adaptativo (1.5% para 5m, 8% para 1h y 10% para 1d).
-- **Rediseño Visual Premium (Glassmorphism)**: Se sustituyó el diseño básico por una interfaz inmersiva y futurista usando fuentes de Google (Outfit y Fira Code), paneles translúcidos con fondos difuminados, barras de progreso y tarjetas animadas con brillos neón responsivos, y un track estilizado del slider.
-- **Despliegue y Control de Versiones**: El código base ahora está rastreado remotamente en GitHub y la aplicación tiene un pipeline CI/CD activo directamente conectado a **Vercel** para producción.
+- **Watchlist Paralelizada**: La carga de tickers en la Watchlist se realiza concurrentemente usando `Promise.all`.
+- **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger manipulando directamente el DOM mediante referencias (`useRef`), evitando re-renderizados lentos de React.
+- **Rediseño Visual Premium (Glassmorphism)**: Diseño inmersivo y futurista usando fuentes de Google (Outfit y Fira Code), paneles translúcidos, y UI reactiva (Profit Factor dynamically styles rating labels).
+- **Despliegue y Control de Versiones**: Pipeline CI/CD activo conectado a **Vercel** para despliegues a producción.
 
 ## Cuestiones Pendientes y Futuras Mejoras
-- **Evaluación Constante de Éxito**: Seguir puliendo la funcionalidad que analiza ventanas temporales de las últimas velas (ej. últimas 200 velas) para informar el porcentaje de acierto de una señal, adaptándose al timeframe seleccionado (5m, 1h, 1d).
-- **Gestión del Riesgo**: Las señales de trading emiten sugerencias de Stop Loss, pero en el futuro podrían refinarse usando parámetros como el ATR (Average True Range).
-- **Cobertura de Activos**: Si se requiere operar con acciones (stocks) ademas de criptomonedas, será necesario añadir fallbacks a las APIs que devuelvan noticias y cotizaciones específicas del mercado tradicional.
+- **Performance O(n) en Backtesting**: Actualmente el backtester es O(n²) debido a recálculos completos de indicadores en cada iteración del ciclo. Para reducir lag en dispositivos móviles al cambiar tickers, se debe refactorizar para pre-calcular series completas.
+- **Manejo Dinámico del Tamaño de Posición**: Posibilidad de sugerir apalancamiento basado en la fuerza del *Scoring Multicapa*.
 
-Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda el enfoque a corto plazo, la corrección intradiaria de los indicadores, y la estructura de los componentes principales.
+Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.
