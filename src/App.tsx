@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { Search } from 'lucide-react';
 import Chart from './components/Chart';
@@ -6,6 +6,8 @@ import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
 import { fetchKlines } from './services/api';
 import type { Kline } from './services/api';
+import { calculateStandardVoting } from './utils/indicators';
+import { getTrendFilter } from './utils/backtester';
 
 function App() {
   const [currentAsset, setCurrentAsset] = useState(() => {
@@ -77,6 +79,101 @@ function App() {
   useEffect(() => {
     localStorage.setItem('terminal_show_bb', showBB ? 'true' : 'false');
   }, [showBB]);
+
+  // ── Browser Notifications & Watchlist Background Scanner ─────────────────
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    return localStorage.getItem('terminal_notifications_enabled') === 'true';
+  });
+
+  const toggleNotifications = async () => {
+    if (!notificationsEnabled) {
+      if ('Notification' in window) {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          setNotificationsEnabled(true);
+          localStorage.setItem('terminal_notifications_enabled', 'true');
+          new Notification("🔔 Alertas de Watchlist Activas", {
+            body: `Recibirás alertas en segundo plano cuando cambien las señales en ${interval.toUpperCase()}.`,
+          });
+        } else {
+          alert('Permiso de notificación denegado. Habilítalo en los ajustes del navegador.');
+        }
+      } else {
+        alert('Este navegador no soporta notificaciones de escritorio.');
+      }
+    } else {
+      setNotificationsEnabled(false);
+      localStorage.setItem('terminal_notifications_enabled', 'false');
+    }
+  };
+
+  // Keep track of the last known signals for all scanned symbols (watchlist + active)
+  const lastSignalsRef = useRef<Record<string, string>>({});
+
+  // Reset signal cache on timeframe change to prevent false crossover notifications
+  useEffect(() => {
+    lastSignalsRef.current = {};
+  }, [interval]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkAllSignals = async () => {
+      // Check if notifications are actually enabled and authorized
+      const enabled = localStorage.getItem('terminal_notifications_enabled') === 'true';
+      if (!enabled) return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+      // Scan all symbols in watchlist + the currently viewed asset
+      const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset]));
+
+      for (const symbol of symbolsToScan) {
+        try {
+          const data = await fetchKlines(symbol, interval);
+          if (!isMounted) return;
+          if (data.length < 35) continue;
+
+          // Calculate Overall Signal (Standard Voting with Trend EMA 200 filter)
+          const voting = calculateStandardVoting(data);
+          const closes = data.map(k => k.close);
+          const trend = getTrendFilter(closes);
+
+          let overallSignal = voting.rawSignal;
+          if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
+            overallSignal = 'NEUTRAL';
+          } else if (trend === 'DOWN' && (overallSignal === 'BUY' || overallSignal === 'STRONG BUY')) {
+            overallSignal = 'NEUTRAL';
+          }
+
+          const prevSignal = lastSignalsRef.current[symbol];
+
+          // If we had a previous cached signal, and it transitioned to a tradeable state, notify!
+          if (prevSignal && prevSignal !== overallSignal && (overallSignal.includes('BUY') || overallSignal.includes('SELL'))) {
+            new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})`, {
+              body: `${symbol} cambió de ${prevSignal} a ${overallSignal}`,
+              tag: `${symbol}-${interval}`, // prevent notification stacking for the same asset
+            });
+          }
+
+          // Cache the latest signal
+          lastSignalsRef.current[symbol] = overallSignal;
+        } catch (e) {
+          console.error(`Error scanning background signal for ${symbol}`, e);
+        }
+      }
+    };
+
+    // Run once on load / when symbols/interval change to warm up cache without triggering alerts
+    checkAllSignals();
+
+    // Check signals every 60 seconds
+    const intervalId = setInterval(checkAllSignals, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [watchlistSymbols, currentAsset, interval]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = klines.length > 0 ? (klines.slice().reverse().find(k => k.volume > 0)?.volume || 0) : 0;
@@ -202,7 +299,15 @@ function App() {
         {/* Right Sidebar - Signals & News */}
         <aside className="sidebar-right">
           <div className="panel-header">AI SIGNAL & INDICATORS</div>
-          <SignalPanel symbol={currentAsset} closes={closes} volume={latestVolume} klines={klines} interval={interval} />
+          <SignalPanel 
+            symbol={currentAsset} 
+            closes={closes} 
+            volume={latestVolume} 
+            klines={klines} 
+            interval={interval} 
+            notificationsEnabled={notificationsEnabled}
+            toggleNotifications={toggleNotifications}
+          />
         </aside>
       </div>
     </div>

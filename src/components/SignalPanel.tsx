@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import { backtestStandard, backtestConfluencia, backtestScoring, getTrendFilter } from '../utils/backtester';
 import { fetchNews } from '../services/api';
@@ -12,45 +12,24 @@ interface SignalPanelProps {
   volume: number;
   klines: Kline[];
   interval: string;
+  notificationsEnabled: boolean;
+  toggleNotifications: () => void;
 }
 
-export default function SignalPanel({ symbol, closes, klines, interval }: SignalPanelProps) {
+export default function SignalPanel({ 
+  symbol, 
+  closes, 
+  klines, 
+  interval, 
+  notificationsEnabled, 
+  toggleNotifications 
+}: SignalPanelProps) {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loadingNews, setLoadingNews] = useState(false);
   
   // Custom Scoring Weights state
   const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
-
-  // Keep track of previous signal to trigger notifications only on transitions
-  const prevSignalStateRef = useRef<{ symbol: string; interval: string; signal: string } | null>(null);
-
-  // Notification setting status
-  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
-    return localStorage.getItem('terminal_notifications_enabled') === 'true';
-  });
-
-  const toggleNotifications = async () => {
-    if (!notificationsEnabled) {
-      if ('Notification' in window) {
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-          setNotificationsEnabled(true);
-          localStorage.setItem('terminal_notifications_enabled', 'true');
-          new Notification("🔔 Alertas Activadas", {
-            body: `Recibirás notificaciones de escritorio de señales de compra/venta para ${symbol}.`,
-          });
-        } else {
-          alert('Permiso de notificación denegado. Habilítalo en los ajustes del navegador.');
-        }
-      } else {
-        alert('Este navegador no soporta notificaciones de escritorio.');
-      }
-    } else {
-      setNotificationsEnabled(false);
-      localStorage.setItem('terminal_notifications_enabled', 'false');
-    }
-  };
 
   useEffect(() => {
     const loadNews = async () => {
@@ -98,30 +77,7 @@ export default function SignalPanel({ symbol, closes, klines, interval }: Signal
     overallColor = 'var(--accent-red)';
   }
 
-  // Trigger notifications on signal transitions for active asset/interval
-  useEffect(() => {
-    if (!closes || closes.length === 0 || overallSignal === 'NEUTRAL' || overallSignal === 'WAITING...') {
-      prevSignalStateRef.current = { symbol, interval, signal: overallSignal };
-      return;
-    }
 
-    const prev = prevSignalStateRef.current;
-
-    // Only notify if looking at the same asset and interval, and the signal has changed
-    if (prev && prev.symbol === symbol && prev.interval === interval && prev.signal !== overallSignal) {
-      if (notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
-        const title = `🚨 Nueva Señal en ${symbol} (${interval})`;
-        const body = `La estrategia Standard Voting indica: ${overallSignal}`;
-        new Notification(title, {
-          body,
-          tag: `${symbol}-${interval}`, // deduplicate identical notifications
-          requireInteraction: false
-        });
-      }
-    }
-
-    prevSignalStateRef.current = { symbol, interval, signal: overallSignal };
-  }, [overallSignal, symbol, interval, notificationsEnabled, closes]);
 
   let overallColorGlow = 'none';
   let overallBorder = 'var(--border-color)';
