@@ -15,6 +15,7 @@
   * **Criptomonedas:** Obtención de datos en tiempo real mediante la API pública de Binance (ej. `BTCUSDT`).
   * **Mercados Tradicionales/Stocks:** Integración con Yahoo Finance V8 API (ej. `TSLA`, `MSFT`).
 * **Feed de Noticias Relevantes:** Muestra hasta 3 noticias recientes curadas desde Yahoo Finance del activo seleccionado, permitiendo entender rápidamente los fundamentales que mueven el precio.
+* **Alertas de Escritorio en Segundo Plano (Watchlist):** Notificaciones nativas del navegador (vía Notifications API) que escanean automáticamente toda tu Watchlist (y el activo en pantalla) cada 60 segundos, alertándote de inmediato ante cambios de señales (BUY/SELL) en el timeframe seleccionado.
 
 ---
 

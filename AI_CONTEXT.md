@@ -36,6 +36,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
 - **Watchlist Paralelizada**: La carga de tickers en la Watchlist se realiza concurrentemente usando `Promise.all`.
 - **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger manipulando directamente el DOM mediante referencias (`useRef`), evitando re-renderizados lentos de React.
+- **Alertas en Segundo Plano (Watchlist)**: Se implementó un scanner en segundo plano (`checkAllSignals`) que verifica cada 60 segundos si algún activo de la Watchlist (o el activo actual) ha cambiado de señal en el timeframe activo, enviando notificaciones nativas del navegador sin redundancia ni spam al iniciar o cambiar de marcos temporales.
 - **Rediseño Visual Premium (Glassmorphism)**: Diseño inmersivo y futurista usando fuentes de Google (Outfit y Fira Code), paneles translúcidos, y UI reactiva (Profit Factor dynamically styles rating labels).
 - **Despliegue y Control de Versiones**: Pipeline CI/CD activo conectado a **Vercel** para despliegues a producción.
 
