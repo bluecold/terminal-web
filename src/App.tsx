@@ -156,9 +156,10 @@ function App() {
               { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
             ];
 
-            // Filter: need at least 3 resolved trades and PF > 1.0 (profitable)
+            // Quality gate: require minimum resolved trades per timeframe, and PF >= 1.3 (rated 'Bueno' or 'Excelente')
+            const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
             const viable = candidates
-              .filter(s => s.resolved >= 3 && s.pf > 1.0)
+              .filter(s => s.resolved >= minResolved && s.pf >= 1.3)
               .sort((a, b) => b.pf - a.pf);
 
             if (viable.length > 0) {
