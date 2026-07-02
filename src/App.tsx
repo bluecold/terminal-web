@@ -4,7 +4,7 @@ import { Search } from 'lucide-react';
 import Chart from './components/Chart';
 import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
-import { fetchKlines } from './services/api';
+import { fetchKlines, fetchEarningsDate } from './services/api';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring } from './utils/backtester';
@@ -58,6 +58,24 @@ function App() {
   const [klines, setKlines] = useState<Kline[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // ── Confluence Matrix & Earnings Events States ───────────────────────────
+  const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
+  const [earningsDate, setEarningsDate] = useState<number | null>(null);
+
+  const computeOverallSignal = (data: Kline[]) => {
+    if (data.length < 35) return 'WAITING...';
+    const voting = calculateStandardVoting(data);
+    const closes = data.map(k => k.close);
+    const trend = getTrendFilter(closes);
+    let signal = voting.rawSignal;
+    if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
+      signal = 'NEUTRAL';
+    } else if (trend === 'DOWN' && (signal === 'BUY' || signal === 'STRONG BUY')) {
+      signal = 'NEUTRAL';
+    }
+    return signal;
+  };
+
   useEffect(() => {
     let isMounted = true;
 
@@ -67,6 +85,10 @@ function App() {
       if (isMounted) {
         setKlines(data);
         setLoading(false);
+        if (data.length >= 35) {
+          const signal = computeOverallSignal(data);
+          setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
+        }
       }
     };
     loadData();
@@ -74,7 +96,13 @@ function App() {
     const pollInterval = setInterval(async () => {
       try {
         const data = await fetchKlines(currentAsset, interval);
-        if (isMounted) setKlines(data);
+        if (isMounted) {
+          setKlines(data);
+          if (data.length >= 35) {
+            const signal = computeOverallSignal(data);
+            setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
+          }
+        }
       } catch (e) {
         console.error('Error auto-updating chart data', e);
       }
@@ -85,6 +113,48 @@ function App() {
       clearInterval(pollInterval);
     };
   }, [currentAsset, interval]);
+
+  // Effect to load confluence signals and earnings date on asset change
+  useEffect(() => {
+    let isMounted = true;
+    
+    const loadExtraData = async () => {
+      setConfluenceSignals({ '5m': '...', '1h': '...', '1d': '...' });
+      setEarningsDate(null);
+
+      if (!currentAsset.endsWith('USDT') && !currentAsset.endsWith('BTC')) {
+        fetchEarningsDate(currentAsset).then(date => {
+          if (isMounted) setEarningsDate(date);
+        });
+      }
+
+      const timeframes = ['5m', '1h', '1d'];
+      const promises = timeframes.map(async (tf) => {
+        try {
+          const data = await fetchKlines(currentAsset, tf);
+          if (isMounted && data.length >= 35) {
+            const signal = computeOverallSignal(data);
+            setConfluenceSignals(prev => ({ ...prev, [tf]: signal }));
+          } else if (isMounted) {
+            setConfluenceSignals(prev => ({ ...prev, [tf]: 'SIN DATOS' }));
+          }
+        } catch (e) {
+          console.error(`Error loading confluence signal for ${tf}`, e);
+          if (isMounted) setConfluenceSignals(prev => ({ ...prev, [tf]: 'ERROR' }));
+        }
+      });
+
+      await Promise.all(promises);
+    };
+
+    loadExtraData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentAsset]);
+
+
 
   useEffect(() => {
     localStorage.setItem('terminal_watchlist', JSON.stringify(watchlistSymbols));
@@ -540,6 +610,8 @@ function App() {
             interval={interval} 
             notificationsEnabled={notificationsEnabled}
             toggleNotifications={toggleNotifications}
+            confluenceSignals={confluenceSignals}
+            earningsDate={earningsDate}
           />
         </aside>
       </div>

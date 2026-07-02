@@ -117,3 +117,18 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
     return [];
   }
 }
+
+export async function fetchEarningsDate(symbol: string): Promise<number | null> {
+  try {
+    if (symbol.endsWith('USDT') || symbol.endsWith('BTC')) {
+      return null; // Crypto doesn't have corporate earnings reports
+    }
+    const response = await fetch(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=calendarEvents`);
+    const data = await response.json();
+    const earningsTimestamp = data.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0]?.raw;
+    return earningsTimestamp || null;
+  } catch (error) {
+    console.error("Error fetching earnings date", error);
+    return null;
+  }
+}
