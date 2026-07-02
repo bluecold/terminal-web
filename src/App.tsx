@@ -111,7 +111,7 @@ function App() {
   const lastSignalsRef = useRef<Record<string, string>>({});
 
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, { strategy: string; timestamp: number }>>({});
+  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; timestamp: number }>>({});
 
   // Reset caches on timeframe change to prevent false crossover notifications
   useEffect(() => {
@@ -140,8 +140,9 @@ function App() {
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
           const cached = bestStrategyRef.current[symbol];
-          let bestStrategy = 'standard';
-          let strategyLabel = 'Standard';
+          let bestStrategy = 'none'; // 'none' = no viable strategy → suppress alerts
+          let strategyLabel = '';
+          let bestPF = 0;
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
             // Run backtests for all 3 strategies
@@ -155,7 +156,7 @@ function App() {
               { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
             ];
 
-            // Filter: need at least 3 resolved trades and PF > 1.0 (marginally profitable)
+            // Filter: need at least 3 resolved trades and PF > 1.0 (profitable)
             const viable = candidates
               .filter(s => s.resolved >= 3 && s.pf > 1.0)
               .sort((a, b) => b.pf - a.pf);
@@ -163,12 +164,22 @@ function App() {
             if (viable.length > 0) {
               bestStrategy = viable[0].key;
               strategyLabel = viable[0].label;
+              bestPF = viable[0].pf;
             }
 
-            bestStrategyRef.current[symbol] = { strategy: bestStrategy, timestamp: now };
+            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, timestamp: now };
           } else {
             bestStrategy = cached.strategy;
+            bestPF = cached.pf;
             strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : 'Standard';
+          }
+
+          // ── Quality gate: skip assets where no strategy is viable ────────
+          if (bestStrategy === 'none') {
+            // Still track the signal for cache warm-up, but don't notify
+            const voting = calculateStandardVoting(data);
+            lastSignalsRef.current[symbol] = voting.rawSignal;
+            continue;
           }
 
           // ── Calculate signal using the best strategy ─────────────────────
@@ -199,7 +210,7 @@ function App() {
 
           if (prevSignal && prevSignal !== overallSignal && (overallSignal.includes('BUY') || overallSignal.includes('SELL'))) {
             new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})`, {
-              body: `${overallSignal} · vía ${strategyLabel} (mejor PF)`,
+              body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
               tag: `${symbol}-${interval}`,
             });
           }
