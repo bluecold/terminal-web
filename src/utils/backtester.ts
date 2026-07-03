@@ -5,7 +5,6 @@ import {
   calculateRSISeries,
   calculateSupertrendSeries,
   calculateBollingerBandsSeries,
-  calculateATRSeries,
   calculateVWAPSeries,
   calculateMACDSeries,
   calculateStochRSISeries,
