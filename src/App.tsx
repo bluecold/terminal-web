@@ -62,12 +62,50 @@ function App() {
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
   const [earningsDate, setEarningsDate] = useState<number | null>(null);
 
-  const computeOverallSignal = (data: Kline[]) => {
+  const computeOverallSignal = (data: Kline[], tf: string) => {
     if (data.length < 35) return 'WAITING...';
-    const voting = calculateStandardVoting(data);
+
+    // Run backtests for all 3 strategies on this specific timeframe data
+    const btStd = backtestStandard(data, tf);
+    const btConf = backtestConfluencia(data, tf);
+    const btScore = backtestScoring(data, tf);
+
+    const candidates = [
+      { key: 'standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
+      { key: 'confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
+      { key: 'scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
+    ];
+
+    // Filter: prioritize strategies with at least 3 resolved trades to avoid statistical noise
+    const viable = candidates
+      .filter(s => s.resolved >= 3)
+      .sort((a, b) => b.pf - a.pf);
+
+    let bestStrategy = 'standard';
+    if (viable.length > 0) {
+      bestStrategy = viable[0].key;
+    } else {
+      // Fallback: sort by PF directly if none have >= 3 trades
+      const sortedAll = [...candidates].sort((a, b) => b.pf - a.pf);
+      bestStrategy = sortedAll[0].key;
+    }
+
+    // Calculate signal using the best strategy
+    let signal: string;
+    if (bestStrategy === 'confluencia') {
+      const result = calculateExperimentalSignal(data, tf);
+      signal = result.signal;
+    } else if (bestStrategy === 'scoring') {
+      const result = calculateScoringSignal(data, tf);
+      signal = result.signal;
+    } else {
+      const voting = calculateStandardVoting(data);
+      signal = voting.rawSignal;
+    }
+
+    // Apply EMA 200 trend filter
     const closes = data.map(k => k.close);
     const trend = getTrendFilter(closes);
-    let signal = voting.rawSignal;
     if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
       signal = 'NEUTRAL';
     } else if (trend === 'DOWN' && (signal === 'BUY' || signal === 'STRONG BUY')) {
@@ -86,7 +124,7 @@ function App() {
         setKlines(data);
         setLoading(false);
         if (data.length >= 35) {
-          const signal = computeOverallSignal(data);
+          const signal = computeOverallSignal(data, interval);
           setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
         }
       }
@@ -99,7 +137,7 @@ function App() {
         if (isMounted) {
           setKlines(data);
           if (data.length >= 35) {
-            const signal = computeOverallSignal(data);
+            const signal = computeOverallSignal(data, interval);
             setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
           }
         }
@@ -133,7 +171,7 @@ function App() {
         try {
           const data = await fetchKlines(currentAsset, tf);
           if (isMounted && data.length >= 35) {
-            const signal = computeOverallSignal(data);
+            const signal = computeOverallSignal(data, tf);
             setConfluenceSignals(prev => ({ ...prev, [tf]: signal }));
           } else if (isMounted) {
             setConfluenceSignals(prev => ({ ...prev, [tf]: 'SIN DATOS' }));
