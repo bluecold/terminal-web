@@ -13,10 +13,6 @@ import {
   isHammer,
   isEngulfing,
   DEFAULT_WEIGHTS,
-  calculateStandardVoting,
-  calculateExperimentalSignal,
-  calculateScoringSignal,
-  calculateVWAP,
   type ScoringWeights,
 } from './indicators';
 
@@ -622,7 +618,6 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
   const ema9 = calculateEMA(closes, 9);
   const ema20 = calculateEMA(closes, 20);
   const vwap = calculateVWAPSeries(klines, interval);
-  const atr = calculateATRSeries(klines, 14);
 
   const volSMA = new Array(length).fill(0);
   let sumVol = 0;
