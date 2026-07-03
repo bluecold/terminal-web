@@ -1,12 +1,21 @@
 import type { Kline } from '../services/api';
 import {
-  calculateExperimentalSignal,
-  calculateScoringSignal,
   calculateEMA,
   calculateATR,
-  calculateStandardVoting,
   calculateRSISeries,
   calculateSupertrendSeries,
+  calculateBollingerBandsSeries,
+  calculateATRSeries,
+  calculateVWAPSeries,
+  calculateMACDSeries,
+  calculateStochRSISeries,
+  calculateVolumeSignalSeries,
+  isHammer,
+  isEngulfing,
+  DEFAULT_WEIGHTS,
+  calculateStandardVoting,
+  calculateExperimentalSignal,
+  calculateScoringSignal,
   calculateVWAP,
   type ScoringWeights,
 } from './indicators';
@@ -181,169 +190,21 @@ function evaluateOutcome(
   return { result: 'timeout', pnlPct: rawPnl };
 }
 
-// ─── Standard Voting Signal (unified with SignalPanel) ─────────────────────
-
-function standardVotingSignal(klines: Kline[]): 'BUY' | 'SELL' | 'NEUTRAL' {
-  const closes = klines.map(k => k.close);
-  if (closes.length < 35) return 'NEUTRAL';
-
-  const { rawSignal } = calculateStandardVoting(klines);
-
-  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  if (rawSignal.includes('BUY'))  signal = 'BUY';
-  if (rawSignal.includes('SELL')) signal = 'SELL';
-
-  const trend = getTrendFilter(closes);
-  if (trend === 'UP' && signal === 'SELL') return 'NEUTRAL';
-  if (trend === 'DOWN' && signal === 'BUY') return 'NEUTRAL';
-
-  return signal;
-}
-
-// ─── Generic Backtester Runner ─────────────────────────────────────────────
-
-function runBacktestGeneric(
-  klines: Kline[],
-  interval: string,
-  signalFn: (subset: Kline[]) => 'BUY' | 'SELL' | 'NEUTRAL' | 'HOLD'
-): BacktestResult {
-  const params = getParams(interval);
-  const { evalWindow, forwardWindow, forwardLabel, targetMultiplier } = params;
-
-  // Adaptive threshold based on the asset's actual volatility
-  const threshold = getAdaptiveThreshold(klines, params.atrMultiplier, params.fallbackThreshold);
-  const targetThreshold = threshold * targetMultiplier;
-
-  // Minimum data
-  const minCandles = evalWindow + forwardWindow;
-  if (klines.length < minCandles) {
-    return {
-      totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-      winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
-      neutrals: 0,
-      label: `datos insuficientes (${klines.length} velas)`,
-      forwardLabel,
-      threshold,
-      targetThreshold,
-      targetMultiplier,
-      insufficient: true,
-    };
-  }
-
-  // Detect if this asset has session gaps (stocks)
-  const isSessionBased = hasSessionGaps(klines, interval);
-
-  const latestEvalIdx = klines.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(0, latestEvalIdx - evalWindow + 1);
-
-  let totalSignals = 0;
-  let wins         = 0;
-  let losses       = 0;
-  let timeouts     = 0;
-  let neutrals     = 0;
-  let totalGainPct = 0;
-  let totalLossPct = 0;
-
-  // Cooldown: skip candles within a previous signal's forward window
-  let nextAllowedIdx = 0;
-
-  for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
-    // Cooldown: skip if still within previous signal's evaluation window
-    if (i < nextAllowedIdx) {
-      neutrals++;
-      continue;
-    }
-
-    // Session boundary check: skip signals near end of session for stocks
-    if (isSessionBased && (interval === '5m' || interval === '1h')) {
-      if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
-        neutrals++;
-        continue;
-      }
-    }
-
-    const subset = klines.slice(0, i + 1);
-    const raw    = signalFn(subset);
-    const signal = (raw === 'HOLD') ? 'NEUTRAL' : raw as 'BUY' | 'SELL' | 'NEUTRAL';
-
-    if (signal === 'NEUTRAL') {
-      neutrals++;
-      continue;
-    }
-
-    totalSignals++;
-    const outcome = evaluateOutcome(klines, i, signal, forwardWindow, threshold, targetThreshold);
-
-    if (outcome.result === 'win') {
-      wins++;
-      totalGainPct += outcome.pnlPct;
-    } else if (outcome.result === 'loss') {
-      losses++;
-      totalLossPct += Math.abs(outcome.pnlPct);
-    } else {
-      timeouts++;
-    }
-
-    // Cooldown: don't evaluate another signal until this one's window expires
-    nextAllowedIdx = i + forwardWindow + 1;
-  }
-
-  // ── Calculate Metrics ──────────────────────────────────────────────
-  const resolved = wins + losses;
-  const winRate = resolved > 0 ? wins / resolved : 0;
-  const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
-
-  // Profit Factor = gross gains / gross losses
-  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? Infinity : 0);
-
-  // Expectancy = average P&L per resolved trade (%)
-  const avgWinPct = wins > 0 ? totalGainPct / wins : 0;
-  const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
-  const expectancy = resolved > 0
-    ? (winRate * avgWinPct) - ((1 - winRate) * avgLossPct)
-    : 0;
-
-  const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
-
-  return {
-    totalSignals,
-    wins,
-    losses,
-    timeouts,
-    winRate,
-    resolutionRate,
-    profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
-    expectancy: Number(expectancy.toFixed(3)),
-    neutrals,
-    label: `últimas ${actualWindow} velas`,
-    forwardLabel,
-    threshold,
-    targetThreshold,
-    targetMultiplier,
-    insufficient: false,
-  };
-}
-
-// ─── Public API ─────────────────────────────────────────────────────────────
+// ─── Public API (Optimized O(n)) ────────────────────────────────────────────
 
 export function backtestStandard(klines: Kline[], interval: string): BacktestResult {
-  return runBacktestGeneric(klines, interval, (subset) => {
-    return standardVotingSignal(subset);
-  });
+  const signals = computeStandardSignalsSeries(klines);
+  return runBacktestGenericOptimized(klines, interval, signals);
 }
 
 export function backtestConfluencia(klines: Kline[], interval: string): BacktestResult {
-  return runBacktestGeneric(klines, interval, (subset) => {
-    const result = calculateExperimentalSignal(subset, interval);
-    return result.signal;
-  });
+  const signals = computeConfluenciaSignalsSeries(klines, interval);
+  return runBacktestGenericOptimized(klines, interval, signals);
 }
 
 export function backtestScoring(klines: Kline[], interval: string, weights?: ScoringWeights): BacktestResult {
-  return runBacktestGeneric(klines, interval, (subset) => {
-    const result = calculateScoringSignal(subset, interval, weights);
-    return result.signal;
-  });
+  const signals = computeScoringSignalsSeries(klines, interval, weights);
+  return runBacktestGenericOptimized(klines, interval, signals);
 }
 
 export function backtestMultitemporal(
@@ -353,10 +214,10 @@ export function backtestMultitemporal(
   symbol?: string
 ): BacktestResult {
   const evalWindow = interval === '5m' ? 150 : interval === '1h' ? 100 : 60;
-  const forwardWindow = interval === '5m' ? 576 : interval === '1h' ? 72 : 15; // 48h, 3 days, 15 days
-  const cooldownPeriod = interval === '5m' ? 24 : interval === '1h' ? 12 : 5;   // 2h, 12h, 5 days
-  const macroDuration = interval === '5m' ? 3600 : 86400; // 1H or 1D candle duration in seconds
-  
+  const forwardWindow = interval === '5m' ? 576 : interval === '1h' ? 72 : 15;
+  const cooldownPeriod = interval === '5m' ? 24 : interval === '1h' ? 12 : 5;
+  const macroDuration = interval === '5m' ? 3600 : 86400;
+
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
@@ -388,9 +249,12 @@ export function backtestMultitemporal(
   const closes = klines.map(k => k.close);
   const rsiSeries = calculateRSISeries(closes, 14);
   const stSeries = calculateSupertrendSeries(klines, 10, 3);
-  
+
   const closesMacro = klinesMacro.map(k => k.close);
   const ema200MacroSeries = calculateEMA(closesMacro, 200);
+
+  // Optimized VWAP Series
+  const vwapSeries = calculateVWAPSeries(klines, interval, symbol);
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
@@ -400,7 +264,6 @@ export function backtestMultitemporal(
 
     const curr = klines[i];
 
-    // Find corresponding closed macro candle
     let macroEma200 = NaN;
     let lastClosedMacroClose = NaN;
     for (let h = klinesMacro.length - 1; h >= 0; h--) {
@@ -428,7 +291,7 @@ export function backtestMultitemporal(
     const isSupertrendFlipGreen = stDir === 'UP' && prevStDir === 'DOWN';
     const isSupertrendFlipRed = stDir === 'DOWN' && prevStDir === 'UP';
 
-    const vwap = calculateVWAP(klines.slice(0, i + 1), interval, symbol);
+    const vwap = vwapSeries[i];
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     if (isTrendUp && isSupertrendFlipGreen && curr.close > vwap && rsi >= 40 && rsi <= 70) {
@@ -552,3 +415,376 @@ export function backtestMultitemporal(
     insufficient: false
   };
 }
+
+// ==========================================
+// SUPPORT OPTIMIZED BACKTEST CORE
+// ==========================================
+
+function runBacktestGenericOptimized(
+  klines: Kline[],
+  interval: string,
+  signals: ('BUY' | 'SELL' | 'NEUTRAL')[]
+): BacktestResult {
+  const params = getParams(interval);
+  const { evalWindow, forwardWindow, forwardLabel, targetMultiplier } = params;
+
+  const threshold = getAdaptiveThreshold(klines, params.atrMultiplier, params.fallbackThreshold);
+  const targetThreshold = threshold * targetMultiplier;
+
+  const minCandles = evalWindow + forwardWindow;
+  if (klines.length < minCandles) {
+    return {
+      totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
+      winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+      neutrals: 0,
+      label: `datos insuficientes (${klines.length} velas)`,
+      forwardLabel,
+      threshold,
+      targetThreshold,
+      targetMultiplier,
+      insufficient: true,
+    };
+  }
+
+  const isSessionBased = hasSessionGaps(klines, interval);
+  const latestEvalIdx = klines.length - 1 - forwardWindow;
+  const oldestEvalIdx = Math.max(0, latestEvalIdx - evalWindow + 1);
+
+  let totalSignals = 0;
+  let wins         = 0;
+  let losses       = 0;
+  let timeouts     = 0;
+  let neutrals     = 0;
+  let totalGainPct = 0;
+  let totalLossPct = 0;
+
+  let nextAllowedIdx = 0;
+
+  for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
+    if (i < nextAllowedIdx) {
+      neutrals++;
+      continue;
+    }
+
+    if (isSessionBased && (interval === '5m' || interval === '1h')) {
+      if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
+        neutrals++;
+        continue;
+      }
+    }
+
+    const signal = signals[i] || 'NEUTRAL';
+
+    if (signal === 'NEUTRAL') {
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+    const outcome = evaluateOutcome(klines, i, signal, forwardWindow, threshold, targetThreshold);
+
+    if (outcome.result === 'win') {
+      wins++;
+      totalGainPct += outcome.pnlPct;
+    } else if (outcome.result === 'loss') {
+      losses++;
+      totalLossPct += Math.abs(outcome.pnlPct);
+    } else {
+      timeouts++;
+    }
+
+    nextAllowedIdx = i + forwardWindow + 1;
+  }
+
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? wins / resolved : 0;
+  const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
+  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? Infinity : 0);
+
+  const avgWinPct = wins > 0 ? totalGainPct / wins : 0;
+  const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
+  const expectancy = resolved > 0 ? (winRate * avgWinPct) - ((1 - winRate) * avgLossPct) : 0;
+
+  const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
+
+  return {
+    totalSignals,
+    wins,
+    losses,
+    timeouts,
+    winRate,
+    resolutionRate,
+    profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
+    expectancy: Number(expectancy.toFixed(3)),
+    neutrals,
+    label: `últimas ${actualWindow} velas`,
+    forwardLabel,
+    threshold,
+    targetThreshold,
+    targetMultiplier,
+    insufficient: false,
+  };
+}
+
+export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' | 'NEUTRAL')[] {
+  const length = klines.length;
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+  if (length < 35) return signals;
+
+  const closes = klines.map(k => k.close);
+
+  const rsiSeries = calculateRSISeries(closes);
+  const macdData = calculateMACDSeries(closes);
+  const bbSeries = calculateBollingerBandsSeries(klines);
+  const stSeries = calculateSupertrendSeries(klines);
+  const stochRsiData = calculateStochRSISeries(closes);
+  const volData = calculateVolumeSignalSeries(klines);
+  const ema200 = calculateEMA(closes, 200);
+
+  for (let i = 34; i < length; i++) {
+    const rsiVal = rsiSeries[i];
+    const rsiSig = rsiVal < 30 ? 'BUY' : rsiVal > 70 ? 'SELL' : 'NEUTRAL';
+
+    const macdSig = macdData.signals[i] || 'NEUTRAL';
+
+    let bbSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (i >= 19) {
+      const bbItem = bbSeries[i - 19];
+      if (bbItem) {
+        if (closes[i] < bbItem.lower) bbSig = 'BUY';
+        if (closes[i] > bbItem.upper) bbSig = 'SELL';
+      }
+    }
+
+    let stSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    const flipLookback = 3;
+    let recentFlip = false;
+    for (let offset = 0; offset < flipLookback; offset++) {
+      const idxCurr = i - offset;
+      const idxPrev = idxCurr - 1;
+      if (idxPrev < 9) break;
+      if (stSeries[idxCurr].direction !== stSeries[idxPrev].direction) {
+        recentFlip = true;
+        break;
+      }
+    }
+    if (recentFlip) {
+      stSig = stSeries[i].direction === 'UP' ? 'BUY' : 'SELL';
+    }
+
+    const stochRsiSig = stochRsiData.signals[i] || 'NEUTRAL';
+    const volSig = volData.signals[i] || 'NEUTRAL';
+
+    let buyVotes = 0;
+    let sellVotes = 0;
+
+    const sigs = [rsiSig, macdSig, bbSig, stSig, stochRsiSig, volSig];
+    sigs.forEach(s => {
+      if (s === 'BUY') buyVotes++;
+      if (s === 'SELL') sellVotes++;
+    });
+
+    let rawSignal = 'NEUTRAL';
+    if (buyVotes >= 3 && sellVotes === 0) {
+      rawSignal = 'STRONG BUY';
+    } else if (buyVotes > sellVotes) {
+      rawSignal = 'BUY';
+    } else if (sellVotes >= 3 && buyVotes === 0) {
+      rawSignal = 'STRONG SELL';
+    } else if (sellVotes > buyVotes) {
+      rawSignal = 'SELL';
+    }
+
+    let finalSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (rawSignal.includes('BUY')) finalSig = 'BUY';
+    if (rawSignal.includes('SELL')) finalSig = 'SELL';
+
+    const emaVal = ema200[i];
+    if (!isNaN(emaVal)) {
+      const trend = closes[i] > emaVal ? 'UP' : 'DOWN';
+      if (trend === 'UP' && finalSig === 'SELL') finalSig = 'NEUTRAL';
+      if (trend === 'DOWN' && finalSig === 'BUY') finalSig = 'NEUTRAL';
+    }
+
+    signals[i] = finalSig;
+  }
+
+  return signals;
+}
+
+export function computeConfluenciaSignalsSeries(klines: Kline[], interval: string = '1h'): ('BUY' | 'SELL' | 'NEUTRAL')[] {
+  const length = klines.length;
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+  if (length < 21) return signals;
+
+  const closes = klines.map(k => k.close);
+
+  const ema9 = calculateEMA(closes, 9);
+  const ema20 = calculateEMA(closes, 20);
+  const vwap = calculateVWAPSeries(klines, interval);
+  const atr = calculateATRSeries(klines, 14);
+
+  const volSMA = new Array(length).fill(0);
+  let sumVol = 0;
+  for (let i = 0; i < 20; i++) {
+    sumVol += klines[i].volume;
+  }
+  volSMA[19] = sumVol / 20;
+  for (let i = 20; i < length; i++) {
+    sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
+    volSMA[i] = sumVol / 20;
+  }
+
+  for (let i = 20; i < length; i++) {
+    const curr = klines[i];
+    const prev = klines[i - 1];
+
+    const hammer = isHammer(curr);
+    const engulf = isEngulfing(curr, prev);
+
+    const bullish_candle = hammer || engulf === 1;
+    const bearish_candle = engulf === -1;
+
+    const e9 = ema9[i];
+    const e20 = ema20[i];
+    const vw = vwap[i];
+    const vAvg = volSMA[i];
+
+    const is_buy = curr.close > vw && e9 > e20 && curr.volume > vAvg && bullish_candle;
+    const is_sell = curr.close < vw && e9 < e20 && curr.volume > vAvg && (bearish_candle || curr.close < e20);
+
+    let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (is_buy) signal = 'BUY';
+    else if (is_sell) signal = 'SELL';
+
+    signals[i] = signal;
+  }
+
+  return signals;
+}
+
+const SCORING_CONFIG: Record<string, {
+  emaFast: number;
+  emaSlow: number;
+  emaMajor: number | null;
+  rsiPeriod: number;
+  rsiOversold: number;
+  rsiOverbought: number;
+  bbPeriod: number;
+  useVwap: boolean;
+  useObv: boolean;
+}> = {
+  '5m': { emaFast: 9, emaSlow: 21, emaMajor: null,  rsiPeriod: 7,  rsiOversold: 35, rsiOverbought: 65, bbPeriod: 20, useVwap: true,  useObv: false },
+  '1h': { emaFast: 9, emaSlow: 21, emaMajor: 50,    rsiPeriod: 14, rsiOversold: 35, rsiOverbought: 65, bbPeriod: 20, useVwap: true,  useObv: false },
+  '1d': { emaFast: 9, emaSlow: 21, emaMajor: 50,    rsiPeriod: 14, rsiOversold: 30, rsiOverbought: 70, bbPeriod: 20, useVwap: false, useObv: true  },
+};
+
+export function computeScoringSignalsSeries(
+  klines: Kline[],
+  interval: string,
+  weights: ScoringWeights = DEFAULT_WEIGHTS
+): ('BUY' | 'SELL' | 'NEUTRAL')[] {
+  const length = klines.length;
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+  if (length < 60) return signals;
+
+  const cfg = SCORING_CONFIG[interval] ?? SCORING_CONFIG['1h'];
+  const closes = klines.map(k => k.close);
+
+  const emaFastArr = calculateEMA(closes, cfg.emaFast);
+  const emaSlowArr = calculateEMA(closes, cfg.emaSlow);
+  const emaMajorArr = cfg.emaMajor ? calculateEMA(closes, cfg.emaMajor) : new Array(length).fill(NaN);
+  const rsiSeries = calculateRSISeries(closes, cfg.rsiPeriod);
+  const bbSeries = calculateBollingerBandsSeries(klines, cfg.bbPeriod);
+  const vwapSeries = cfg.useVwap ? calculateVWAPSeries(klines, interval) : new Array(length).fill(0);
+
+  let obvArr: number[] = [];
+  let obvEMAArr: number[] = [];
+  if (cfg.useObv) {
+    obvArr = [0];
+    for (let i = 1; i < length; i++) {
+      if (closes[i] > closes[i - 1])      obvArr.push(obvArr[i - 1] + klines[i].volume);
+      else if (closes[i] < closes[i - 1]) obvArr.push(obvArr[i - 1] - klines[i].volume);
+      else                                obvArr.push(obvArr[i - 1]);
+    }
+    obvEMAArr = calculateEMA(obvArr, 10);
+  }
+
+  for (let i = 59; i < length; i++) {
+    const curr = klines[i];
+    const closeVal = closes[i];
+
+    const ef = emaFastArr[i];
+    const es = emaSlowArr[i];
+    const em = emaMajorArr[i];
+
+    let s1 = 0;
+    if (ef > es)      s1 += 1;
+    else if (ef < es) s1 -= 1;
+
+    if (cfg.emaMajor && !isNaN(em)) {
+      if (closeVal > em) s1 += 1;
+      else               s1 -= 1;
+    }
+
+    const rsi = rsiSeries[i];
+    let s2 = 0;
+    if      (rsi < cfg.rsiOversold)   s2 += 1;
+    else if (rsi > cfg.rsiOverbought) s2 -= 1;
+    else if (rsi > 50)                s2 += 1;
+    else                              s2 -= 1;
+
+    let s3 = 0;
+    const bbIdx = i - (cfg.bbPeriod - 1);
+    const bb = bbSeries[bbIdx];
+    if (bb) {
+      const bandWidth = bb.upper - bb.lower;
+      const pctB = bandWidth > 0 ? (closeVal - bb.lower) / bandWidth : 0.5;
+      if      (closeVal <= bb.lower) s3 += 1;
+      else if (closeVal >= bb.upper) s3 -= 1;
+      else if (pctB < 0.2)           s3 += 1;
+      else if (pctB > 0.8)           s3 -= 1;
+    }
+
+    let s4 = 0;
+    if (cfg.useVwap) {
+      const vwap = vwapSeries[i];
+      if (closeVal > vwap) s4 += 1;
+      else                 s4 -= 1;
+    } else if (cfg.useObv) {
+      const obvLast = obvArr[i];
+      const obvEMA = obvEMAArr[i];
+      if (obvLast > obvEMA) s4 += 1;
+      else                  s4 -= 1;
+    }
+
+    const body = curr.close - curr.open;
+    const range = curr.high - curr.low;
+    const pctBody = range > 0 ? Math.abs(body) / range : 0;
+    let s5 = 0;
+    if      (body > 0 && pctBody > 0.5) s5 += 1;
+    else if (body > 0)                  s5 += 1;
+    else if (body < 0 && pctBody > 0.5) s5 -= 1;
+    else if (body < 0)                  s5 -= 1;
+
+    const w1 = s1 * weights.trend;
+    const w2 = s2 * weights.rsi;
+    const w3 = s3 * weights.bollinger;
+    const w4 = s4 * weights.volume;
+    const w5 = s5 * weights.candle;
+    const totalScore = w1 + w2 + w3 + w4 + w5;
+
+    const maxTrend = cfg.emaMajor ? 2 : 1;
+    const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle;
+    const threshold = maxPossible * 0.5;
+
+    let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if      (totalScore >=  threshold) signal = 'BUY';
+    else if (totalScore <= -threshold) signal = 'SELL';
+
+    signals[i] = signal;
+  }
+
+  return signals;
+}
+

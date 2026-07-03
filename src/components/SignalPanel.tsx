@@ -1,6 +1,12 @@
 import { useMemo, useState, useEffect } from 'react';
 import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateMultitemporalSignal, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
-import { backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, getTrendFilter } from '../utils/backtester';
+import {
+  backtestStandard,
+  backtestConfluencia,
+  backtestScoring,
+  backtestMultitemporal,
+  getTrendFilter
+} from '../utils/backtester';
 import { fetchNews } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';

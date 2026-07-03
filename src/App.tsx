@@ -35,6 +35,12 @@ function App() {
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
+  const [searchVal, setSearchVal] = useState(currentAsset);
+  
+  useEffect(() => {
+    setSearchVal(currentAsset);
+  }, [currentAsset]);
+
   const [interval, setTimeInterval] = useState(() => {
     return localStorage.getItem('terminal_time_interval') || '1h';
   });
@@ -128,54 +134,12 @@ function App() {
     return signal;
   };
 
-  // Effect to load active chart data & poll
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadData = async () => {
-      setLoading(true);
-      const data = await fetchKlines(currentAsset, interval);
-      if (isMounted) {
-        setKlines(data);
-        setAllKlines(prev => ({ ...prev, [interval]: data }));
-        setLoading(false);
-        if (data.length >= 35) {
-          const closedData = data.slice(0, -1);
-          const signal = computeOverallSignal(closedData, interval, allKlines);
-          setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
-        }
-      }
-    };
-    loadData();
-
-    const pollInterval = setInterval(async () => {
-      try {
-        const data = await fetchKlines(currentAsset, interval);
-        if (isMounted) {
-          setKlines(data);
-          setAllKlines(prev => ({ ...prev, [interval]: data }));
-          if (data.length >= 35) {
-            const closedData = data.slice(0, -1);
-            const signal = computeOverallSignal(closedData, interval, allKlines);
-            setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
-          }
-        }
-      } catch (e) {
-        console.error('Error auto-updating chart data', e);
-      }
-    }, 60000);
-
-    return () => {
-      isMounted = false;
-      clearInterval(pollInterval);
-    };
-  }, [currentAsset, interval]);
-
-  // Effect to load confluence signals and earnings date on asset change
+  // 1. Effect to load all timeframe data and earnings date on asset change
   useEffect(() => {
     let isMounted = true;
     
     const loadExtraData = async () => {
+      setLoading(true);
       setConfluenceSignals({ '5m': '...', '1h': '...', '1d': '...' });
       setEarningsDate(null);
       setAllKlines({ '5m': [], '1h': [], '1d': [] });
@@ -205,6 +169,7 @@ function App() {
       if (fetchedKlines[interval]) {
         setKlines(fetchedKlines[interval]);
       }
+      setLoading(false);
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -224,6 +189,41 @@ function App() {
       isMounted = false;
     };
   }, [currentAsset]);
+
+  // 2. Effect to change active timeframe from memory (no network request!)
+  useEffect(() => {
+    if (allKlines[interval] && allKlines[interval].length > 0) {
+      setKlines(allKlines[interval]);
+    }
+  }, [interval, allKlines]);
+
+  // 3. Effect for real-time polling updates only on the active asset + interval
+  useEffect(() => {
+    let isMounted = true;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const data = await fetchKlines(currentAsset, interval);
+        if (isMounted) {
+          setKlines(data);
+          setAllKlines(prev => ({ ...prev, [interval]: data }));
+          if (data.length >= 35) {
+            const closedData = data.slice(0, -1);
+            const updatedAllKlines = { ...allKlines, [interval]: data };
+            const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
+            setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
+          }
+        }
+      } catch (e) {
+        console.error('Error auto-updating active chart data', e);
+      }
+    }, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [currentAsset, interval, allKlines]);
 
 
 
@@ -457,8 +457,16 @@ function App() {
               type="text" 
               className="asset-search" 
               placeholder="Search ticker..." 
-              value={currentAsset}
-              onChange={(e) => setCurrentAsset(e.target.value.toUpperCase())}
+              value={searchVal}
+              onChange={(e) => setSearchVal(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  setCurrentAsset(searchVal);
+                }
+              }}
+              onBlur={() => {
+                setCurrentAsset(searchVal);
+              }}
               style={{ paddingLeft: '28px' }}
             />
             <button 

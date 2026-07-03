@@ -34,6 +34,9 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas en 5m).
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
+- **Motor de Backtesting O(n)**: Refactorizado de $O(n^2)$ a $O(n)$ calculando las series de indicadores técnicos (RSI, MACD, Bollinger Bands, ATR, VWAP, Stochastic RSI, Volumen) de una sola vez al cargar las velas y luego indexándolas en tiempo constante $O(1)$ en el loop del backtester.
+- **Unificación de Cargas y Timeframes**: Optimización del ciclo de vida en React (`App.tsx`). Al cambiar de activo, descarga todos los timeframes (5m, 1h, 1d) en paralelo una sola vez. Al cambiar de timeframe, la UI lee instantáneamente de la memoria (`allKlines[interval]`) con un coste de **0 ms**, eliminando llamadas redundantes al servidor y recálculos innecesarios. El scanner/polling en tiempo real solo actualiza el timeframe activo.
+- **Buscador de Ticker con Confirmación**: Cambiamos el input de búsqueda para que use un estado local y solo ejecute la cascada de fetches y análisis al presionar **Enter** o disparar el evento **onBlur**, evitando recargar la UI letra por letra.
 - **Confirmación de Vela Cerrada**: Las señales de la UI y del scanner en segundo plano se calculan sobre la última vela completamente cerrada (`length - 2`) para evitar el parpadeo y repintado de indicadores.
 - **Watchlist Paralelizada**: La carga de tickers en la Watchlist se realiza concurrentemente usando `Promise.all`.
 - **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger manipulando directamente el DOM mediante referencias (`useRef`), evitando re-renderizados lentos de React.
@@ -42,9 +45,10 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Calculadora de Gestión de Riesgo y Posición**: Sincronizada con el Stop Loss y Take Profit dinámicos del Filtro Maestro (Supertrend/VWAP) cuando la estrategia está activa.
 - **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela.
 - **Catalizadores de Volatilidad (Calendario)**: Sistema de alerta que consulta online reportes de ganancias y eventos macro clave (IPC, FOMC) de 2026, advirtiendo del peligro en ventanas menores a 48 horas.
-- **Despliegue y Control de Versiones**: Pipeline CI/CD activo conectado a **Vercel** para despliegues a producción.
 
 ## Cuestiones Pendientes y Futuras Mejoras
-- **Performance O(n) en Backtesting**: Actualmente el backtester es O(n²) debido a recálculos completos de indicadores en cada iteración del ciclo. Para reducir lag en dispositivos móviles al cambiar tickers, se debe refactorizar para pre-calcular series completas.
+- **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
+- **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
+
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.

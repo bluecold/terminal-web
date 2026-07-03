@@ -77,7 +77,7 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
 
 ## 📊 Motor de Backtesting (Simulación Histórica)
 
-FinceptTerminal cuenta con un motor de backtesting O(n²) integrado directamente en el frontend que permite evaluar la rentabilidad histórica de las estrategias sin necesidad de un backend pesado:
+FinceptTerminal cuenta con un motor de backtesting optimizado a $O(n)$ integrado directamente en el frontend, lo que permite evaluar la rentabilidad histórica de las estrategias casi instantáneamente sin necesidad de un backend pesado:
 
 - **Umbrales Adaptativos (ATR):** El `Stop Loss` y `Take Profit` se calculan dinámicamente según la volatilidad real del activo (ATR), permitiendo comparar de forma justa criptomonedas (alta volatilidad) con acciones (baja volatilidad).
 - **Manejo de Sesiones (Gaps):** Detección automática de huecos de mercado para acciones de EEUU. Las señales intradiarias que cruzarían un gap overnight son descartadas para simular una operativa realista.
@@ -88,8 +88,8 @@ FinceptTerminal cuenta con un motor de backtesting O(n²) integrado directamente
 
 ## 📈 Tareas Pendientes / Mejoras Futuras
 
-- [ ] **Performance O(n) en Backtesting:** Refactorizar el motor de simulación para pre-calcular series completas en lugar de re-evaluar iterativamente, reduciendo el lag al cambiar de activo en dispositivos móviles.
 - [ ] **Alertas Push/Webhooks:** Notificaciones proactivas cuando el *Scoring Multicapa* detecte oportunidades con alta probabilidad (90%+).
+- [ ] **Backtesting en la Nube / Historial Extendido:** Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 
 ---
 

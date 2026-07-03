@@ -1075,3 +1075,299 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
 
   return { indicators, buyVotes, sellVotes, rawSignal };
 }
+
+// ==========================================
+// OPTIMIZED SERIES-BASED INDICATORS
+// ==========================================
+
+export function calculateATRSeries(klines: Kline[], period: number = 14): number[] {
+  const length = klines.length;
+  const atrSeries: number[] = new Array(length).fill(0);
+  if (length < period + 1) return atrSeries;
+
+  const trueRanges: number[] = [0]; // Index 0 has TR=0 or high-low. Let's align with calculateATR
+  for (let i = 1; i < length; i++) {
+    const high = klines[i].high;
+    const low = klines[i].low;
+    const prevClose = klines[i - 1].close;
+
+    const tr1 = high - low;
+    const tr2 = Math.abs(high - prevClose);
+    const tr3 = Math.abs(low - prevClose);
+    trueRanges.push(Math.max(tr1, tr2, tr3));
+  }
+
+  // Wilder's Smoothing (RMA)
+  let atr = trueRanges.slice(1, period + 1).reduce((a, b) => a + b, 0) / period;
+  atrSeries[period] = atr;
+
+  for (let i = period + 1; i < length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+    atrSeries[i] = atr;
+  }
+
+  // Fill initial values with the first ATR value to avoid NaN/0 problems in calculations
+  for (let i = 0; i < period; i++) {
+    atrSeries[i] = atrSeries[period];
+  }
+
+  return atrSeries;
+}
+
+export function calculateVWAPSeries(klines: Kline[], interval: string = '1h', symbol?: string): number[] {
+  const length = klines.length;
+  const vwapSeries: number[] = new Array(length).fill(0);
+  if (!klines || length === 0) return vwapSeries;
+
+  let cumVol = 0;
+  let cumVolPrice = 0;
+  let prevSessionId = '';
+
+  for (let i = 0; i < length; i++) {
+    const k = klines[i];
+    const date = new Date(k.time * 1000);
+    let sessionId = '';
+
+    if (interval === '5m' || interval === '1h') {
+      const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+      if (isCrypto) {
+        sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+      } else {
+        try {
+          const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          });
+          sessionId = formatter.format(date);
+        } catch (e) {
+          sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+        }
+      }
+    } else if (interval === '1d') {
+      const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+      const dayNum = d.getUTCDay() || 7;
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+      sessionId = `${d.getUTCFullYear()}-W${weekNo}`;
+    } else {
+      sessionId = 'all';
+    }
+
+    if (sessionId !== prevSessionId && prevSessionId !== '') {
+      cumVol = 0;
+      cumVolPrice = 0;
+    }
+    prevSessionId = sessionId;
+
+    const v = k.volume;
+    const p = (k.high + k.low + k.close) / 3;
+    cumVol += v;
+    cumVolPrice += p * v;
+
+    vwapSeries[i] = cumVol > 0 ? cumVolPrice / cumVol : k.close;
+  }
+
+  return vwapSeries;
+}
+
+export interface MACDSeriesData {
+  macd: number[];
+  signal: number[];
+  histogram: number[];
+  signals: ('BUY' | 'SELL' | 'NEUTRAL')[];
+}
+
+export function calculateMACDSeries(data: number[]): MACDSeriesData {
+  const length = data.length;
+  const macd: number[] = new Array(length).fill(NaN);
+  const signal: number[] = new Array(length).fill(NaN);
+  const histogram: number[] = new Array(length).fill(NaN);
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+
+  if (!data || length < 35) {
+    return { macd, signal, histogram, signals };
+  }
+
+  const ema12 = calculateEMA(data, 12);
+  const ema26 = calculateEMA(data, 26);
+
+  for (let i = 0; i < length; i++) {
+    if (!isNaN(ema12[i]) && !isNaN(ema26[i])) {
+      macd[i] = ema12[i] - ema26[i];
+    }
+  }
+
+  // Get index where valid macd starts (first index without NaN is 25 for ema26)
+  const firstValidMacdIdx = macd.findIndex(v => !isNaN(v));
+  if (firstValidMacdIdx === -1) {
+    return { macd, signal, histogram, signals };
+  }
+
+  const validMacd = macd.slice(firstValidMacdIdx);
+  const validSignal = calculateEMA(validMacd, 9);
+
+  // Align validSignal back to main arrays
+  for (let i = 0; i < validSignal.length; i++) {
+    const origIdx = firstValidMacdIdx + i;
+    if (!isNaN(validSignal[i])) {
+      signal[origIdx] = validSignal[i];
+      histogram[origIdx] = macd[origIdx] - signal[origIdx];
+    }
+  }
+
+  // Calculate crossovers for each index
+  for (let i = firstValidMacdIdx + 8; i < length; i++) {
+    let sig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    
+    // Look back up to 3 candles (offset 0, 1, 2)
+    for (let offset = 0; offset < 3; offset++) {
+      const idxCurr = i - offset;
+      const idxPrev = idxCurr - 1;
+      if (idxPrev < 0) break;
+
+      const histCurr = histogram[idxCurr];
+      const histPrev = histogram[idxPrev];
+
+      if (isNaN(histCurr) || isNaN(histPrev)) continue;
+
+      if (histPrev <= 0 && histCurr > 0) {
+        sig = 'BUY';
+        break;
+      }
+      if (histPrev >= 0 && histCurr < 0) {
+        sig = 'SELL';
+        break;
+      }
+    }
+    signals[i] = sig;
+  }
+
+  return { macd, signal, histogram, signals };
+}
+
+export interface StochRSISeriesResult {
+  k: number[];
+  d: number[];
+  signals: ('BUY' | 'SELL' | 'NEUTRAL')[];
+}
+
+export function calculateStochRSISeries(
+  closes: number[],
+  rsiPeriod: number = 14,
+  stochPeriod: number = 14,
+  kPeriod: number = 3,
+  dPeriod: number = 3
+): StochRSISeriesResult {
+  const length = closes.length;
+  const kSeries: number[] = new Array(length).fill(NaN);
+  const dSeries: number[] = new Array(length).fill(NaN);
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+
+  const minRequired = rsiPeriod + stochPeriod + Math.max(kPeriod, dPeriod);
+  if (!closes || length < minRequired) {
+    return { k: kSeries, d: dSeries, signals };
+  }
+
+  const rsiSeries = calculateRSISeries(closes, rsiPeriod);
+
+  const stochRsiRaw: number[] = new Array(length).fill(NaN);
+  for (let i = rsiPeriod + stochPeriod - 1; i < length; i++) {
+    const window = rsiSeries.slice(i - stochPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length < stochPeriod) continue;
+
+    const minRsi = Math.min(...validWindow);
+    const maxRsi = Math.max(...validWindow);
+    const currentRsi = rsiSeries[i];
+
+    if (maxRsi === minRsi) {
+      stochRsiRaw[i] = 50;
+    } else {
+      stochRsiRaw[i] = ((currentRsi - minRsi) / (maxRsi - minRsi)) * 100;
+    }
+  }
+
+  for (let i = 0; i < length; i++) {
+    if (i < rsiPeriod + stochPeriod + kPeriod - 2) continue;
+    const window = stochRsiRaw.slice(i - kPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length === kPeriod) {
+      kSeries[i] = validWindow.reduce((a, b) => a + b, 0) / kPeriod;
+    }
+  }
+
+  for (let i = 0; i < length; i++) {
+    if (i < rsiPeriod + stochPeriod + kPeriod + dPeriod - 3) continue;
+    const window = kSeries.slice(i - dPeriod + 1, i + 1);
+    const validWindow = window.filter(v => !isNaN(v));
+    if (validWindow.length === dPeriod) {
+      dSeries[i] = validWindow.reduce((a, b) => a + b, 0) / dPeriod;
+    }
+  }
+
+  // Generate signals for each index
+  for (let i = rsiPeriod + stochPeriod + kPeriod + dPeriod - 2; i < length; i++) {
+    const prevK = kSeries[i - 1];
+    const prevD = dSeries[i - 1];
+    const currK = kSeries[i];
+    const currD = dSeries[i];
+
+    if (isNaN(prevK) || isNaN(prevD) || isNaN(currK) || isNaN(currD)) continue;
+
+    let sig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (currK < 20 && prevK <= prevD && currK > currD) {
+      sig = 'BUY';
+    } else if (currK > 80 && prevK >= prevD && currK < currD) {
+      sig = 'SELL';
+    }
+    signals[i] = sig;
+  }
+
+  return { k: kSeries, d: dSeries, signals };
+}
+
+export function calculateVolumeSignalSeries(klines: Kline[]): { values: string[], signals: ('BUY' | 'SELL' | 'NEUTRAL')[] } {
+  const length = klines.length;
+  const values: string[] = new Array(length).fill('—');
+  const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
+
+  if (!klines || length < 21) {
+    return { values, signals };
+  }
+
+  // Precompute simple moving average of volume
+  let sumVol = 0;
+  for (let i = 0; i < 20; i++) {
+    sumVol += klines[i].volume;
+  }
+
+  for (let i = 20; i < length; i++) {
+    const avgVol = sumVol / 20;
+    const currentVol = klines[i].volume;
+    const ratio = avgVol > 0 ? currentVol / avgVol : 0;
+
+    const formatted = currentVol > 1_000_000
+      ? (currentVol / 1_000_000).toFixed(1) + 'M'
+      : currentVol > 1_000
+        ? (currentVol / 1_000).toFixed(1) + 'K'
+        : currentVol.toFixed(0);
+
+    values[i] = `${formatted} (${ratio.toFixed(1)}×)`;
+    signals[i] = ratio >= 1.5 ? 'BUY' : 'NEUTRAL';
+
+    // Slide window for next iteration: subtract oldest volume (i-19) and add current volume (i)
+    // Actually, avgVol uses klines.slice(i-21, i-1) which means indices i-20 to i-1.
+    // So the window is length 20, ending at i-1.
+    // Let's verify sumVol tracking:
+    // When i = 20, sumVol is sum of index 0 to 19. That is correct!
+    // Next, for i = 21, the sumVol should be sum of index 1 to 20.
+    // So we subtract index i-20 (which is 20-20 = 0) and add index i-1 (which is 20).
+    sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
+  }
+
+  return { values, signals };
+}
+
