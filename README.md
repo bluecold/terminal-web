@@ -25,16 +25,17 @@
 
 ## 🧠 Modelos de Señales Integrados
 
-La aplicación cuenta con 3 agrupaciones principales que analizan los datos en tiempo real:
+La aplicación cuenta con 4 agrupaciones principales que analizan los datos en tiempo real:
 
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa:
    - **Tendencia:** Posición frente a las EMA y confirmación de la tendencia macro.
    - **RSI:** Análisis de sobrecompra/sobreventa usando suavizado (RMA/Wilder's Smoothing).
-   - **Bollinger (%B):** Análisis de la posición del precio dentro de las bandas (posibles rebotes o rupturas).
+   - **Bollinger (%B):** Análisis de la posición del precio dentro de las bandas.
    - **Volumen:** Presión compradora/vendedora usando VWAP en temporalidades cortas (5m, 1h) y OBV en gráficas diarias.
    - **Vela (Price Action):** Fuerza y confirmación del cuerpo de las velas japonesas.
-3. **Standard Voting:** Agrupa diversas confirmaciones e integra fuertemente la **EMA 200** como filtro principal para bloquear operaciones en contra de la tendencia dominante.
+3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal para bloquear operaciones en contra de la tendencia dominante.
+4. **Filtro Maestro (Multitemporal):** Estrategia institucional que alinea la tendencia macro (EMA 200 en 1H) con gatillos en la temporalidad de entrada (Supertrend en 5m, cruce de VWAP y RSI entre 40-70 para compra y 30-60 para venta). Todas las evaluaciones se realizan sobre vela cerrada para evitar parpadeos.
 
 ---
 

@@ -5,6 +5,9 @@ import {
   calculateEMA,
   calculateATR,
   calculateStandardVoting,
+  calculateRSISeries,
+  calculateSupertrendSeries,
+  calculateVWAP,
   type ScoringWeights,
 } from './indicators';
 
@@ -341,4 +344,211 @@ export function backtestScoring(klines: Kline[], interval: string, weights?: Sco
     const result = calculateScoringSignal(subset, interval, weights);
     return result.signal;
   });
+}
+
+export function backtestMultitemporal(
+  klines: Kline[],
+  klinesMacro: Kline[],
+  interval: string,
+  symbol?: string
+): BacktestResult {
+  const evalWindow = interval === '5m' ? 150 : interval === '1h' ? 100 : 60;
+  const forwardWindow = interval === '5m' ? 576 : interval === '1h' ? 72 : 15; // 48h, 3 days, 15 days
+  const cooldownPeriod = interval === '5m' ? 24 : interval === '1h' ? 12 : 5;   // 2h, 12h, 5 days
+  const macroDuration = interval === '5m' ? 3600 : 86400; // 1H or 1D candle duration in seconds
+  
+  const fallbackResult: BacktestResult = {
+    totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
+    winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+    neutrals: 0,
+    label: `datos insuficientes`,
+    forwardLabel: interval === '5m' ? '48 hs max' : interval === '1h' ? '3 días max' : '15 días max',
+    threshold: 0,
+    targetThreshold: 0,
+    targetMultiplier: 1.5,
+    insufficient: true
+  };
+
+  if (!klines || klines.length < evalWindow + 20) return fallbackResult;
+  if (!klinesMacro || klinesMacro.length < 200) return fallbackResult;
+
+  const latestEvalIdx = klines.length - 1;
+  const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
+
+  let totalSignals = 0;
+  let wins = 0;
+  let losses = 0;
+  let timeouts = 0;
+  let neutrals = 0;
+  let totalGainPct = 0;
+  let totalLossPct = 0;
+
+  let nextAllowedIdx = 0;
+
+  const closes = klines.map(k => k.close);
+  const rsiSeries = calculateRSISeries(closes, 14);
+  const stSeries = calculateSupertrendSeries(klines, 10, 3);
+  
+  const closesMacro = klinesMacro.map(k => k.close);
+  const ema200MacroSeries = calculateEMA(closesMacro, 200);
+
+  for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
+    if (i < nextAllowedIdx) {
+      neutrals++;
+      continue;
+    }
+
+    const curr = klines[i];
+
+    // Find corresponding closed macro candle
+    let macroEma200 = NaN;
+    let lastClosedMacroClose = NaN;
+    for (let h = klinesMacro.length - 1; h >= 0; h--) {
+      const endTime = klinesMacro[h].time + macroDuration;
+      if (endTime <= curr.time) {
+        macroEma200 = ema200MacroSeries[h];
+        lastClosedMacroClose = klinesMacro[h].close;
+        break;
+      }
+    }
+
+    if (isNaN(macroEma200) || isNaN(lastClosedMacroClose)) {
+      neutrals++;
+      continue;
+    }
+
+    const isTrendUp = lastClosedMacroClose > macroEma200;
+    const isTrendDown = lastClosedMacroClose < macroEma200;
+
+    const rsi = rsiSeries[i];
+    const stVal = stSeries[i].value;
+    const stDir = stSeries[i].direction;
+    const prevStDir = stSeries[i - 1].direction;
+
+    const isSupertrendFlipGreen = stDir === 'UP' && prevStDir === 'DOWN';
+    const isSupertrendFlipRed = stDir === 'DOWN' && prevStDir === 'UP';
+
+    const vwap = calculateVWAP(klines.slice(0, i + 1), interval, symbol);
+
+    let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (isTrendUp && isSupertrendFlipGreen && curr.close > vwap && rsi >= 40 && rsi <= 70) {
+      signal = 'BUY';
+    } else if (isTrendDown && isSupertrendFlipRed && curr.close < vwap && rsi >= 30 && rsi <= 60) {
+      signal = 'SELL';
+    }
+
+    if (signal === 'NEUTRAL') {
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+
+    const entry = curr.close;
+    let stopLoss = signal === 'BUY' ? Math.max(stVal, vwap) : Math.min(stVal, vwap);
+    const minStopDist = entry * 0.002;
+    if (signal === 'BUY') {
+      if (entry - stopLoss < minStopDist) {
+        stopLoss = entry - minStopDist;
+      }
+    } else {
+      if (stopLoss - entry < minStopDist) {
+        stopLoss = entry + minStopDist;
+      }
+    }
+
+    let tradeOutcome: 'win' | 'loss' | 'timeout' = 'timeout';
+    let exitPrice = entry;
+    let exitIdx = i;
+
+    for (let f = i + 1; f <= i + forwardWindow && f < klines.length; f++) {
+      const k = klines[f];
+      const rsiF = rsiSeries[f];
+      const stDirF = stSeries[f].direction;
+
+      if (signal === 'BUY') {
+        if (k.low <= stopLoss) {
+          tradeOutcome = 'loss';
+          exitPrice = stopLoss;
+          exitIdx = f;
+          break;
+        }
+        if (stDirF === 'DOWN' || rsiF >= 75) {
+          tradeOutcome = 'win';
+          exitPrice = k.close;
+          exitIdx = f;
+          break;
+        }
+      } else {
+        if (k.high >= stopLoss) {
+          tradeOutcome = 'loss';
+          exitPrice = stopLoss;
+          exitIdx = f;
+          break;
+        }
+        if (stDirF === 'UP' || rsiF <= 25) {
+          tradeOutcome = 'win';
+          exitPrice = k.close;
+          exitIdx = f;
+          break;
+        }
+      }
+    }
+
+    if (tradeOutcome === 'timeout') {
+      const lastIdx = Math.min(i + forwardWindow, klines.length - 1);
+      exitPrice = klines[lastIdx].close;
+      exitIdx = lastIdx;
+    }
+
+    const pnlPct = signal === 'BUY'
+      ? (exitPrice - entry) / entry * 100
+      : (entry - exitPrice) / entry * 100;
+
+    if (tradeOutcome === 'win') {
+      wins++;
+      totalGainPct += pnlPct;
+    } else if (tradeOutcome === 'loss') {
+      losses++;
+      totalLossPct += Math.abs(pnlPct);
+    } else {
+      timeouts++;
+      if (pnlPct > 0) {
+        totalGainPct += pnlPct;
+      } else {
+        totalLossPct += Math.abs(pnlPct);
+      }
+    }
+
+    nextAllowedIdx = exitIdx + cooldownPeriod;
+  }
+
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? wins / resolved : 0;
+  const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
+  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? 99.9 : 0);
+
+  const avgWinPct = wins > 0 ? totalGainPct / wins : 0;
+  const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
+  const expectancy = resolved > 0 ? (winRate * avgWinPct) - ((1 - winRate) * avgLossPct) : 0;
+
+  const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
+
+  return {
+    totalSignals,
+    wins,
+    losses,
+    timeouts,
+    winRate,
+    resolutionRate,
+    profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
+    expectancy: Number(expectancy.toFixed(3)),
+    neutrals,
+    label: `últimas ${actualWindow} velas (${interval})`,
+    forwardLabel: interval === '5m' ? '48 hs max' : interval === '1h' ? '3 días max' : '15 días max',
+    threshold: 0,
+    targetThreshold: 0,
+    targetMultiplier: 1.5,
+    insufficient: false
+  };
 }

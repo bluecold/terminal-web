@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
-import { backtestStandard, backtestConfluencia, backtestScoring, getTrendFilter } from '../utils/backtester';
+import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateMultitemporalSignal, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import { backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, getTrendFilter } from '../utils/backtester';
 import { fetchNews } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
@@ -16,6 +16,7 @@ interface SignalPanelProps {
   toggleNotifications: () => void;
   confluenceSignals: Record<string, string>;
   earningsDate: number | null;
+  allKlines: Record<string, Kline[]>;
 }
 
 export default function SignalPanel({ 
@@ -26,7 +27,8 @@ export default function SignalPanel({
   notificationsEnabled, 
   toggleNotifications,
   confluenceSignals,
-  earningsDate
+  earningsDate,
+  allKlines
 }: SignalPanelProps) {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loadingNews, setLoadingNews] = useState(false);
@@ -126,43 +128,90 @@ export default function SignalPanel({
     loadNews();
   }, [symbol]);
   
+  // Closed candle confirmation: all indicators/signals should evaluate on closed candles (slice(0, -1))
+  const closedKlines = useMemo(() => {
+    return klines.length > 1 ? klines.slice(0, -1) : klines;
+  }, [klines]);
+
+  const closedCloses = useMemo(() => {
+    return closes.length > 1 ? closes.slice(0, -1) : closes;
+  }, [closes]);
+
+  // Extract macro klines for the multitemporal strategy
+  const macroKlines = useMemo(() => {
+    const macroTf = interval === '5m' ? '1h' : '1d';
+    return allKlines[macroTf] || [];
+  }, [allKlines, interval]);
+
   // ── Unified Standard Voting (single source of truth) ────────────────────
-  const voting   = useMemo(() => calculateStandardVoting(klines), [klines]);
+  const voting   = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
   const indicators = voting.indicators;
   const { rawSignal } = voting;
 
-  const exp        = useMemo(() => calculateExperimentalSignal(klines, interval), [klines, interval]);
-  const score      = useMemo(() => calculateScoringSignal(klines, interval, weights), [klines, interval, weights]);
+  const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
+  const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
+  const multi      = useMemo(() => calculateMultitemporalSignal(closedKlines, macroKlines, symbol), [closedKlines, macroKlines, symbol]);
 
   // ── Backtest results (heavy computation, memoized) ──────────────────────
   const btStandard    = useMemo(() => klines.length > 20 ? backtestStandard(klines, interval)    : null, [klines, interval]);
   const btConfluencia = useMemo(() => klines.length > 20 ? backtestConfluencia(klines, interval) : null, [klines, interval]);
   const btScoring     = useMemo(() => klines.length > 20 ? backtestScoring(klines, interval, weights) : null, [klines, interval, weights]);
+  const btMultitemporal = useMemo(() => {
+    return klines.length > 20 && macroKlines.length >= 200
+      ? backtestMultitemporal(klines, macroKlines, interval, symbol)
+      : null;
+  }, [klines, macroKlines, interval, symbol]);
 
+  // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
+  const bestStrategy = useMemo(() => {
+    if (!btStandard || !btConfluencia || !btScoring) return 'standard';
+    const candidates = [
+      { key: 'standard',     pf: btStandard.profitFactor,  resolved: btStandard.wins + btStandard.losses },
+      { key: 'confluencia',  pf: btConfluencia.profitFactor, resolved: btConfluencia.wins + btConfluencia.losses },
+      { key: 'scoring',      pf: btScoring.profitFactor,     resolved: btScoring.wins + btScoring.losses },
+      { key: 'multitemporal',pf: btMultitemporal ? btMultitemporal.profitFactor : 0, resolved: btMultitemporal ? btMultitemporal.wins + btMultitemporal.losses : 0 },
+    ];
+    
+    const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
+    const viable = candidates.filter(s => s.resolved >= minResolved).sort((a, b) => b.pf - a.pf);
+    if (viable.length > 0) return viable[0].key;
+    return [...candidates].sort((a, b) => b.pf - a.pf)[0].key;
+  }, [btStandard, btConfluencia, btScoring, btMultitemporal, interval]);
 
-  const trend = useMemo(() => getTrendFilter(closes), [closes]);
-  let overallSignal = rawSignal;
+  const rawOverallSignal = useMemo(() => {
+    if (bestStrategy === 'confluencia') return exp.signal;
+    if (bestStrategy === 'scoring') return score.signal;
+    if (bestStrategy === 'multitemporal') return multi.signal;
+    return rawSignal;
+  }, [bestStrategy, exp.signal, score.signal, multi.signal, rawSignal]);
+
+  const trend = useMemo(() => getTrendFilter(closedCloses), [closedCloses]);
+  let overallSignal = rawOverallSignal;
   let overallColor = 'var(--text-primary)';
   let isFiltered = false;
   let filterReason = '';
 
-  if (trend === 'UP' && (rawSignal === 'SELL' || rawSignal === 'STRONG SELL')) {
-    overallSignal = 'NEUTRAL';
-    overallColor = 'var(--text-secondary)';
-    isFiltered = true;
-    filterReason = 'Señal de VENTA bloqueada por tendencia alcista macro (EMA 200)';
-  } else if (trend === 'DOWN' && (rawSignal === 'BUY' || rawSignal === 'STRONG BUY')) {
-    overallSignal = 'NEUTRAL';
-    overallColor = 'var(--text-secondary)';
-    isFiltered = true;
-    filterReason = 'Señal de COMPRA bloqueada por tendencia bajista macro (EMA 200)';
-  } else if (overallSignal.includes('BUY')) {
+  if (bestStrategy !== 'multitemporal') {
+    if (trend === 'UP' && (rawOverallSignal === 'SELL' || rawOverallSignal === 'STRONG SELL')) {
+      overallSignal = 'NEUTRAL';
+      overallColor = 'var(--text-secondary)';
+      isFiltered = true;
+      filterReason = 'Señal de VENTA bloqueada por tendencia alcista macro (EMA 200)';
+    } else if (trend === 'DOWN' && (rawOverallSignal === 'BUY' || rawOverallSignal === 'STRONG BUY')) {
+      overallSignal = 'NEUTRAL';
+      overallColor = 'var(--text-secondary)';
+      isFiltered = true;
+      filterReason = 'Señal de COMPRA bloqueada por tendencia bajista macro (EMA 200)';
+    }
+  }
+
+  if (overallSignal.includes('BUY')) {
     overallColor = 'var(--accent-green)';
   } else if (overallSignal.includes('SELL')) {
     overallColor = 'var(--accent-red)';
+  } else if (overallSignal === 'NEUTRAL' || overallSignal === 'HOLD') {
+    overallColor = 'var(--text-secondary)';
   }
-
-
 
   let overallColorGlow = 'none';
   let overallBorder = 'var(--border-color)';
@@ -178,6 +227,7 @@ export default function SignalPanel({
       overallBg = 'linear-gradient(135deg, rgba(244, 63, 94, 0.06) 0%, rgba(244, 63, 94, 0.01) 100%)';
     }
   }
+
   // Automatically sync calculator direction with the active overallSignal
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -194,11 +244,22 @@ export default function SignalPanel({
   const entryPrice = closes.length > 0 ? closes[closes.length - 1] : 0;
 
   // Calculate stop/target percentage based on active backtest thresholds, fallback to default if not calculated yet
-  const slPct = btStandard ? btStandard.threshold : 0.015;
-  const tpPct = btStandard ? btStandard.targetThreshold : 0.0225;
+  const activeSlPct = btStandard ? btStandard.threshold : 0.015;
+  const activeTpPct = btStandard ? btStandard.targetThreshold : 0.0225;
 
-  const slPrice = calcDirection === 'BUY' ? entryPrice * (1 - slPct) : entryPrice * (1 + slPct);
-  const tpPrice = calcDirection === 'BUY' ? entryPrice * (1 + tpPct) : entryPrice * (1 - tpPct);
+  let slPrice = 0;
+  let tpPrice = 0;
+
+  if (bestStrategy === 'multitemporal' && multi.stopLoss > 0 && multi.signal === calcDirection) {
+    slPrice = multi.stopLoss;
+    tpPrice = multi.takeProfit;
+  } else {
+    slPrice = calcDirection === 'BUY' ? entryPrice * (1 - activeSlPct) : entryPrice * (1 + activeSlPct);
+    tpPrice = calcDirection === 'BUY' ? entryPrice * (1 + activeTpPct) : entryPrice * (1 - activeTpPct);
+  }
+
+  const slPct = entryPrice > 0 ? Math.abs(entryPrice - slPrice) / entryPrice : activeSlPct;
+  const tpPct = entryPrice > 0 ? Math.abs(entryPrice - tpPrice) / entryPrice : activeTpPct;
 
   const riskUSD = capital * (riskPercent / 100);
   const priceDiff = Math.abs(entryPrice - slPrice);
@@ -665,6 +726,7 @@ export default function SignalPanel({
           <BacktestCard name="Standard (RSI+MACD+BB)" result={btStandard} />
           <BacktestCard name="Signal 1 · Confluencia" result={btConfluencia} />
           <BacktestCard name="Signal 2 · Scoring" result={btScoring} />
+          <BacktestCard name="Filtro Maestro (1H + ST)" result={btMultitemporal} />
         </div>
       </div>
 
@@ -891,6 +953,74 @@ export default function SignalPanel({
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div style={{ borderTop: '1px dashed var(--border-color)', margin: '14px 0' }} />
+
+      {/* ── Signal 3: Filtro Maestro ──────────── */}
+      <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 3 · FILTRO MAESTRO (1H TREND + ST)</div>
+      
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
+          <span style={{ 
+            color: multi.signal === 'BUY' ? 'var(--accent-green)' : multi.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', 
+            fontWeight: '700',
+            fontSize: '0.85rem'
+          }}>
+            {klines.length > 0 && macroKlines.length >= 200 ? multi.signal : 'WAITING...'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Tendencia Macro (1H EMA 200):</span>
+          <span style={{ 
+            color: multi.isTrendUp ? 'var(--accent-green)' : 'var(--accent-red)', 
+            fontWeight: '700',
+            fontSize: '0.8rem'
+          }}>
+            {klines.length > 0 && macroKlines.length >= 200 ? (multi.isTrendUp ? '▲ ALCISTA' : '▼ BAJISTA') : '-'}
+            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
+              (${multi.ema200_1h})
+            </span>
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supertrend 5m (10,3):</span>
+          <span style={{ 
+            color: multi.supertrendDir === 'UP' ? 'var(--accent-green)' : 'var(--accent-red)', 
+            fontWeight: '700',
+            fontSize: '0.8rem'
+          }}>
+            {klines.length > 0 ? (multi.supertrendDir === 'UP' ? '▲ COMPRA' : '▼ VENTA') : '-'}
+            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
+              (${multi.supertrendVal})
+            </span>
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Precio vs VWAP:</span>
+          <span style={{ 
+            color: (closes.length > 0 && closes[closes.length - 1] > multi.vwap) ? 'var(--accent-green)' : 'var(--accent-red)', 
+            fontWeight: '700',
+            fontSize: '0.8rem'
+          }}>
+            {klines.length > 0 ? (closes[closes.length - 1] > multi.vwap ? '▲ SOBRE VWAP' : '▼ BAJO VWAP') : '-'}
+            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
+              (${multi.vwap})
+            </span>
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>RSI (5m):</span>
+          <span style={{ 
+            color: (multi.signal === 'BUY' || (multi.rsi >= 40 && multi.rsi <= 70)) ? 'var(--accent-green)' : 'var(--text-muted)', 
+            fontWeight: '700',
+            fontSize: '0.8rem'
+          }}>
+            {klines.length > 0 ? `${multi.rsi} (Sano)` : '-'}
+          </span>
         </div>
       </div>
 

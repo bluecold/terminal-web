@@ -309,7 +309,7 @@ export function detectEmaCrossover(closes: number[], fastPeriod = 9, slowPeriod 
   return { type: 'NONE', barsAgo: 0 };
 }
 
-export function calculateVWAP(klines: Kline[], interval: string = '1h'): number {
+export function calculateVWAP(klines: Kline[], interval: string = '1h', symbol?: string): number {
   if (!klines || klines.length === 0) return 0;
 
   let cumVol = 0;
@@ -322,8 +322,25 @@ export function calculateVWAP(klines: Kline[], interval: string = '1h'): number 
     let sessionId = '';
 
     if (interval === '5m' || interval === '1h') {
-      // Daily reset: YYYY-MM-DD
-      sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+      const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+      if (isCrypto) {
+        // Daily reset: YYYY-MM-DD
+        sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+      } else {
+        // NYSE session: daily reset based on America/New_York local date
+        try {
+          const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          });
+          sessionId = formatter.format(date); // Format: MM/DD/YYYY
+        } catch (e) {
+          // Fallback to UTC
+          sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+        }
+      }
     } else if (interval === '1d') {
       // Weekly reset: ISO Week
       const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -647,13 +664,19 @@ export interface SupertrendResult {
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
 }
 
-export function calculateSupertrend(klines: Kline[], period: number = 10, multiplier: number = 3): SupertrendResult {
-  if (!klines || klines.length < period + 1) {
-    return { value: 0, direction: 'UP', signal: 'NEUTRAL' };
+export interface SupertrendSeriesItem {
+  time: number;
+  value: number;
+  direction: 'UP' | 'DOWN';
+}
+
+export function calculateSupertrendSeries(klines: Kline[], period: number = 10, multiplier: number = 3): SupertrendSeriesItem[] {
+  const length = klines.length;
+  if (!klines || length === 0) return [];
+  if (length < period + 1) {
+    return klines.map(k => ({ time: k.time, value: k.close, direction: 'UP' }));
   }
 
-  const length = klines.length;
-  
   // 1. Calculate TR (True Range)
   const tr: number[] = [0];
   tr[0] = klines[0].high - klines[0].low;
@@ -727,27 +750,148 @@ export function calculateSupertrend(klines: Kline[], period: number = 10, multip
     }
   }
 
-  const latestVal = superTrend[length - 1];
-  const latestDir = direction[length - 1] === 1 ? 'UP' : 'DOWN';
+  return klines.map((k, i) => {
+    if (i < startIdx) {
+      return { time: k.time, value: k.close, direction: 'UP' };
+    }
+    return {
+      time: k.time,
+      value: Number(superTrend[i].toFixed(2)),
+      direction: direction[i] === 1 ? 'UP' : 'DOWN'
+    };
+  });
+}
 
-  // Only emit BUY/SELL if there was a direction flip in the last 3 candles;
-  // otherwise NEUTRAL to avoid always-voting bias in the consensus system.
+export function calculateSupertrend(klines: Kline[], period: number = 10, multiplier: number = 3): SupertrendResult {
+  if (!klines || klines.length < period + 1) {
+    return { value: 0, direction: 'UP', signal: 'NEUTRAL' };
+  }
+
+  const series = calculateSupertrendSeries(klines, period, multiplier);
+  const length = series.length;
+  const latest = series[length - 1];
+
+  const startIdx = period - 1;
   const flipLookback = 3;
   let recentFlip = false;
   for (let i = 1; i <= flipLookback && (length - i) > startIdx; i++) {
-    if (direction[length - i] !== direction[length - i - 1]) {
+    if (series[length - i].direction !== series[length - i - 1].direction) {
       recentFlip = true;
       break;
     }
   }
+
   const signal: 'BUY' | 'SELL' | 'NEUTRAL' = recentFlip
-    ? (latestDir === 'UP' ? 'BUY' : 'SELL')
+    ? (latest.direction === 'UP' ? 'BUY' : 'SELL')
     : 'NEUTRAL';
 
   return {
-    value: Number(latestVal.toFixed(2)),
-    direction: latestDir,
+    value: latest.value,
+    direction: latest.direction,
     signal
+  };
+}
+
+export interface MultitemporalSignalResult {
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
+  stopLoss: number;
+  takeProfit: number;
+  rsi: number;
+  supertrendVal: number;
+  supertrendDir: 'UP' | 'DOWN';
+  vwap: number;
+  ema200_1h: number;
+  isTrendUp: boolean;
+}
+
+export function calculateMultitemporalSignal(
+  klines5m: Kline[],
+  klines1h: Kline[],
+  symbol?: string
+): MultitemporalSignalResult {
+  const fallback: MultitemporalSignalResult = {
+    signal: 'NEUTRAL',
+    stopLoss: 0,
+    takeProfit: 0,
+    rsi: 50,
+    supertrendVal: 0,
+    supertrendDir: 'UP',
+    vwap: 0,
+    ema200_1h: 0,
+    isTrendUp: false
+  };
+
+  if (!klines5m || klines5m.length < 15) return fallback;
+  if (!klines1h || klines1h.length < 200) {
+    return fallback;
+  }
+
+  const curr5m = klines5m[klines5m.length - 1];
+
+  // 1. Calculate 1H Trend (EMA 200 of 1H)
+  const closes1h = klines1h.map(k => k.close);
+  const ema200_1h_series = calculateEMA(closes1h, 200);
+  let macroEma200 = NaN;
+  let lastClosed1hClose = NaN;
+
+  // Find the latest 1H candle that was closed before (or at) the current 5m candle
+  for (let i = klines1h.length - 1; i >= 0; i--) {
+    const endTime = klines1h[i].time + 3600;
+    if (endTime <= curr5m.time) {
+      macroEma200 = ema200_1h_series[i];
+      lastClosed1hClose = klines1h[i].close;
+      break;
+    }
+  }
+
+  if (isNaN(macroEma200) || isNaN(lastClosed1hClose)) {
+    return fallback;
+  }
+
+  const isTrendUp = lastClosed1hClose > macroEma200;
+  const isTrendDown = lastClosed1hClose < macroEma200;
+
+  // 2. Calculate 5m Indicators
+  const closes5m = klines5m.map(k => k.close);
+  const rsiObj = calculateRSI(closes5m, 14);
+  const rsi = rsiObj.value;
+
+  const vwap = calculateVWAP(klines5m, '5m', symbol);
+
+  const stSeries = calculateSupertrendSeries(klines5m, 10, 3);
+  if (stSeries.length < 2) return fallback;
+  
+  const latestSt = stSeries[stSeries.length - 1];
+  const prevSt = stSeries[stSeries.length - 2];
+
+  const isSupertrendFlipGreen = latestSt.direction === 'UP' && prevSt.direction === 'DOWN';
+  const isSupertrendFlipRed = latestSt.direction === 'DOWN' && prevSt.direction === 'UP';
+
+  // 3. Evaluate Signals
+  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  let stopLoss = 0;
+  let takeProfit = 0;
+
+  if (isTrendUp && isSupertrendFlipGreen && curr5m.close > vwap && rsi >= 40 && rsi <= 70) {
+    signal = 'BUY';
+    stopLoss = Math.max(latestSt.value, vwap);
+    takeProfit = curr5m.close + 1.5 * (curr5m.close - stopLoss);
+  } else if (isTrendDown && isSupertrendFlipRed && curr5m.close < vwap && rsi >= 30 && rsi <= 60) {
+    signal = 'SELL';
+    stopLoss = Math.min(latestSt.value, vwap);
+    takeProfit = curr5m.close - 1.5 * (stopLoss - curr5m.close);
+  }
+
+  return {
+    signal,
+    stopLoss: Number(stopLoss.toFixed(2)),
+    takeProfit: Number(takeProfit.toFixed(2)),
+    rsi,
+    supertrendVal: latestSt.value,
+    supertrendDir: latestSt.direction,
+    vwap: Number(vwap.toFixed(2)),
+    ema200_1h: Number(macroEma200.toFixed(2)),
+    isTrendUp
   };
 }
 

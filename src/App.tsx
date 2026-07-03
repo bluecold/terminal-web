@@ -6,8 +6,8 @@ import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal } from './utils/indicators';
-import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring } from './utils/backtester';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateMultitemporalSignal } from './utils/indicators';
+import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal } from './utils/backtester';
 
 interface AlertItem {
   id: string;
@@ -60,37 +60,45 @@ function App() {
 
   // ── Confluence Matrix & Earnings Events States ───────────────────────────
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
+  const [allKlines, setAllKlines] = useState<Record<string, Kline[]>>({ '5m': [], '1h': [], '1d': [] });
   const [earningsDate, setEarningsDate] = useState<number | null>(null);
 
-  const computeOverallSignal = (data: Kline[], tf: string) => {
+  const computeOverallSignal = (data: Kline[], tf: string, allData?: Record<string, Kline[]>) => {
     if (data.length < 35) return 'WAITING...';
 
-    // Run backtests for all 3 strategies on this specific timeframe data
     const btStd = backtestStandard(data, tf);
     const btConf = backtestConfluencia(data, tf);
     const btScore = backtestScoring(data, tf);
+    
+    let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+    if (allData) {
+      const macroTf = tf === '5m' ? '1h' : '1d';
+      const macroData = allData[macroTf] || [];
+      if (macroData.length >= 200) {
+        btMulti = backtestMultitemporal(data, macroData, tf, currentAsset);
+      }
+    }
 
     const candidates = [
       { key: 'standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
       { key: 'confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
       { key: 'scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
+      { key: 'multitemporal',pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
     ];
 
-    // Filter: prioritize strategies with at least 3 resolved trades to avoid statistical noise
+    const minResolved = tf === '5m' ? 5 : tf === '1h' ? 4 : 3;
     const viable = candidates
-      .filter(s => s.resolved >= 3)
+      .filter(s => s.resolved >= minResolved)
       .sort((a, b) => b.pf - a.pf);
 
     let bestStrategy = 'standard';
     if (viable.length > 0) {
       bestStrategy = viable[0].key;
     } else {
-      // Fallback: sort by PF directly if none have >= 3 trades
       const sortedAll = [...candidates].sort((a, b) => b.pf - a.pf);
       bestStrategy = sortedAll[0].key;
     }
 
-    // Calculate signal using the best strategy
     let signal: string;
     if (bestStrategy === 'confluencia') {
       const result = calculateExperimentalSignal(data, tf);
@@ -98,22 +106,29 @@ function App() {
     } else if (bestStrategy === 'scoring') {
       const result = calculateScoringSignal(data, tf);
       signal = result.signal;
+    } else if (bestStrategy === 'multitemporal' && allData) {
+      const macroTf = tf === '5m' ? '1h' : '1d';
+      const macroData = allData[macroTf] || [];
+      const result = calculateMultitemporalSignal(data, macroData, currentAsset);
+      signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
       signal = voting.rawSignal;
     }
 
-    // Apply EMA 200 trend filter
-    const closes = data.map(k => k.close);
-    const trend = getTrendFilter(closes);
-    if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
-      signal = 'NEUTRAL';
-    } else if (trend === 'DOWN' && (signal === 'BUY' || signal === 'STRONG BUY')) {
-      signal = 'NEUTRAL';
+    if (bestStrategy !== 'multitemporal') {
+      const closes = data.map(k => k.close);
+      const trend = getTrendFilter(closes);
+      if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
+        signal = 'NEUTRAL';
+      } else if (trend === 'DOWN' && (signal === 'BUY' || signal === 'STRONG BUY')) {
+        signal = 'NEUTRAL';
+      }
     }
     return signal;
   };
 
+  // Effect to load active chart data & poll
   useEffect(() => {
     let isMounted = true;
 
@@ -122,9 +137,11 @@ function App() {
       const data = await fetchKlines(currentAsset, interval);
       if (isMounted) {
         setKlines(data);
+        setAllKlines(prev => ({ ...prev, [interval]: data }));
         setLoading(false);
         if (data.length >= 35) {
-          const signal = computeOverallSignal(data, interval);
+          const closedData = data.slice(0, -1);
+          const signal = computeOverallSignal(closedData, interval, allKlines);
           setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
         }
       }
@@ -136,8 +153,10 @@ function App() {
         const data = await fetchKlines(currentAsset, interval);
         if (isMounted) {
           setKlines(data);
+          setAllKlines(prev => ({ ...prev, [interval]: data }));
           if (data.length >= 35) {
-            const signal = computeOverallSignal(data, interval);
+            const closedData = data.slice(0, -1);
+            const signal = computeOverallSignal(closedData, interval, allKlines);
             setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
           }
         }
@@ -159,6 +178,7 @@ function App() {
     const loadExtraData = async () => {
       setConfluenceSignals({ '5m': '...', '1h': '...', '1d': '...' });
       setEarningsDate(null);
+      setAllKlines({ '5m': [], '1h': [], '1d': [] });
 
       if (!currentAsset.endsWith('USDT') && !currentAsset.endsWith('BTC')) {
         fetchEarningsDate(currentAsset).then(date => {
@@ -167,22 +187,35 @@ function App() {
       }
 
       const timeframes = ['5m', '1h', '1d'];
-      const promises = timeframes.map(async (tf) => {
+      const fetchedKlines: Record<string, Kline[]> = {};
+
+      await Promise.all(timeframes.map(async (tf) => {
         try {
           const data = await fetchKlines(currentAsset, tf);
-          if (isMounted && data.length >= 35) {
-            const signal = computeOverallSignal(data, tf);
-            setConfluenceSignals(prev => ({ ...prev, [tf]: signal }));
-          } else if (isMounted) {
-            setConfluenceSignals(prev => ({ ...prev, [tf]: 'SIN DATOS' }));
-          }
+          fetchedKlines[tf] = data;
         } catch (e) {
-          console.error(`Error loading confluence signal for ${tf}`, e);
-          if (isMounted) setConfluenceSignals(prev => ({ ...prev, [tf]: 'ERROR' }));
+          console.error(`Error fetching klines for ${tf}`, e);
+          fetchedKlines[tf] = [];
+        }
+      }));
+
+      if (!isMounted) return;
+
+      setAllKlines(fetchedKlines);
+      if (fetchedKlines[interval]) {
+        setKlines(fetchedKlines[interval]);
+      }
+
+      timeframes.forEach((tf) => {
+        const data = fetchedKlines[tf] || [];
+        if (data.length >= 35) {
+          const closedData = data.slice(0, -1);
+          const signal = computeOverallSignal(closedData, tf, fetchedKlines);
+          setConfluenceSignals(prev => ({ ...prev, [tf]: signal }));
+        } else {
+          setConfluenceSignals(prev => ({ ...prev, [tf]: 'SIN DATOS' }));
         }
       });
-
-      await Promise.all(promises);
     };
 
     loadExtraData();
@@ -243,50 +276,62 @@ function App() {
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
   const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; timestamp: number }>>({});
 
+  // 2h Cooldown for notifications/logging per symbol and timeframe
+  const alertCooldownsRef = useRef<Record<string, number>>({});
+
   // Reset caches on timeframe change to prevent false crossover notifications
   useEffect(() => {
     lastSignalsRef.current = {};
     bestStrategyRef.current = {};
+    alertCooldownsRef.current = {};
   }, [interval]);
 
   useEffect(() => {
     let isMounted = true;
 
     const checkAllSignals = async () => {
-      // Check if notifications are actually enabled and authorized
       const enabled = localStorage.getItem('terminal_notifications_enabled') === 'true';
       if (!enabled) return;
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
-      // Scan all symbols in watchlist + the currently viewed asset
       const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset]));
 
       for (const symbol of symbolsToScan) {
         try {
-          const data = await fetchKlines(symbol, interval);
+          // Fetch current interval and macro interval data in parallel
+          const macroInterval = interval === '5m' ? '1h' : '1d';
+          const [data, macroData] = await Promise.all([
+            fetchKlines(symbol, interval),
+            fetchKlines(symbol, macroInterval)
+          ]);
+
           if (!isMounted) return;
           if (data.length < 35) continue;
 
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
           const cached = bestStrategyRef.current[symbol];
-          let bestStrategy = 'none'; // 'none' = no viable strategy → suppress alerts
+          let bestStrategy = 'none';
           let strategyLabel = '';
           let bestPF = 0;
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
-            // Run backtests for all 3 strategies
             const btStd  = backtestStandard(data, interval);
             const btConf = backtestConfluencia(data, interval);
             const btScore = backtestScoring(data, interval);
+            
+            let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+            if (macroData.length >= 200) {
+              btMulti = backtestMultitemporal(data, macroData, interval, symbol);
+            }
 
             const candidates = [
               { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
               { key: 'confluencia', label: 'Confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
               { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
+              { key: 'multitemporal', label: 'Filtro Maestro', pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
             ];
 
-            // Quality gate: require minimum resolved trades per timeframe, and PF >= 1.3 (rated 'Bueno' or 'Excelente')
             const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
             const viable = candidates
               .filter(s => s.resolved >= minResolved && s.pf >= 1.3)
@@ -302,44 +347,59 @@ function App() {
           } else {
             bestStrategy = cached.strategy;
             bestPF = cached.pf;
-            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : 'Standard';
+            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'Filtro Maestro' : 'Standard';
           }
 
-          // ── Quality gate: skip assets where no strategy is viable ────────
           if (bestStrategy === 'none') {
-            // Still track the signal for cache warm-up, but don't notify
             const voting = calculateStandardVoting(data);
             lastSignalsRef.current[symbol] = voting.rawSignal;
             continue;
           }
 
-          // ── Calculate signal using the best strategy ─────────────────────
+          // ── Calculate signal using the best strategy on CLOSED candles ──
           let overallSignal: string;
+          const closedData = data.slice(0, -1);
 
           if (bestStrategy === 'confluencia') {
-            const result = calculateExperimentalSignal(data, interval);
+            const result = calculateExperimentalSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'scoring') {
-            const result = calculateScoringSignal(data, interval);
+            const result = calculateScoringSignal(closedData, interval);
+            overallSignal = result.signal;
+          } else if (bestStrategy === 'multitemporal') {
+            const result = calculateMultitemporalSignal(closedData, macroData, symbol);
             overallSignal = result.signal;
           } else {
-            const voting = calculateStandardVoting(data);
+            const voting = calculateStandardVoting(closedData);
             overallSignal = voting.rawSignal;
           }
 
-          // Apply EMA 200 trend filter uniformly to all strategies
-          const closes = data.map(k => k.close);
-          const trend = getTrendFilter(closes);
-          if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
-            overallSignal = 'NEUTRAL';
-          } else if (trend === 'DOWN' && (overallSignal === 'BUY' || overallSignal === 'STRONG BUY')) {
-            overallSignal = 'NEUTRAL';
+          if (bestStrategy !== 'multitemporal') {
+            const closesList = closedData.map(k => k.close);
+            const trend = getTrendFilter(closesList);
+            if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
+              overallSignal = 'NEUTRAL';
+            } else if (trend === 'DOWN' && (overallSignal === 'BUY' || overallSignal === 'STRONG BUY')) {
+              overallSignal = 'NEUTRAL';
+            }
           }
 
-          // ── Check for signal transition and notify ──────────────────────
+          // ── Check transition & handle Cooldown ──────────────────────────
           const prevSignal = lastSignalsRef.current[symbol];
 
           if (prevSignal && prevSignal !== overallSignal && (overallSignal.includes('BUY') || overallSignal.includes('SELL'))) {
+            const lastAlertTime = alertCooldownsRef.current[`${symbol}-${interval}`] || 0;
+            const cooldownMs = 2 * 60 * 60 * 1000; // 2 hours
+            
+            if (now - lastAlertTime < cooldownMs) {
+              // Skip alert but keep track of transition
+              lastSignalsRef.current[symbol] = overallSignal;
+              continue;
+            }
+
+            // Set alert cooldown timestamp
+            alertCooldownsRef.current[`${symbol}-${interval}`] = now;
+
             new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})`, {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
               tag: `${symbol}-${interval}`,
@@ -357,13 +417,12 @@ function App() {
             };
 
             setAlertsLog(prev => {
-              const updated = [newAlert, ...prev].slice(0, 20); // Cap at 20 items
+              const updated = [newAlert, ...prev].slice(0, 20);
               localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
               return updated;
             });
           }
 
-          // Cache the latest signal
           lastSignalsRef.current[symbol] = overallSignal;
         } catch (e) {
           console.error(`Error scanning background signal for ${symbol}`, e);
@@ -371,10 +430,7 @@ function App() {
       }
     };
 
-    // Run once on load / when symbols/interval change to warm up cache without triggering alerts
     checkAllSignals();
-
-    // Check signals every 60 seconds
     const intervalId = setInterval(checkAllSignals, 60000);
 
     return () => {
@@ -650,6 +706,7 @@ function App() {
             toggleNotifications={toggleNotifications}
             confluenceSignals={confluenceSignals}
             earningsDate={earningsDate}
+            allKlines={allKlines}
           />
         </aside>
       </div>
