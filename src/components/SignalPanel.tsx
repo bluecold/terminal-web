@@ -507,7 +507,7 @@ export default function SignalPanel({
             {/* Inputs Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: isCrypto ? '1fr 1fr 1fr' : '1fr 1fr', gap: '8px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>CAPITAL total ($)</label>
+                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>CAPITAL ($)</label>
                 <input 
                   type="number" 
                   value={capital} 
@@ -527,7 +527,7 @@ export default function SignalPanel({
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>RIESGO por trade (%)</label>
+                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>RIESGO (%)</label>
                 <input 
                   type="number" 
                   step="0.1"
@@ -549,7 +549,7 @@ export default function SignalPanel({
               </div>
               {isCrypto && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>APALANCAMIENTO</label>
+                  <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>APALANC. (x)</label>
                   <input 
                     type="number" 
                     min="1"
