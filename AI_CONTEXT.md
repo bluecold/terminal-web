@@ -45,7 +45,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Calculadora de Gestión de Riesgo y Posición**: Sincronizada con el Stop Loss y Take Profit dinámicos del Filtro Maestro (Supertrend/VWAP) cuando la estrategia está activa.
 - **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela.
 - **Catalizadores de Volatilidad (Calendario)**: Sistema de alerta que consulta online reportes de ganancias y eventos macro clave (IPC, FOMC) de 2026, advirtiendo del peligro en ventanas menores a 48 horas.
-
+- **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles para las 4 estrategias. Integra de forma limpia las señales, parámetros y backtests, mejorando la legibilidad y otorgando un aspecto institucional.
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
 - **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.

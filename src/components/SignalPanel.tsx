@@ -43,8 +43,11 @@ export default function SignalPanel({
   const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
 
+  // ── Navigation & Accordion States ──────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'strategies' | 'calculator' | 'market'>('strategies');
+  const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null);
+
   // ── Risk & Position Calculator States ────────────────────────────────────
-  const [calcOpen, setCalcOpen] = useState(true);
   const [capital, setCapital] = useState(() => {
     const saved = localStorage.getItem('terminal_risk_capital');
     return saved ? parseFloat(saved) : 10000;
@@ -183,6 +186,13 @@ export default function SignalPanel({
     if (viable.length > 0) return viable[0].key;
     return [...candidates].sort((a, b) => b.pf - a.pf)[0].key;
   }, [btStandard, btConfluencia, btScoring, btMultitemporal, interval]);
+
+  // Synchronize expanded strategy with the best strategy when it changes
+  useEffect(() => {
+    if (bestStrategy) {
+      setExpandedStrategy(bestStrategy);
+    }
+  }, [bestStrategy]);
 
   const rawOverallSignal = useMemo(() => {
     if (bestStrategy === 'confluencia') return exp.signal;
@@ -416,128 +426,624 @@ export default function SignalPanel({
           })}
         </div>
       </div>
+      {/* ── TAB SELECTION ─────────────────────────── */}
+      <div className="sp-tab-container">
+        <button 
+          className={`sp-tab-button ${activeTab === 'strategies' ? 'active' : ''}`}
+          onClick={() => setActiveTab('strategies')}
+        >
+          Estrategias
+        </button>
+        <button 
+          className={`sp-tab-button ${activeTab === 'calculator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('calculator')}
+        >
+          Calculadora
+        </button>
+        <button 
+          className={`sp-tab-button ${activeTab === 'market' ? 'active' : ''}`}
+          onClick={() => setActiveTab('market')}
+        >
+          Mercado
+        </button>
+      </div>
 
-      {/* ── EVENT ALERTS PANEL ───────────────────────── */}
-      {(() => {
-        const nextMacro = getNextMacroEvent();
-        const earningsInfo = getEarningsInfo();
-        const hasEvents = nextMacro || earningsInfo;
-        
-        if (!hasEvents) return null;
-        
-        return (
+      {/* ── TAB CONTENT: STRATEGIES ───────────────────── */}
+      {activeTab === 'strategies' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          
+          {/* 1. Estrategia Standard */}
+          {(() => {
+            const id = 'standard';
+            const isExpanded = expandedStrategy === id;
+            const isRecommended = bestStrategy === id;
+            const sig = rawSignal;
+            const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
+            const winRateText = btStandard && !btStandard.insufficient ? `${Math.round(btStandard.winRate * 100)}% WR` : '— WR';
+            
+            return (
+              <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
+                <div 
+                  className="sp-strategy-card-header" 
+                  onClick={() => setExpandedStrategy(isExpanded ? null : id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Estándar</span>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(RSI+MACD+BB)</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: 'var(--accent-blue-bg)', 
+                        color: 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        LÍDER
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      color: sigColor, 
+                      backgroundColor: sigBg,
+                      border: `1px solid ${sigColor === 'var(--text-secondary)' ? 'rgba(255, 255, 255, 0.06)' : sigColor + '20'}`,
+                      padding: '2px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {closes.length === 0 ? 'WAITING...' : sig === 'NEUTRAL' ? 'NEUTRO' : sig}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
+                      {winRateText}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="sp-strategy-card-content">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>RENDIMIENTO HISTÓRICO</div>
+                        <BacktestCard name="Standard (RSI+MACD+BB)" result={btStandard} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>INDICADORES TÉCNICOS</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {indicators.map(ind => {
+                            const hasData = closes.length > 0;
+                            const signalBg = ind.signal === 'BUY' 
+                              ? 'rgba(16, 185, 129, 0.08)' 
+                              : ind.signal === 'SELL' 
+                                ? 'rgba(244, 63, 94, 0.08)' 
+                                : 'rgba(255,255,255,0.02)';
+                            
+                            return (
+                              <div 
+                                key={ind.name} 
+                                style={{ 
+                                  display: 'flex', 
+                                  justifyContent: 'space-between', 
+                                  alignItems: 'center',
+                                  padding: '8px 10px',
+                                  borderRadius: '6px',
+                                  background: 'rgba(0, 0, 0, 0.12)',
+                                  border: '1px solid var(--border-color)'
+                                }}
+                              >
+                                <div>
+                                  <div style={{ color: 'var(--text-primary)', fontSize: '0.75rem', fontWeight: '600' }}>{ind.name}</div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
+                                    {hasData ? ind.value : '-'}
+                                  </div>
+                                </div>
+                                <div style={{ 
+                                  color: ind.color, 
+                                  fontWeight: '700',
+                                  padding: '2px 8px',
+                                  background: signalBg,
+                                  border: `1px solid ${ind.color === 'var(--text-primary)' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.0)'}`,
+                                  borderRadius: '12px',
+                                  fontSize: '0.65rem',
+                                  fontFamily: 'var(--font-mono)',
+                                }}>
+                                  {hasData ? ind.signal : '-'}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 2. Estrategia Confluencia */}
+          {(() => {
+            const id = 'confluencia';
+            const isExpanded = expandedStrategy === id;
+            const isRecommended = bestStrategy === id;
+            const sig = exp.signal;
+            const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
+            const winRateText = btConfluencia && !btConfluencia.insufficient ? `${Math.round(btConfluencia.winRate * 100)}% WR` : '— WR';
+            
+            return (
+              <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
+                <div 
+                  className="sp-strategy-card-header" 
+                  onClick={() => setExpandedStrategy(isExpanded ? null : id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Confluencia</span>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(EMA+VWAP+Velas)</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: 'var(--accent-blue-bg)', 
+                        color: 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        LÍDER
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      color: sigColor, 
+                      backgroundColor: sigBg,
+                      border: `1px solid ${sigColor === 'var(--text-secondary)' ? 'rgba(255, 255, 255, 0.06)' : sigColor + '20'}`,
+                      padding: '2px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {closes.length === 0 ? 'WAITING...' : (sig as string) === 'NEUTRAL' || (sig as string) === 'HOLD' ? 'NEUTRO' : sig}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
+                      {winRateText}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="sp-strategy-card-content">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>RENDIMIENTO HISTÓRICO</div>
+                        <BacktestCard name="Signal 1 · Confluencia" result={btConfluencia} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>PARÁMETROS DE SEÑAL</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Señal Confluencia:</span>
+                            <span style={{ 
+                              color: exp.signal === 'BUY' ? 'var(--accent-green)' : exp.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 ? exp.signal : 'ESPERANDO...'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Stop Loss Recomendado:</span>
+                            <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
+                              {exp.stopLoss > 0 ? `$${exp.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Filtro de Volumen:</span>
+                            <span style={{ 
+                              color: exp.validVolume ? 'var(--accent-green)' : 'var(--text-muted)', 
+                              fontSize: '0.75rem',
+                              fontWeight: '600',
+                              background: exp.validVolume ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
+                              padding: exp.validVolume ? '2px 6px' : '0',
+                              borderRadius: '4px'
+                            }}>
+                              {exp.validVolume ? 'VÁLIDO' : 'BAJO'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Cruce EMA 9/20:</span>
+                            {klines.length > 0 ? (() => {
+                              const c = exp.emaCrossover;
+                              if (c.type === 'NONE') {
+                                return <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Sin cruce</span>;
+                              }
+                              const isBull = c.type === 'BULLISH';
+                              const color  = isBull ? 'var(--accent-green)' : 'var(--accent-red)';
+                              const icon   = isBull ? '▲' : '▼';
+                              const label  = isBull ? 'ALCISTA' : 'BAJISTA';
+                              const when   = c.barsAgo === 0 ? 'esta vela' : `hace ${c.barsAgo} vela${c.barsAgo > 1 ? 's' : ''}`;
+                              return (
+                                <span style={{ color, fontSize: '0.75rem', fontWeight: '700' }}>
+                                  {icon} {label} <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.7rem' }}>({when})</span>
+                                </span>
+                              );
+                            })() : <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>-</span>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 3. Estrategia Scoring */}
+          {(() => {
+            const id = 'scoring';
+            const isExpanded = expandedStrategy === id;
+            const isRecommended = bestStrategy === id;
+            const sig = score.signal;
+            const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
+            const winRateText = btScoring && !btScoring.insufficient ? `${Math.round(btScoring.winRate * 100)}% WR` : '— WR';
+            
+            return (
+              <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
+                <div 
+                  className="sp-strategy-card-header" 
+                  onClick={() => setExpandedStrategy(isExpanded ? null : id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Scoring</span>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(5 Capas)</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: 'var(--accent-blue-bg)', 
+                        color: 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        LÍDER
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      color: sigColor, 
+                      backgroundColor: sigBg,
+                      border: `1px solid ${sigColor === 'var(--text-secondary)' ? 'rgba(255, 255, 255, 0.06)' : sigColor + '20'}`,
+                      padding: '2px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {closes.length === 0 ? 'WAITING...' : (sig as string) === 'NEUTRAL' || (sig as string) === 'HOLD' ? 'NEUTRO' : sig}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
+                      {winRateText}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="sp-strategy-card-content">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>RENDIMIENTO HISTÓRICO</div>
+                        <BacktestCard name="Signal 2 · Scoring Multicapa" result={btScoring} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>SCORING DE MERCADO</div>
+                        
+                        <div style={{ background: 'rgba(0,0,0,0.12)', padding: '12px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', marginBottom: '10px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>
+                            <span>-{score.threshold}</span>
+                            <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Score: {score.score > 0 ? '+' : ''}{score.score}</span>
+                            <span>+{score.threshold}</span>
+                          </div>
+                          <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', position: 'relative', overflow: 'hidden' }}>
+                            <div style={{
+                              position: 'absolute', top: 0, height: '100%', borderRadius: '4px',
+                              width: `${score.threshold > 0 ? Math.min(100, (Math.abs(score.score) / score.threshold) * 50) : 0}%`,
+                              left: score.score >= 0 ? '50%' : `${50 - (score.threshold > 0 ? Math.min(50, (Math.abs(score.score) / score.threshold) * 50) : 0)}%`,
+                              background: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--accent-blue)',
+                              transition: 'width 0.4s ease',
+                              boxShadow: score.signal === 'BUY' ? '0 0 10px var(--accent-green)' : score.signal === 'SELL' ? '0 0 10px var(--accent-red)' : 'none'
+                            }} />
+                            <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: '100%', background: 'rgba(255, 255, 255, 0.15)' }} />
+                          </div>
+                        </div>
+
+                        {/* Weights Config */}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
+                          <button 
+                            onClick={() => setShowWeightsConfig(prev => !prev)}
+                            style={{
+                              color: 'var(--accent-blue)',
+                              fontSize: '0.65rem',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                              padding: '3px 8px',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(59, 130, 246, 0.15)',
+                              background: 'rgba(59, 130, 246, 0.03)',
+                            }}
+                          >
+                            {showWeightsConfig ? 'Ocultar Pesos ✕' : 'Ajustar Pesos ⚙️'}
+                          </button>
+                        </div>
+
+                        {showWeightsConfig && (
+                          <div style={{
+                            backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: 'var(--border-radius-sm)',
+                            padding: '10px',
+                            marginBottom: '12px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px'
+                          }}>
+                            <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: '800', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px', display: 'flex', justifyContent: 'space-between', letterSpacing: '0.5px' }}>
+                              <span>CAPA</span>
+                              <span>PESO</span>
+                            </div>
+                            {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
+                              const labels: Record<string, string> = { trend: 'Tendencia (EMA)', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
+                              return (
+                                <div key={layer} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
+                                    <span style={{ color: 'var(--text-secondary)' }}>{labels[layer]}</span>
+                                    <span style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>{weights[layer].toFixed(1)}</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min="0"
+                                    max="3"
+                                    step="0.1"
+                                    value={weights[layer]}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value);
+                                      setWeights(prev => ({
+                                        ...prev,
+                                        [layer]: val
+                                      }));
+                                    }}
+                                    style={{
+                                      width: '100%',
+                                      accentColor: 'var(--accent-blue)',
+                                      height: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  />
+                                </div>
+                              );
+                            })}
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', marginTop: '2px' }}>
+                              <button
+                                onClick={() => setWeights(DEFAULT_WEIGHTS)}
+                                style={{
+                                  background: 'transparent',
+                                  border: '1px solid var(--border-color)',
+                                  color: 'var(--text-secondary)',
+                                  fontSize: '0.6rem',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Resetear
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Layer breakdown */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
+                            const l = score.layers[layer];
+                            const icon = l.score > 0 ? '▲' : l.score < 0 ? '▼' : '─';
+                            const col  = l.score > 0 ? 'var(--accent-green)' : l.score < 0 ? 'var(--accent-red)' : 'var(--text-muted)';
+                            const bgCol = l.score > 0 ? 'rgba(16, 185, 129, 0.04)' : l.score < 0 ? 'rgba(244, 63, 94, 0.04)' : 'transparent';
+                            const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
+                            const weight = weights[layer];
+                            
+                            return (
+                              <div key={layer} style={{ 
+                                display: 'flex', 
+                                alignItems: 'flex-start', 
+                                gap: '6px', 
+                                fontSize: '0.7rem',
+                                padding: '6px 8px',
+                                borderRadius: '4px',
+                                background: bgCol,
+                                border: '1px solid ' + (l.score > 0 ? 'rgba(16, 185, 129, 0.08)' : l.score < 0 ? 'rgba(244, 63, 94, 0.08)' : 'transparent')
+                              }}>
+                                <span style={{ 
+                                  color: col, 
+                                  fontWeight: '700', 
+                                  minWidth: '50px', 
+                                  display: 'inline-flex', 
+                                  alignItems: 'center',
+                                  fontFamily: 'var(--font-mono)'
+                                }}>
+                                  <span>{icon}{l.score > 0 ? '+' : ''}{l.score}</span>
+                                  <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '2px' }}>
+                                    ({weight.toFixed(1)}x)
+                                  </span>
+                                </span>
+                                <div style={{ flex: 1, lineHeight: '1.2' }}>
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{labels[layer]}: </span>
+                                  <span style={{ color: 'var(--text-secondary)' }}>{l.note}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 4. Estrategia Filtro Maestro */}
+          {(() => {
+            const id = 'multitemporal';
+            const isExpanded = expandedStrategy === id;
+            const isRecommended = bestStrategy === id;
+            const sig = multi.signal;
+            const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
+            const winRateText = btMultitemporal && !btMultitemporal.insufficient ? `${Math.round(btMultitemporal.winRate * 100)}% WR` : '— WR';
+            
+            return (
+              <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
+                <div 
+                  className="sp-strategy-card-header" 
+                  onClick={() => setExpandedStrategy(isExpanded ? null : id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Filtro Maestro</span>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(1H Trend + ST)</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: 'var(--accent-blue-bg)', 
+                        color: 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        LÍDER
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      color: sigColor, 
+                      backgroundColor: sigBg,
+                      border: `1px solid ${sigColor === 'var(--text-secondary)' ? 'rgba(255, 255, 255, 0.06)' : sigColor + '20'}`,
+                      padding: '2px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {closes.length === 0 ? 'WAITING...' : (sig as string) === 'NEUTRAL' || (sig as string) === 'HOLD' ? 'NEUTRO' : sig}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
+                      {winRateText}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="sp-strategy-card-content">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>RENDIMIENTO HISTÓRICO</div>
+                        <BacktestCard name="Filtro Maestro (1H + ST)" result={btMultitemporal} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>FILTROS DE DIRECCIÓN</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Filtro de Tendencia (1H EMA 200):</span>
+                            <span style={{ 
+                              color: multi.isTrendUp ? 'var(--accent-green)' : 'var(--accent-red)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 && macroKlines.length >= 200 ? (multi.isTrendUp ? '▲ ALCISTA' : '▼ BAJISTA') : '-'}
+                              <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.7rem', marginLeft: '4px' }}>
+                                (${multi.ema200_1h})
+                              </span>
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Supertrend 5m (10,3):</span>
+                            <span style={{ 
+                              color: multi.supertrendDir === 'UP' ? 'var(--accent-green)' : 'var(--accent-red)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 ? (multi.supertrendDir === 'UP' ? '▲ COMPRA' : '▼ VENTA') : '-'}
+                              <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.7rem', marginLeft: '4px' }}>
+                                (${multi.supertrendVal})
+                              </span>
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Posición vs VWAP:</span>
+                            <span style={{ 
+                              color: (closes.length > 0 && closes[closes.length - 1] > multi.vwap) ? 'var(--accent-green)' : 'var(--accent-red)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 ? (closes[closes.length - 1] > multi.vwap ? '▲ SOBRE VWAP' : '▼ BAJO VWAP') : '-'}
+                              <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.7rem', marginLeft: '4px' }}>
+                                (${multi.vwap})
+                              </span>
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>RSI (5m):</span>
+                            <span style={{ 
+                              color: (multi.signal === 'BUY' || (multi.rsi >= 40 && multi.rsi <= 70)) ? 'var(--accent-green)' : 'var(--text-muted)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 ? `${multi.rsi} (Sano)` : '-'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── TAB CONTENT: CALCULATOR ─────────────────── */}
+      {activeTab === 'calculator' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          
           <div style={{
             backgroundColor: 'var(--bg-panel)',
             border: '1px solid var(--border-color)',
-            padding: '16px 14px 14px 14px',
+            padding: '16px 14px',
             borderRadius: 'var(--border-radius-md)',
-            position: 'relative',
             boxShadow: 'var(--shadow-sm)',
             display: 'flex',
             flexDirection: 'column',
-            gap: '10px'
+            gap: '14px'
           }}>
-            <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-                CATALIZADORES DE VOLATILIDAD
-              </span>
-            </div>
             
-            {earningsInfo && (
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                padding: '6px 10px',
-                background: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.05)' : 'rgba(255, 255, 255, 0.01)',
-                border: `1px solid ${earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.2)' : 'var(--border-color)'}`,
-                borderRadius: '6px'
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Reporte de Ganancias (Stock)</span>
-                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{earningsInfo.date}</span>
-                </div>
-                <span style={{ 
-                  fontSize: '0.65rem', 
-                  fontWeight: '800', 
-                  padding: '2px 8px', 
-                  borderRadius: '4px',
-                  color: earningsInfo.daysLeft <= 2 ? 'var(--accent-red)' : 'var(--accent-blue)',
-                  backgroundColor: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.08)' : 'rgba(0, 229, 255, 0.08)'
-                }}>
-                  {earningsInfo.daysLeft <= 0 ? 'Hoy' : earningsInfo.daysLeft === 1 ? 'Mañana' : `en ${earningsInfo.daysLeft} días`}
-                </span>
-              </div>
-            )}
-            
-            {nextMacro && (
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                padding: '6px 10px',
-                background: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.05)' : 'rgba(255, 255, 255, 0.01)',
-                border: `1px solid ${nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.2)' : 'var(--border-color)'}`,
-                borderRadius: '6px'
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>{nextMacro.title} (Macro 2026)</span>
-                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{new Date(nextMacro.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                </div>
-                <span style={{ 
-                  fontSize: '0.65rem', 
-                  fontWeight: '800', 
-                  padding: '2px 8px', 
-                  borderRadius: '4px',
-                  color: nextMacro.daysLeft <= 2 ? 'var(--accent-yellow)' : 'var(--text-secondary)',
-                  backgroundColor: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255, 255, 255, 0.03)'
-                }}>
-                  {nextMacro.daysLeft === 0 ? 'Hoy' : nextMacro.daysLeft === 1 ? 'Mañana' : `en ${nextMacro.daysLeft} días`}
-                </span>
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* ── RISK CALCULATOR ─────────────────────────── */}
-      <div style={{
-        backgroundColor: 'var(--bg-panel)',
-        border: '1px solid var(--border-color)',
-        padding: '16px 14px 14px 14px',
-        borderRadius: 'var(--border-radius-md)',
-        position: 'relative',
-        boxShadow: 'var(--shadow-sm)'
-      }}>
-        <div style={{ 
-          position: 'absolute', 
-          top: '-10px', 
-          left: '14px', 
-          background: 'var(--bg-dark)', 
-          padding: '0 8px', 
-          borderRadius: '4px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          cursor: 'pointer'
-        }}
-        onClick={() => setCalcOpen(!calcOpen)}
-        >
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-            CALCULADORA DE RIESGO {calcOpen ? '▼' : '▶'}
-          </span>
-        </div>
-
-        {calcOpen && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
             {/* Direction Selection & Parameter Sync Info */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', gap: '4px', background: 'rgba(0,0,0,0.25)', padding: '2px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                 <button
                   onClick={() => setCalcDirection('BUY')}
                   style={{
-                    padding: '2px 8px',
-                    fontSize: '0.65rem',
+                    padding: '4px 12px',
+                    fontSize: '0.7rem',
                     fontWeight: 'bold',
                     background: calcDirection === 'BUY' ? 'var(--accent-green)' : 'transparent',
                     color: calcDirection === 'BUY' ? '#fff' : 'var(--text-muted)',
@@ -552,8 +1058,8 @@ export default function SignalPanel({
                 <button
                   onClick={() => setCalcDirection('SELL')}
                   style={{
-                    padding: '2px 8px',
-                    fontSize: '0.65rem',
+                    padding: '4px 12px',
+                    fontSize: '0.7rem',
                     fontWeight: 'bold',
                     background: calcDirection === 'SELL' ? 'var(--accent-red)' : 'transparent',
                     color: calcDirection === 'SELL' ? '#fff' : 'var(--text-muted)',
@@ -583,7 +1089,7 @@ export default function SignalPanel({
                     background: 'rgba(0,0,0,0.3)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '4px',
-                    padding: '4px 6px',
+                    padding: '6px 8px',
                     color: '#fff',
                     fontFamily: 'var(--font-mono)',
                     fontSize: '0.75rem',
@@ -604,7 +1110,7 @@ export default function SignalPanel({
                     background: 'rgba(0,0,0,0.3)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '4px',
-                    padding: '4px 6px',
+                    padding: '6px 8px',
                     color: '#fff',
                     fontFamily: 'var(--font-mono)',
                     fontSize: '0.75rem',
@@ -627,7 +1133,7 @@ export default function SignalPanel({
                       background: 'rgba(0,0,0,0.3)',
                       border: '1px solid var(--border-color)',
                       borderRadius: '4px',
-                      padding: '4px 6px',
+                      padding: '6px 8px',
                       color: '#fff',
                       fontFamily: 'var(--font-mono)',
                       fontSize: '0.75rem',
@@ -644,8 +1150,8 @@ export default function SignalPanel({
             <div style={{ 
               display: 'flex', 
               justifyContent: 'space-between', 
-              background: 'rgba(0,0,0,0.15)', 
-              padding: '8px 10px', 
+              background: 'rgba(0,0,0,0.2)', 
+              padding: '10px 12px', 
               borderRadius: '6px', 
               border: '1px solid var(--border-color)',
               fontSize: '0.75rem',
@@ -677,8 +1183,8 @@ export default function SignalPanel({
               gridTemplateColumns: '1fr 1fr',
               gap: '8px',
               padding: '10px 12px',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.01) 0%, rgba(0,229,255,0.02) 100%)',
-              border: '1px solid rgba(0, 229, 255, 0.1)',
+              background: 'linear-gradient(135deg, rgba(255,255,255,0.01) 0%, rgba(59,130,246,0.03) 100%)',
+              border: '1px solid rgba(59, 130, 246, 0.12)',
               borderRadius: '6px',
             }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -707,463 +1213,166 @@ export default function SignalPanel({
               </div>
             </div>
           </div>
-        )}
-      </div>
-      {/* ── BACKTEST SECTION ─────────────────────────── */}
-      <div style={{
-        backgroundColor: 'var(--bg-panel)',
-        border: '1px solid var(--border-color)',
-        padding: '16px 14px 14px 14px',
-        borderRadius: 'var(--border-radius-md)',
-        position: 'relative',
-        boxShadow: 'var(--shadow-sm)'
-      }}>
-        <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-            BACKTEST HISTÓRICO
-          </span>
         </div>
+      )}
 
-        <div style={{ marginTop: '2px', marginBottom: '12px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-          Porcentaje de acierto en velas previas (objetivo ±1.5%)
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <BacktestCard name="Standard (RSI+MACD+BB)" result={btStandard} />
-          <BacktestCard name="Signal 1 · Confluencia" result={btConfluencia} />
-          <BacktestCard name="Signal 2 · Scoring" result={btScoring} />
-          <BacktestCard name="Filtro Maestro (1H + ST)" result={btMultitemporal} />
-        </div>
-      </div>
-
-      {/* ── BETA Box ────────────────────────────────── */}
-      <div style={{
-        backgroundColor: 'var(--bg-panel)',
-        border: '1px solid var(--border-color)',
-        padding: '18px 16px 16px 16px',
-        borderRadius: 'var(--border-radius-md)',
-        position: 'relative',
-        boxShadow: 'var(--shadow-sm)'
-      }}>
-        <div style={{ position: 'absolute', top: '-10px', right: '12px', background: 'var(--accent-blue)', color: '#fff', fontSize: '8px', padding: '2px 8px', borderRadius: '20px', fontWeight: '800', letterSpacing: '0.5px' }}>BETA</div>
-
-        {/* ── Signal 1: Confluencia ────────────────── */}
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 1 · CONFLUENCIA (EMA+VWAP+VELAS)</div>
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
-            <span style={{ 
-              color: exp.signal === 'BUY' ? 'var(--accent-green)' : exp.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', 
-              fontWeight: '700',
-              fontSize: '0.85rem'
-            }}>
-              {klines.length > 0 ? exp.signal : 'WAITING...'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Stop Loss:</span>
-            <span style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
-              {exp.stopLoss > 0 ? `$${exp.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Volumen:</span>
-            <span style={{ 
-              color: exp.validVolume ? 'var(--accent-green)' : 'var(--text-muted)', 
-              fontSize: '0.8rem',
-              fontWeight: '600',
-              background: exp.validVolume ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
-              padding: exp.validVolume ? '2px 6px' : '0',
-              borderRadius: '4px'
-            }}>
-              {exp.validVolume ? 'VÁLIDO' : 'BAJO'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Cruce EMA 9/20:</span>
-            {klines.length > 0 ? (() => {
-              const c = exp.emaCrossover;
-              if (c.type === 'NONE') {
-                return <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Sin cruce</span>;
-              }
-              const isBull = c.type === 'BULLISH';
-              const color  = isBull ? 'var(--accent-green)' : 'var(--accent-red)';
-              const icon   = isBull ? '▲' : '▼';
-              const label  = isBull ? 'ALCISTA' : 'BAJISTA';
-              const when   = c.barsAgo === 0 ? 'esta vela' : `hace ${c.barsAgo} vela${c.barsAgo > 1 ? 's' : ''}`;
-              return (
-                <span style={{ color, fontSize: '0.8rem', fontWeight: '700' }}>
-                  {icon} {label} <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem' }}>({when})</span>
-                </span>
-              );
-            })() : <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>}
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div style={{ borderTop: '1px dashed var(--border-color)', margin: '14px 0' }} />
-
-        {/* ── Signal 2: Scoring Multicapa ──────────── */}
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 2 · SCORING MULTICAPA (5 CAPAS)</div>
-        
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
-          <span style={{ color: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: '700', fontSize: '0.85rem' }}>
-            {klines.length > 0 ? score.signal : 'WAITING...'}
-          </span>
-        </div>
-
-        {/* Score bar -max to +max */}
-        <div style={{ marginBottom: '10px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px', fontFamily: 'var(--font-mono)' }}>
-            <span>-{score.threshold}</span>
-            <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Score: {score.score > 0 ? '+' : ''}{score.score}</span>
-            <span>+{score.threshold}</span>
-          </div>
-          <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', position: 'relative', overflow: 'hidden' }}>
-            <div style={{
-              position: 'absolute', top: 0, height: '100%', borderRadius: '4px',
-              width: `${score.threshold > 0 ? Math.min(100, (Math.abs(score.score) / score.threshold) * 50) : 0}%`,
-              left: score.score >= 0 ? '50%' : `${50 - (score.threshold > 0 ? Math.min(50, (Math.abs(score.score) / score.threshold) * 50) : 0)}%`,
-              background: score.signal === 'BUY' ? 'var(--accent-green)' : score.signal === 'SELL' ? 'var(--accent-red)' : 'var(--accent-blue)',
-              transition: 'width 0.4s ease',
-              boxShadow: score.signal === 'BUY' ? '0 0 10px var(--accent-green)' : score.signal === 'SELL' ? '0 0 10px var(--accent-red)' : 'none'
-            }} />
-            <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: '100%', background: 'rgba(255, 255, 255, 0.15)' }} />
-          </div>
-        </div>
-
-        {/* Dynamic Weight Configuration Expandable Panel */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
-          <button 
-            onClick={() => setShowWeightsConfig(prev => !prev)}
-            style={{
-              color: 'var(--accent-blue)',
-              fontSize: '0.7rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              textDecoration: 'none',
-              padding: '2px 8px',
-              borderRadius: '12px',
-              border: '1px solid rgba(59, 130, 246, 0.15)',
-              background: 'rgba(59, 130, 246, 0.03)',
-            }}
-          >
-            {showWeightsConfig ? 'Ocultar Pesos ✕' : 'Ajustar Pesos ⚙️'}
-          </button>
-        </div>
-
-        {showWeightsConfig && (
-          <div style={{
-            backgroundColor: 'rgba(0, 0, 0, 0.2)',
-            border: '1px solid var(--border-color)',
-            borderRadius: 'var(--border-radius-sm)',
-            padding: '12px',
-            marginBottom: '12px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px'
-          }}>
-            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px', display: 'flex', justifyContent: 'space-between', letterSpacing: '0.5px' }}>
-              <span>CAPA</span>
-              <span>PESO</span>
-            </div>
-            {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
-              const labels: Record<string, string> = { trend: 'Tendencia (EMA)', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
-              return (
-                <div key={layer} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>{labels[layer]}</span>
-                    <span style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>{weights[layer].toFixed(1)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="3"
-                    step="0.1"
-                    value={weights[layer]}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      setWeights(prev => ({
-                        ...prev,
-                        [layer]: val
-                      }));
-                    }}
-                    style={{
-                      width: '100%',
-                      accentColor: 'var(--accent-blue)',
-                      height: '4px',
-                      cursor: 'pointer'
-                    }}
-                  />
-                </div>
-              );
-            })}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', marginTop: '4px' }}>
-              <button
-                onClick={() => setWeights(DEFAULT_WEIGHTS)}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-secondary)',
-                  fontSize: '0.65rem',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-              >
-                Resetear
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Layer breakdown */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '12px' }}>
-          {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
-            const l = score.layers[layer];
-            const icon = l.score > 0 ? '▲' : l.score < 0 ? '▼' : '─';
-            const col  = l.score > 0 ? 'var(--accent-green)' : l.score < 0 ? 'var(--accent-red)' : 'var(--text-muted)';
-            const bgCol = l.score > 0 ? 'rgba(16, 185, 129, 0.05)' : l.score < 0 ? 'rgba(244, 63, 94, 0.05)' : 'transparent';
-            const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
-            const weight = weights[layer];
-            return (
-              <div key={layer} style={{ 
-                display: 'flex', 
-                alignItems: 'flex-start', 
-                gap: '8px', 
-                fontSize: '0.75rem',
-                padding: '6px 8px',
-                borderRadius: '4px',
-                background: bgCol,
-                border: '1px solid ' + (l.score > 0 ? 'rgba(16, 185, 129, 0.1)' : l.score < 0 ? 'rgba(244, 63, 94, 0.1)' : 'transparent')
-              }}>
-                <span style={{ 
-                  color: col, 
-                  fontWeight: '700', 
-                  minWidth: '54px', 
-                  display: 'inline-flex', 
-                  alignItems: 'center',
-                  fontFamily: 'var(--font-mono)'
-                }}>
-                  <span>{icon}{l.score > 0 ? '+' : ''}{l.score}</span>
-                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: '3px' }}>
-                    ({weight.toFixed(1)}x)
-                  </span>
-                </span>
-                <div style={{ flex: 1, lineHeight: '1.3' }}>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{labels[layer]}: </span>
-                  <span style={{ color: 'var(--text-secondary)' }}>{l.note}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Divider */}
-      <div style={{ borderTop: '1px dashed var(--border-color)', margin: '14px 0' }} />
-
-      {/* ── Signal 3: Filtro Maestro ──────────── */}
-      <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '10px', fontWeight: '800', letterSpacing: '0.8px' }}>SIGNAL 3 · FILTRO MAESTRO (1H TREND + ST)</div>
-      
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Señal:</span>
-          <span style={{ 
-            color: multi.signal === 'BUY' ? 'var(--accent-green)' : multi.signal === 'SELL' ? 'var(--accent-red)' : 'var(--text-muted)', 
-            fontWeight: '700',
-            fontSize: '0.85rem'
-          }}>
-            {klines.length > 0 && macroKlines.length >= 200 ? multi.signal : 'WAITING...'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Tendencia Macro (1H EMA 200):</span>
-          <span style={{ 
-            color: multi.isTrendUp ? 'var(--accent-green)' : 'var(--accent-red)', 
-            fontWeight: '700',
-            fontSize: '0.8rem'
-          }}>
-            {klines.length > 0 && macroKlines.length >= 200 ? (multi.isTrendUp ? '▲ ALCISTA' : '▼ BAJISTA') : '-'}
-            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
-              (${multi.ema200_1h})
-            </span>
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supertrend 5m (10,3):</span>
-          <span style={{ 
-            color: multi.supertrendDir === 'UP' ? 'var(--accent-green)' : 'var(--accent-red)', 
-            fontWeight: '700',
-            fontSize: '0.8rem'
-          }}>
-            {klines.length > 0 ? (multi.supertrendDir === 'UP' ? '▲ COMPRA' : '▼ VENTA') : '-'}
-            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
-              (${multi.supertrendVal})
-            </span>
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Precio vs VWAP:</span>
-          <span style={{ 
-            color: (closes.length > 0 && closes[closes.length - 1] > multi.vwap) ? 'var(--accent-green)' : 'var(--accent-red)', 
-            fontWeight: '700',
-            fontSize: '0.8rem'
-          }}>
-            {klines.length > 0 ? (closes[closes.length - 1] > multi.vwap ? '▲ SOBRE VWAP' : '▼ BAJO VWAP') : '-'}
-            <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
-              (${multi.vwap})
-            </span>
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>RSI (5m):</span>
-          <span style={{ 
-            color: (multi.signal === 'BUY' || (multi.rsi >= 40 && multi.rsi <= 70)) ? 'var(--accent-green)' : 'var(--text-muted)', 
-            fontWeight: '700',
-            fontSize: '0.8rem'
-          }}>
-            {klines.length > 0 ? `${multi.rsi} (Sano)` : '-'}
-          </span>
-        </div>
-      </div>
-
-      {/* Indicators List */}
-      <div style={{
-        backgroundColor: 'var(--bg-panel)',
-        border: '1px solid var(--border-color)',
-        padding: '16px',
-        borderRadius: 'var(--border-radius-md)'
-      }}>
-        <div style={{ 
-          color: 'var(--text-secondary)', 
-          fontSize: '0.75rem', 
-          fontWeight: '800', 
-          letterSpacing: '1px', 
-          marginBottom: '14px', 
-          borderBottom: '1px solid var(--border-color)', 
-          paddingBottom: '8px',
-          textTransform: 'uppercase'
-        }}>
-          TECHNICAL INDICATORS
-        </div>
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {indicators.map(ind => {
-            const hasData = closes.length > 0;
-            const signalBg = ind.signal === 'BUY' 
-              ? 'rgba(16, 185, 129, 0.08)' 
-              : ind.signal === 'SELL' 
-                ? 'rgba(244, 63, 94, 0.08)' 
-                : 'rgba(255,255,255,0.02)';
+      {/* ── TAB CONTENT: MARKET ─────────────────────── */}
+      {activeTab === 'market' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          
+          {/* Volatility Catalysts (Earnings & Macro events) */}
+          {(() => {
+            const nextMacro = getNextMacroEvent();
+            const earningsInfo = getEarningsInfo();
+            const hasEvents = nextMacro || earningsInfo;
+            
+            if (!hasEvents) return null;
             
             return (
-              <div 
-                key={ind.name} 
-                style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center',
-                  padding: '8px 10px',
-                  borderRadius: '6px',
-                  background: 'rgba(255, 255, 255, 0.01)',
-                  border: '1px solid rgba(255, 255, 255, 0.03)'
-                }}
-              >
-                <div>
-                  <div style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontWeight: '600' }}>{ind.name}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
-                    {hasData ? ind.value : '-'}
+              <div style={{
+                backgroundColor: 'var(--bg-panel)',
+                border: '1px solid var(--border-color)',
+                padding: '16px 14px 14px 14px',
+                borderRadius: 'var(--border-radius-md)',
+                position: 'relative',
+                boxShadow: 'var(--shadow-sm)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
+                    CATALIZADORES DE VOLATILIDAD
+                  </span>
+                </div>
+                
+                {earningsInfo && (
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    padding: '6px 10px',
+                    background: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.05)' : 'rgba(255, 255, 255, 0.01)',
+                    border: `1px solid ${earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.2)' : 'var(--border-color)'}`,
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Reporte de Ganancias (Stock)</span>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{earningsInfo.date}</span>
+                    </div>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      padding: '2px 8px', 
+                      borderRadius: '4px',
+                      color: earningsInfo.daysLeft <= 2 ? 'var(--accent-red)' : 'var(--accent-blue)',
+                      backgroundColor: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.08)' : 'rgba(0, 229, 255, 0.08)'
+                    }}>
+                      {earningsInfo.daysLeft <= 0 ? 'Hoy' : earningsInfo.daysLeft === 1 ? 'Mañana' : `en ${earningsInfo.daysLeft} días`}
+                    </span>
                   </div>
-                </div>
-                <div style={{ 
-                  color: ind.color, 
-                  fontWeight: '700',
-                  padding: '4px 10px',
-                  background: signalBg,
-                  border: `1px solid ${ind.color === 'var(--text-primary)' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.0)'}`,
-                  borderRadius: '12px',
-                  fontSize: '0.7rem',
-                  fontFamily: 'var(--font-mono)',
-                }}>
-                  {hasData ? ind.signal : '-'}
-                </div>
+                )}
+                
+                {nextMacro && (
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    padding: '6px 10px',
+                    background: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.05)' : 'rgba(255, 255, 255, 0.01)',
+                    border: `1px solid ${nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.2)' : 'var(--border-color)'}`,
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>{nextMacro.title} (Macro 2026)</span>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{new Date(nextMacro.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                    </div>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      padding: '2px 8px', 
+                      borderRadius: '4px',
+                      color: nextMacro.daysLeft <= 2 ? 'var(--accent-yellow)' : 'var(--text-secondary)',
+                      backgroundColor: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255, 255, 255, 0.03)'
+                    }}>
+                      {nextMacro.daysLeft === 0 ? 'Hoy' : nextMacro.daysLeft === 1 ? 'Mañana' : `en ${nextMacro.daysLeft} días`}
+                    </span>
+                  </div>
+                )}
               </div>
             );
-          })}
-        </div>
-      </div>
+          })()}
 
-      {/* News Feed */}
-      <div style={{
-        backgroundColor: 'var(--bg-panel)',
-        border: '1px solid var(--border-color)',
-        padding: '16px',
-        borderRadius: 'var(--border-radius-md)'
-      }}>
-        <div style={{ 
-          color: 'var(--text-secondary)', 
-          fontSize: '0.75rem', 
-          fontWeight: '800', 
-          letterSpacing: '1px', 
-          marginBottom: '14px', 
-          borderBottom: '1px solid var(--border-color)', 
-          paddingBottom: '8px',
-          textTransform: 'uppercase'
-        }}>
-          LATEST NEWS
+          {/* News Feed */}
+          <div style={{
+            backgroundColor: 'var(--bg-panel)',
+            border: '1px solid var(--border-color)',
+            padding: '16px',
+            borderRadius: 'var(--border-radius-md)'
+          }}>
+            <div style={{ 
+              color: 'var(--text-secondary)', 
+              fontSize: '0.75rem', 
+              fontWeight: '800', 
+              letterSpacing: '1px', 
+              marginBottom: '14px', 
+              borderBottom: '1px solid var(--border-color)', 
+              paddingBottom: '8px',
+              textTransform: 'uppercase'
+            }}>
+              ÚLTIMAS NOTICIAS
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {loadingNews ? (
+                <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Cargando noticias...</div>
+              ) : news.length > 0 ? (
+                news.map((item, index) => (
+                  <a 
+                    key={index} 
+                    href={item.url} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    style={{ 
+                      textDecoration: 'none', 
+                      display: 'block',
+                      padding: '10px 12px',
+                      borderRadius: '6px',
+                      background: 'rgba(255, 255, 255, 0.01)',
+                      border: '1px solid rgba(255, 255, 255, 0.03)',
+                      transition: 'var(--transition-smooth)',
+                    }}
+                    className="news-card"
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(59, 130, 246, 0.03)';
+                      e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.15)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.01)';
+                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.03)';
+                    }}
+                  >
+                    <div style={{ 
+                      color: 'var(--accent-blue)', 
+                      marginBottom: '6px', 
+                      lineHeight: '1.4', 
+                      fontWeight: '600',
+                      fontSize: '0.8rem'
+                    }}>
+                      {item.title}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                      <span>{item.source}</span>
+                      <span>{item.time}</span>
+                    </div>
+                  </a>
+                ))
+              ) : (
+                <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Sin noticias recientes</div>
+              )}
+            </div>
+          </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {loadingNews ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Loading news...</div>
-          ) : news.length > 0 ? (
-            news.map((item, index) => (
-              <a 
-                key={index} 
-                href={item.url} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                style={{ 
-                  textDecoration: 'none', 
-                  display: 'block',
-                  padding: '10px 12px',
-                  borderRadius: '6px',
-                  background: 'rgba(255, 255, 255, 0.01)',
-                  border: '1px solid rgba(255, 255, 255, 0.03)',
-                  transition: 'var(--transition-smooth)',
-                }}
-                className="news-card"
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.03)';
-                  e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.15)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.01)';
-                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.03)';
-                }}
-              >
-                <div style={{ 
-                  color: 'var(--accent-blue)', 
-                  marginBottom: '6px', 
-                  lineHeight: '1.4', 
-                  fontWeight: '600',
-                  fontSize: '0.8rem'
-                }}>
-                  {item.title}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
-                  <span>{item.source}</span>
-                  <span>{item.time}</span>
-                </div>
-              </a>
-            ))
-          ) : (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>No recent news</div>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

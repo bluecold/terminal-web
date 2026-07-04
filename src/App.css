@@ -271,3 +271,107 @@
     padding: 10px 16px;
   }
 }
+
+/* ── SIGNAL PANEL REDESIGN STYLES ────────────────── */
+.sp-tab-container {
+  display: flex;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 3px;
+  gap: 2px;
+}
+
+.sp-tab-button {
+  flex: 1;
+  padding: 8px 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  text-align: center;
+  transition: var(--transition-smooth);
+}
+
+.sp-tab-button:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.sp-tab-button.active {
+  color: #fff;
+  background: var(--accent-blue);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+}
+
+.sp-strategy-card {
+  background: rgba(13, 17, 28, 0.3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  transition: var(--transition-smooth);
+}
+
+.sp-strategy-card.recommended {
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.05);
+}
+
+.sp-strategy-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.15);
+  transition: var(--transition-smooth);
+  user-select: none;
+}
+
+.sp-strategy-card-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.sp-strategy-card-content {
+  padding: 14px;
+  border-top: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.15);
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.sp-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sp-stat-item {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-color);
+  padding: 6px 10px;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sp-stat-label {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+}
+
+.sp-stat-value {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
