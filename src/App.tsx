@@ -5,6 +5,7 @@ import Chart from './components/Chart';
 import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
 import { fetchKlines, fetchEarningsDate } from './services/api';
+import MarketTicker from './components/MarketTicker';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateMultitemporalSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal } from './utils/backtester';
@@ -495,6 +496,7 @@ function App() {
             </button>
           </div>
         </div>
+        <MarketTicker />
         <div className="top-bar-right">
           <div className="status-indicator">
             <div className="dot"></div>

@@ -14,6 +14,7 @@
 * **Multi-Soporte de Mercados:**
   * **Criptomonedas:** Obtención de datos en tiempo real mediante la API pública de Binance (ej. `BTCUSDT`).
   * **Mercados Tradicionales/Stocks:** Integración con Yahoo Finance V8 API (ej. `TSLA`, `MSFT`).
+* **Marquesina de Índices en Tiempo Real:** Barra superior interactiva (carrusel/marquee) al estilo Yahoo Finance que muestra cotizaciones en tiempo real y variaciones diarias de los principales mercados mundiales (S&P 500 Futures, Nasdaq, Dow Jones, Russell 2000, VIX, Gold, Crude Oil, Bitcoin). Utiliza animación fluida acelerada por GPU y pausa automática al pasar el cursor.
 * **Feed de Noticias Relevantes:** Muestra hasta 3 noticias recientes curadas desde Yahoo Finance del activo seleccionado, permitiendo entender rápidamente los fundamentales que mueven el precio.
 * **Alertas en Segundo Plano (Watchlist):** Notificaciones nativas del navegador (vía Notifications API) que escanean automáticamente toda tu Watchlist (y el activo en pantalla) cada 60 segundos. Cuenta con un filtro estricto de calidad (requiere que la mejor estrategia tenga un Profit Factor >= 1.3 y un volumen mínimo de operaciones según el timeframe) para evitar ruido y falsas señales.
 * **Historial Interactivo de Alertas:** Registro visual persistente (guardado en `localStorage`) en la barra lateral izquierda que almacena las últimas 20 alertas. Al hacer clic en cualquier tarjeta, el gráfico cambia automáticamente al símbolo y la temporalidad de la señal para que la revises al instante.

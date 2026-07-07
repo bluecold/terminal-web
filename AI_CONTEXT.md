@@ -46,6 +46,8 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela.
 - **Catalizadores de Volatilidad (Calendario)**: Sistema de alerta que consulta online reportes de ganancias y eventos macro clave (IPC, FOMC) de 2026, advirtiendo del peligro en ventanas menores a 48 horas.
 - **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles para las 4 estrategias. Integra de forma limpia las señales, parámetros y backtests, mejorando la legibilidad y otorgando un aspecto institucional.
+- **Marquesina de Índices Bursátiles (Market Ticker)**: Un widget horizontal en la cabecera (inspirado en Yahoo Finance) que muestra de forma dinámica las cotizaciones de futuros (S&P, Dow, Nasdaq, Russell), VIX, materias primas (oro, crudo) y Bitcoin. Está completamente acelerado por GPU usando transiciones CSS y posee un mecanismo de pausa interactiva (`hover: paused`). Se consulta en paralelo cada 60 segundos mediante el endpoint `/v8/finance/chart` sin interferir con las operaciones o la red del resto de la app. Se oculta automáticamente en dispositivos móviles.
+
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
 - **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.

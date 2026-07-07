@@ -132,3 +132,37 @@ export async function fetchEarningsDate(symbol: string): Promise<number | null> 
     return null;
   }
 }
+
+export interface TickerSummary {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+}
+
+export async function fetchTickerSummary(symbol: string, prettyName: string): Promise<TickerSummary | null> {
+  try {
+    const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=1d&interval=1m`);
+    const data = await response.json();
+    const meta = data.chart?.result?.[0]?.meta;
+    if (!meta) return null;
+
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? price;
+    const change = price - prevClose;
+    const changePercent = prevClose ? (change / prevClose) * 100 : 0;
+
+    return {
+      symbol,
+      name: prettyName,
+      price,
+      change,
+      changePercent
+    };
+  } catch (e) {
+    console.error(`Error fetching ticker summary for ${symbol}`, e);
+    return null;
+  }
+}
+
