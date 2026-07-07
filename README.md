@@ -21,6 +21,10 @@
 * **Calculadora Dinámica de Gestión de Riesgo y Posición:** Herramienta para dimensionar tu operativa de forma profesional. Ingresando tu capital y el riesgo estipulado (ej: 1%), calcula el tamaño sugerido de la posición (unidades/USD) y margen necesario, cargando dinámicamente el Stop Loss y Take Profit adaptativos (ATR) de la estrategia activa.
 * **Matriz de Confluencia Multitemporal:** Un widget que evalúa y expone en paralelo las señales técnicas del activo en 5m, 1h y 1d, permitiendo confirmar si la operación coincide con la tendencia de temporalidades superiores.
 * **Calendario de Catalizadores de Volatilidad:** Sistema de prevención que advierte al usuario si hay un reporte de ganancias corporativas inminente (consultado online para acciones) o eventos macro clave de 2026 pre-agendados (IPC/CPI y decisiones de la FOMC/Fed), alertando si quedan menos de 48 horas para el evento.
+* **Métricas de Contexto de Sentimiento y Fundamentales:**
+  * **Stocks (Acciones):** Integración con el feed oficial de **Zacks Rank** (escala 1-5 de Strong Buy a Strong Sell) y Beta de volatilidad para proveer contexto macroeconómico verídico sin depender de datos ficticios.
+  * **Criptomonedas:** Consulta directa al índice de sentimiento **Fear & Greed (Miedo y Codicia)** mediante la API de `alternative.me` para detectar extremos de euforia o pánico en el mercado cripto.
+  * **Caché Eficiente:** Almacenamiento local persistente (`localStorage`) por activo válido por 24 horas para reducir la latencia a 0 ms y optimizar el consumo de red.
 
 ---
 
