@@ -3,6 +3,10 @@
     {
       "source": "/api/yahoo/(.*)",
       "destination": "https://query2.finance.yahoo.com/$1"
+    },
+    {
+      "source": "/api/zacks/(.*)",
+      "destination": "https://quote-feed.zacks.com/$1"
     }
   ]
 }
