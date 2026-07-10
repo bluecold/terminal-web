@@ -143,6 +143,19 @@ export function calculateMACD(data: number[]): IndicatorResult {
         break;
       }
     }
+
+    // Histogram acceleration filter: degrade signal if momentum is fading
+    if (signal !== 'NEUTRAL' && len >= 3) {
+      const latestHist = histogramSeries[len - 1];
+      const prevHist = histogramSeries[len - 2];
+      if (!isNaN(latestHist) && !isNaN(prevHist)) {
+        if (signal === 'BUY' && latestHist > 0 && latestHist < prevHist) {
+          signal = 'NEUTRAL'; // Bullish momentum decelerating
+        } else if (signal === 'SELL' && latestHist < 0 && latestHist > prevHist) {
+          signal = 'NEUTRAL'; // Bearish momentum decelerating
+        }
+      }
+    }
   }
 
   return { value: Number(currentMacd.toFixed(2)), signal };
@@ -477,6 +490,7 @@ export interface ScoringResult {
     bollinger:LayerScore;
     volume:   LayerScore;
     candle:   LayerScore;
+    structure: LayerScore;
   };
 }
 
@@ -503,6 +517,7 @@ export function calculateScoringSignal(
       bollinger:{ score: 0, weightedScore: 0, note: 'Datos insuficientes' },
       volume:   { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
       candle:   { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
+      structure:{ score: 0, weightedScore: 0, note: 'Datos insuficientes' },
     }
   };
 
@@ -533,15 +548,24 @@ export function calculateScoringSignal(
   }
 
   // ── RSI ───────────────────────────────────────────────────────────
-  const rsiResult = calculateRSI(closes, cfg.rsiPeriod);
-  const rsi = rsiResult.value;
+  const rsiSeriesFull = calculateRSISeries(closes, cfg.rsiPeriod);
+  const rsi = rsiSeriesFull[rsiSeriesFull.length - 1];
+  const rsiSlope = calculateRSISlope(rsiSeriesFull, rsiSeriesFull.length - 1, 3);
+  const rsiRising = rsiSlope > 0;
+  const rsiFalling = rsiSlope < 0;
 
-  // Layer 2 — RSI
-  let s2 = 0; let n2 = `RSI(${cfg.rsiPeriod}): ${rsi.toFixed(1)}`;
-  if      (rsi < cfg.rsiOversold)  { s2 += 1; n2 += ` | Sobreventa (<${cfg.rsiOversold})`; }
-  else if (rsi > cfg.rsiOverbought){ s2 -= 1; n2 += ` | Sobrecompra (>${cfg.rsiOverbought})`; }
-  else if (rsi > 50)               { s2 += 1; n2 += ' | Sobre 50 (momentum +)'; }
-  else                             { s2 -= 1; n2 += ' | Bajo 50 (momentum -)'; }
+  // Layer 2 — RSI (con pendiente)
+  let s2 = 0; let n2 = `RSI(${cfg.rsiPeriod}): ${isNaN(rsi) ? '-' : rsi.toFixed(1)}`;
+  if      (isNaN(rsi))                { n2 += ' | Datos insuficientes'; }
+  else if (rsi < cfg.rsiOversold)     { s2 += 1; n2 += ` | Sobreventa (<${cfg.rsiOversold})`; }
+  else if (rsi > cfg.rsiOverbought)   { s2 -= 1; n2 += ` | Sobrecompra (>${cfg.rsiOverbought})`; }
+  else if (rsi > 50) {
+    if (rsiFalling) { s2 += 0; n2 += ' | Sobre 50 ▼ (desacelerando)'; }
+    else            { s2 += 1; n2 += rsiRising ? ' | Sobre 50 ▲ (momentum +)' : ' | Sobre 50 (momentum +)'; }
+  } else {
+    if (rsiRising) { s2 += 0; n2 += ' | Bajo 50 ▲ (recuperando)'; }
+    else           { s2 -= 1; n2 += rsiFalling ? ' | Bajo 50 ▼ (momentum -)' : ' | Bajo 50 (momentum -)'; }
+  }
 
   // ── Bollinger Bands %B ────────────────────────────────────────────
   const bbResult = calculateBollingerBands(closes, cfg.bbPeriod);
@@ -585,23 +609,68 @@ export function calculateScoringSignal(
   else if (body < 0)                  { s5 -= 1; n5 += ' | Bajista moderada'; }
   else                                { n5 += ' | Doji (indecisión)'; }
 
+  // ── Layer 6 — Estructura (Soportes / Resistencias) ────────────────
+  const sr = calculateSupportResistance(klines, curr.close);
+  const structureWeight = 1.0;
+  let s6 = 0; let n6 = '';
+
+  if (sr.nearestSupport > 0 || sr.nearestResistance > 0) {
+    const distSupport = sr.nearestSupport > 0 ? (curr.close - sr.nearestSupport) / curr.close : Infinity;
+    const distResist = sr.nearestResistance > 0 ? (sr.nearestResistance - curr.close) / curr.close : Infinity;
+    const nearThreshold = 0.015; // within 1.5% = "near"
+
+    if (distSupport >= 0 && distSupport < nearThreshold && distSupport <= distResist) {
+      s6 += 1;
+      n6 = `Cerca soporte ($${sr.nearestSupport.toFixed(2)})`;
+    } else if (distResist >= 0 && distResist < nearThreshold && distResist < distSupport) {
+      s6 -= 1;
+      n6 = `Cerca resistencia ($${sr.nearestResistance.toFixed(2)})`;
+    } else {
+      n6 = `S: $${sr.nearestSupport > 0 ? sr.nearestSupport.toFixed(2) : '-'} | R: $${sr.nearestResistance > 0 ? sr.nearestResistance.toFixed(2) : '-'}`;
+    }
+  } else {
+    n6 = 'Sin niveles S/R detectados';
+  }
+
   // Calcular score ponderado
   const w1 = s1 * weights.trend;
   const w2 = s2 * weights.rsi;
   const w3 = s3 * weights.bollinger;
   const w4 = s4 * weights.volume;
   const w5 = s5 * weights.candle;
+  const w6 = s6 * structureWeight;
 
-  const totalScore = w1 + w2 + w3 + w4 + w5;
+  let totalScore = w1 + w2 + w3 + w4 + w5 + w6;
 
   // Calcular score máximo teórico para determinar el umbral (50% del máximo)
   const maxTrend = cfg.emaMajor ? 2 : 1;
-  const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle;
+  const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle + structureWeight;
   const threshold = Number((maxPossible * 0.5).toFixed(2));
 
   let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
   if      (totalScore >=  threshold) signal = 'BUY';
   else if (totalScore <= -threshold) signal = 'SELL';
+
+  // R:R validation: degrade signal if insufficient room to nearest S/R
+  if (signal !== 'HOLD') {
+    const atr = calculateATR(klines, 14);
+    if (atr > 0) {
+      const slDist = 1.5 * atr;
+      if (signal === 'BUY' && sr.nearestResistance > 0) {
+        const rewardRoom = sr.nearestResistance - curr.close;
+        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+          signal = 'HOLD';
+          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
+        }
+      } else if (signal === 'SELL' && sr.nearestSupport > 0) {
+        const rewardRoom = curr.close - sr.nearestSupport;
+        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+          signal = 'HOLD';
+          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
+        }
+      }
+    }
+  }
 
   return {
     signal,
@@ -613,6 +682,7 @@ export function calculateScoringSignal(
       bollinger:{ score: s3, weightedScore: w3, note: n3 },
       volume:   { score: s4, weightedScore: w4, note: n4 },
       candle:   { score: s5, weightedScore: w5, note: n5 },
+      structure:{ score: s6, weightedScore: w6, note: n6 },
     }
   };
 }
@@ -797,11 +867,14 @@ export interface MultitemporalSignalResult {
   stopLoss: number;
   takeProfit: number;
   rsi: number;
+  rsiSlope: number;
   supertrendVal: number;
   supertrendDir: 'UP' | 'DOWN';
   vwap: number;
   ema200_1h: number;
   isTrendUp: boolean;
+  nearestSupport: number;
+  nearestResistance: number;
 }
 
 export function calculateMultitemporalSignal(
@@ -814,11 +887,14 @@ export function calculateMultitemporalSignal(
     stopLoss: 0,
     takeProfit: 0,
     rsi: 50,
+    rsiSlope: 0,
     supertrendVal: 0,
     supertrendDir: 'UP',
     vwap: 0,
     ema200_1h: 0,
-    isTrendUp: false
+    isTrendUp: false,
+    nearestSupport: 0,
+    nearestResistance: 0
   };
 
   if (!klines5m || klines5m.length < 15) return fallback;
@@ -853,8 +929,9 @@ export function calculateMultitemporalSignal(
 
   // 2. Calculate 5m Indicators
   const closes5m = klines5m.map(k => k.close);
-  const rsiObj = calculateRSI(closes5m, 14);
-  const rsi = rsiObj.value;
+  const rsiSeriesFull = calculateRSISeries(closes5m, 14);
+  const rsi = rsiSeriesFull[rsiSeriesFull.length - 1];
+  const rsiSlopeVal = calculateRSISlope(rsiSeriesFull, rsiSeriesFull.length - 1, 3);
 
   const vwap = calculateVWAP(klines5m, '5m', symbol);
 
@@ -867,31 +944,52 @@ export function calculateMultitemporalSignal(
   const isSupertrendFlipGreen = latestSt.direction === 'UP' && prevSt.direction === 'DOWN';
   const isSupertrendFlipRed = latestSt.direction === 'DOWN' && prevSt.direction === 'UP';
 
-  // 3. Evaluate Signals
+  // 3. Support / Resistance
+  const sr = calculateSupportResistance(klines5m, curr5m.close);
+
+  // 4. Evaluate Signals (RSI slope: don't buy into falling momentum, don't sell into rising)
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   let stopLoss = 0;
   let takeProfit = 0;
 
-  if (isTrendUp && isSupertrendFlipGreen && curr5m.close > vwap && rsi >= 40 && rsi <= 70) {
+  if (isTrendUp && isSupertrendFlipGreen && curr5m.close > vwap && rsi >= 40 && rsi <= 70 && rsiSlopeVal >= 0) {
     signal = 'BUY';
     stopLoss = Math.max(latestSt.value, vwap);
     takeProfit = curr5m.close + 1.5 * (curr5m.close - stopLoss);
-  } else if (isTrendDown && isSupertrendFlipRed && curr5m.close < vwap && rsi >= 30 && rsi <= 60) {
+  } else if (isTrendDown && isSupertrendFlipRed && curr5m.close < vwap && rsi >= 30 && rsi <= 60 && rsiSlopeVal <= 0) {
     signal = 'SELL';
     stopLoss = Math.min(latestSt.value, vwap);
     takeProfit = curr5m.close - 1.5 * (stopLoss - curr5m.close);
+  }
+
+  // 5. R:R validation against nearest S/R
+  if (signal === 'BUY' && sr.nearestResistance > 0 && stopLoss > 0) {
+    const riskDist = curr5m.close - stopLoss;
+    const rewardRoom = sr.nearestResistance - curr5m.close;
+    if (riskDist > 0 && rewardRoom > 0 && rewardRoom < riskDist * 1.5) {
+      signal = 'NEUTRAL'; // R:R insufficient
+    }
+  } else if (signal === 'SELL' && sr.nearestSupport > 0 && stopLoss > 0) {
+    const riskDist = stopLoss - curr5m.close;
+    const rewardRoom = curr5m.close - sr.nearestSupport;
+    if (riskDist > 0 && rewardRoom > 0 && rewardRoom < riskDist * 1.5) {
+      signal = 'NEUTRAL'; // R:R insufficient
+    }
   }
 
   return {
     signal,
     stopLoss: Number(stopLoss.toFixed(2)),
     takeProfit: Number(takeProfit.toFixed(2)),
-    rsi,
+    rsi: isNaN(rsi) ? 50 : rsi,
+    rsiSlope: rsiSlopeVal,
     supertrendVal: latestSt.value,
     supertrendDir: latestSt.direction,
     vwap: Number(vwap.toFixed(2)),
     ema200_1h: Number(macroEma200.toFixed(2)),
-    isTrendUp
+    isTrendUp,
+    nearestSupport: sr.nearestSupport,
+    nearestResistance: sr.nearestResistance,
   };
 }
 
@@ -1043,11 +1141,16 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
   const stochRsi   = calculateStochRSI(closes);
   const vol        = calculateVolumeSignal(klines);
 
+  // RSI Slope visual indicator
+  const rsiSeriesForSlope = calculateRSISeries(closes, 14);
+  const slopeDir = calculateRSISlope(rsiSeriesForSlope, rsiSeriesForSlope.length - 1, 3);
+  const slopeArrow = slopeDir > 0 ? ' ▲' : slopeDir < 0 ? ' ▼' : '';
+
   const colorFor = (sig: string) =>
     sig === 'BUY' ? 'var(--accent-green)' : sig === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)';
 
   const indicators = [
-    { name: 'RSI (14)',           value: rsi.value,                                                                                           signal: rsi.signal,        color: colorFor(rsi.signal) },
+    { name: 'RSI (14)',           value: `${rsi.value}${slopeArrow}`,                                                                         signal: rsi.signal,        color: colorFor(rsi.signal) },
     { name: 'MACD (12,26,9)',     value: macd.value,                                                                                          signal: macd.signal,       color: colorFor(macd.signal) },
     { name: 'Bollinger Bands',    value: bb.current.toFixed(2),                                                                               signal: bb.signal,         color: colorFor(bb.signal) },
     { name: 'Supertrend (10,3)',  value: `ST: $${supertrend.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${supertrend.direction})`, signal: supertrend.signal, color: colorFor(supertrend.signal) },
@@ -1242,6 +1345,20 @@ export function calculateMACDSeries(data: number[]): MACDSeriesData {
         break;
       }
     }
+
+    // Histogram acceleration filter
+    if (sig !== 'NEUTRAL') {
+      const latestHist = histogram[i];
+      const prevHistVal = histogram[i - 1];
+      if (!isNaN(latestHist) && !isNaN(prevHistVal)) {
+        if (sig === 'BUY' && latestHist > 0 && latestHist < prevHistVal) {
+          sig = 'NEUTRAL';
+        } else if (sig === 'SELL' && latestHist < 0 && latestHist > prevHistVal) {
+          sig = 'NEUTRAL';
+        }
+      }
+    }
+
     signals[i] = sig;
   }
 
@@ -1369,5 +1486,123 @@ export function calculateVolumeSignalSeries(klines: Kline[]): { values: string[]
   }
 
   return { values, signals };
+}
+
+// ==========================================
+// RSI SLOPE — Momentum direction detection
+// ==========================================
+
+export function calculateRSISlope(rsiSeries: number[], index: number, lookback: number = 3): number {
+  if (index < lookback) return 0;
+  const current = rsiSeries[index];
+  const past = rsiSeries[index - lookback];
+  if (isNaN(current) || isNaN(past)) return 0;
+  const diff = current - past;
+  if (diff > 1.5) return 1;   // Rising
+  if (diff < -1.5) return -1; // Falling
+  return 0; // Flat
+}
+
+// ==========================================
+// PIVOT POINTS — Support & Resistance Detection
+// ==========================================
+
+export interface PivotPoint {
+  index: number;
+  price: number;
+  type: 'high' | 'low';
+}
+
+export function calculatePivotPoints(klines: Kline[], lookback: number = 5): PivotPoint[] {
+  const pivots: PivotPoint[] = [];
+  if (!klines || klines.length < lookback * 2 + 1) return pivots;
+
+  for (let i = lookback; i < klines.length - lookback; i++) {
+    let isPivotHigh = true;
+    let isPivotLow = true;
+
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j === i) continue;
+      if (klines[j].high >= klines[i].high) isPivotHigh = false;
+      if (klines[j].low <= klines[i].low) isPivotLow = false;
+      if (!isPivotHigh && !isPivotLow) break;
+    }
+
+    if (isPivotHigh) pivots.push({ index: i, price: klines[i].high, type: 'high' });
+    if (isPivotLow) pivots.push({ index: i, price: klines[i].low, type: 'low' });
+  }
+
+  return pivots;
+}
+
+function clusterPrices(prices: number[], threshold: number = 0.005): number[] {
+  if (prices.length === 0) return [];
+
+  const sorted = [...prices].sort((a, b) => a - b);
+  const clusters: number[][] = [[sorted[0]]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const lastCluster = clusters[clusters.length - 1];
+    const clusterAvg = lastCluster.reduce((a, b) => a + b, 0) / lastCluster.length;
+
+    if (clusterAvg > 0 && Math.abs(sorted[i] - clusterAvg) / clusterAvg < threshold) {
+      lastCluster.push(sorted[i]);
+    } else {
+      clusters.push([sorted[i]]);
+    }
+  }
+
+  return clusters.map(c => c.reduce((a, b) => a + b, 0) / c.length);
+}
+
+export interface SupportResistanceLevels {
+  supports: number[];
+  resistances: number[];
+  nearestSupport: number;
+  nearestResistance: number;
+}
+
+export function calculateSupportResistance(
+  klines: Kline[],
+  currentPrice: number,
+  pivotLookback: number = 5
+): SupportResistanceLevels {
+  const fallback: SupportResistanceLevels = {
+    supports: [],
+    resistances: [],
+    nearestSupport: 0,
+    nearestResistance: 0,
+  };
+
+  if (!klines || klines.length < pivotLookback * 2 + 1 || currentPrice <= 0) return fallback;
+
+  const pivots = calculatePivotPoints(klines, pivotLookback);
+  if (pivots.length === 0) return fallback;
+
+  const rawSupports: number[] = [];
+  const rawResistances: number[] = [];
+
+  for (const p of pivots) {
+    if (p.type === 'low' && p.price < currentPrice) {
+      rawSupports.push(p.price);
+    } else if (p.type === 'high' && p.price > currentPrice) {
+      rawResistances.push(p.price);
+    }
+  }
+
+  const supports = clusterPrices(rawSupports)
+    .sort((a, b) => b - a)
+    .slice(0, 3);
+
+  const resistances = clusterPrices(rawResistances)
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+
+  return {
+    supports,
+    resistances,
+    nearestSupport: supports[0] || 0,
+    nearestResistance: resistances[0] || 0,
+  };
 }
 

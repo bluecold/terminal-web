@@ -11,24 +11,26 @@ La aplicación separa claramente las responsabilidades:
 - **`src/components/`**: Componentes de React para la UI (como `SignalPanel`, `Watchlist`, etc.).
 - **`src/App.tsx`**: Contenedor principal que maneja el estado global## Indicadores Técnicos Implementados y Corregidos
 Recientemente se han realizado optimizaciones críticas en la matemática y lógica de los indicadores para operar de manera realista:
-1. **RSI (Relative Strength Index)**: Utiliza suavizado RMA (Welles Wilder's Smoothing) en lugar de un simple promedio (SMA) para preservar el contexto histórico de la volatilidad.
+1. **RSI (Relative Strength Index)**: Utiliza suavizado RMA (Welles Wilder's Smoothing) en lugar de un simple promedio (SMA) para preservar el contexto histórico de la volatilidad. Incluye detección de **Pendiente (RSI Slope)** para filtrar señales en contra del momentum inmediato.
 2. **VWAP (Volume Weighted Average Price)**: Implementado para un entorno intradiario. Se reinicia en cada sesión diaria a las 00:00 UTC para criptomonedas, y a las 9:30 AM EST (apertura de NYSE) para acciones estadounidenses.
-3. **MACD**: Modificado para actuar como un trigger direccional. Se buscan cruces de la línea MACD y la línea de señal en las últimas 3 velas.
+3. **MACD**: Modificado para actuar como un trigger direccional. Se buscan cruces de la línea MACD y la línea de señal en las últimas 3 velas. Cuenta con un **filtro de desaceleración de histograma** que invalida señales si el momentum ya está decayendo.
 4. **EMA 200 (Filtro de Tendencia Macro)**: Integrado como filtro para evitar operar contra la tendencia principal. Si el precio está por debajo de la EMA 200, se bloquean las señales de compra; si está por encima, se bloquean las señales de venta.
 5. **Supertrend (10,3)**: Indicador de seguimiento de tendencia basado en ATR y bandas dinámicas, utilizado para determinar la dirección predominante del precio y confirmar cambios de tendencia.
 6. **Stochastic RSI (StochRSI)**: Oscilador estocástico aplicado a los valores del RSI, con líneas `%K` y `%D` suavizadas para detectar zonas extremas de sobrecompra o sobreventa antes que el RSI tradicional.
+7. **Soportes y Resistencias (S/R)**: Detecta dinámicamente pivot highs/lows del precio y los consolida mediante clustering para mapear los niveles estructurales de soporte y resistencia más relevantes y cercanos.
 
 ## Sistemas de Señales (Grupos)
 Actualmente existen 4 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
-2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger y VWAP. Los pesos son ajustables por el usuario. Posee un umbral adaptativo (1% para 5m, 1.2% para 1h, y 1.5% para 1d).
-3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere ahora un consenso de 3 o más votos en una dirección, integrando además el filtro de la EMA 200 y volumen confirmatorio.
-4. **Filtro Maestro (Multitemporal)**: Estrategia institucional que alinea dos temporalidades (opera en 5m/1h y filtra según la tendencia macro de la EMA 200 en 1H/1D). Requiere un cambio de color del Supertrend (5m) + cruce de VWAP + RSI en zona de impulso sin sobrecompra (40-70 para compra, 30-60 para venta).
+2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la nueva capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario. Posee un umbral adaptativo (1% para 5m, 1.2% para 1h, y 1.5% para 1d).
+3. **Standard Voting**: Agrupa las lecturas de RSI (con indicador visual de pendiente ▲/▼), MACD (con filtro de desaceleración), Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere ahora un consenso de 3 o más votos en una dirección, integrando además el filtro de la EMA 200 y volumen confirmatorio.
+4. **Filtro Maestro (Multitemporal)**: Estrategia institucional que alinea dos temporalidades (opera en 5m/1h y filtra según la tendencia macro de la EMA 200 en 1H/1D). Requiere un cambio de color del Supertrend (5m) + cruce de VWAP + RSI en zona de impulso sin sobrecompra (40-70 para compra, 30-60 para venta) + validación de pendiente del RSI y validación del R:R mínimo de 1.5:1 respecto a la estructura S/R.
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
-- **Simulación Multitemporal**: La estrategia "Filtro Maestro" realiza backtesting alineando las velas en formación con velas de mayor temporalidad cerradas en el pasado.
+- **Simulación Multitemporal**: La estrategia "Filtro Maestro" realiza backtesting alineando las velas en formación con velas de mayor temporalidad cerradas en el pasado. Aplica filtros reales de RSI slope y R:R estructural.
 - **Salidas Tácticas (Filtro Maestro)**: Utiliza salidas basadas en el Supertrend y VWAP para fijar el Stop Loss al entrar, y cierra por cambio de color del Supertrend o sobrecompra/sobreventa extrema de RSI.
+- **Backtest de Scoring Refinado**: El backtest de Scoring calcula la nueva capa estructural S/R y aplica el filtro de R:R mínimo de 1.5:1 usando el ATR del activo para simular salidas realistas.
 - **Umbrales Adaptativos (ATR)**: El take-profit y stop-loss en las otras estrategias se adaptan a la volatilidad real del activo midiendo su ATR (Average True Range).
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas en 5m).

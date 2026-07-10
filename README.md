@@ -35,12 +35,14 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa:
    - **Tendencia:** Posición frente a las EMA y confirmación de la tendencia macro.
-   - **RSI:** Análisis de sobrecompra/sobreventa usando suavizado (RMA/Wilder's Smoothing).
+   - **RSI:** Análisis de sobrecompra/sobreventa usando suavizado (RMA/Wilder's Smoothing) y confirmación de dirección de pendiente (RSI Slope).
    - **Bollinger (%B):** Análisis de la posición del precio dentro de las bandas.
    - **Volumen:** Presión compradora/vendedora usando VWAP en temporalidades cortas (5m, 1h) y OBV en gráficas diarias.
    - **Vela (Price Action):** Fuerza y confirmación del cuerpo de las velas japonesas.
-3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal para bloquear operaciones en contra de la tendencia dominante.
-4. **Filtro Maestro (Multitemporal):** Estrategia institucional que alinea la tendencia macro (EMA 200 en 1H) con gatillos en la temporalidad de entrada (Supertrend en 5m, cruce de VWAP y RSI entre 40-70 para compra y 30-60 para venta). Todas las evaluaciones se realizan sobre vela cerrada para evitar parpadeos.
+   - **Estructura S/R (Layer 6):** Filtro de soportes y resistencias dinámicas para evitar tomar trades desfavorables.
+   - *Filtro R:R:* Requiere un ratio recompensa/riesgo estructural mínimo de **1.5:1** para activar señales BUY/SELL, previniendo operar cerca de muros clave.
+3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal. Cuenta con indicadores visuales de pendiente en RSI, y un filtro de desaceleración en el histograma del MACD para evitar falsas señales en momentum decreciente.
+4. **Filtro Maestro (Multitemporal):** Estrategia institucional que alinea la tendencia macro (EMA 200 en 1H) con gatillos en la temporalidad de entrada (Supertrend en 5m, cruce de VWAP y RSI entre 40-70 para compra y 30-60 para venta). Todas las evaluaciones se realizan sobre vela cerrada y aplican validación estricta de pendiente de RSI y relación R:R mayor a 1.5:1 frente al nivel S/R más cercano.
 
 ---
 

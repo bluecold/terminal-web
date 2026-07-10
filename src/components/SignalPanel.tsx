@@ -943,13 +943,14 @@ export default function SignalPanel({
 
                         {/* Layer breakdown */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          {(['trend','rsi','bollinger','volume','candle'] as const).map(layer => {
+                          {(['trend','rsi','bollinger','volume','candle','structure'] as const).map(layer => {
                             const l = score.layers[layer];
+                            if (!l) return null;
                             const icon = l.score > 0 ? '▲' : l.score < 0 ? '▼' : '─';
                             const col  = l.score > 0 ? 'var(--accent-green)' : l.score < 0 ? 'var(--accent-red)' : 'var(--text-muted)';
                             const bgCol = l.score > 0 ? 'rgba(16, 185, 129, 0.04)' : l.score < 0 ? 'rgba(244, 63, 94, 0.04)' : 'transparent';
-                            const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela' };
-                            const weight = weights[layer];
+                            const labels: Record<string, string> = { trend: 'Tendencia', rsi: 'RSI', bollinger: 'Bollinger', volume: 'Volumen', candle: 'Vela', structure: 'Estructura S/R' };
+                            const weight = layer === 'structure' ? 1.0 : weights[layer];
                             
                             return (
                               <div key={layer} style={{ 
@@ -1099,7 +1100,28 @@ export default function SignalPanel({
                               fontWeight: '700',
                               fontSize: '0.75rem'
                             }}>
-                              {klines.length > 0 ? `${multi.rsi} (Sano)` : '-'}
+                              {klines.length > 0 ? `${multi.rsi.toFixed(1)} (Sano)` : '-'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Pendiente RSI (5m):</span>
+                            <span style={{ 
+                              color: multi.rsiSlope > 0 ? 'var(--accent-green)' : multi.rsiSlope < 0 ? 'var(--accent-red)' : 'var(--text-muted)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem'
+                            }}>
+                              {klines.length > 0 ? (multi.rsiSlope > 0 ? '▲ SUBIENDO' : multi.rsiSlope < 0 ? '▼ BAJANDO' : '─ PLANO') : '-'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Estructura S/R (5m):</span>
+                            <span style={{ 
+                              color: 'var(--text-primary)', 
+                              fontWeight: '700',
+                              fontSize: '0.75rem',
+                              fontFamily: 'var(--font-mono)'
+                            }}>
+                              {klines.length > 0 ? `S: $${multi.nearestSupport > 0 ? multi.nearestSupport.toFixed(2) : '-'} | R: $${multi.nearestResistance > 0 ? multi.nearestResistance.toFixed(2) : '-'}` : '-'}
                             </span>
                           </div>
                         </div>
@@ -1265,6 +1287,17 @@ export default function SignalPanel({
                 <span style={{ color: 'var(--accent-green)' }}>Target (+{(tpPct*100).toFixed(1)}%):</span>
                 <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
                   ${tpPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '10px' }}>
+                <span style={{ color: 'var(--text-muted)' }}>R:R Ratio:</span>
+                <div style={{ 
+                  color: slPct > 0 && (tpPct / slPct) >= 1.5 ? 'var(--accent-green)' : 'var(--accent-red)', 
+                  fontWeight: 'bold', 
+                  fontSize: '0.75rem', 
+                  marginTop: '2px' 
+                }}>
+                  {slPct > 0 ? `${(tpPct / slPct).toFixed(1)}:1` : 'N/A'} {slPct > 0 && (tpPct / slPct) >= 1.5 ? '✓' : '⚠️'}
                 </div>
               </div>
             </div>

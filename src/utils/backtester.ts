@@ -13,6 +13,9 @@ import {
   isEngulfing,
   DEFAULT_WEIGHTS,
   type ScoringWeights,
+  calculateRSISlope,
+  calculateSupportResistance,
+  calculateATRSeries,
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -287,11 +290,12 @@ export function backtestMultitemporal(
     const isSupertrendFlipRed = stDir === 'DOWN' && prevStDir === 'UP';
 
     const vwap = vwapSeries[i];
+    const rsiSlopeVal = calculateRSISlope(rsiSeries, i, 3);
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-    if (isTrendUp && isSupertrendFlipGreen && curr.close > vwap && rsi >= 40 && rsi <= 70) {
+    if (isTrendUp && isSupertrendFlipGreen && curr.close > vwap && rsi >= 40 && rsi <= 70 && rsiSlopeVal >= 0) {
       signal = 'BUY';
-    } else if (isTrendDown && isSupertrendFlipRed && curr.close < vwap && rsi >= 30 && rsi <= 60) {
+    } else if (isTrendDown && isSupertrendFlipRed && curr.close < vwap && rsi >= 30 && rsi <= 60 && rsiSlopeVal <= 0) {
       signal = 'SELL';
     }
 
@@ -299,8 +303,6 @@ export function backtestMultitemporal(
       neutrals++;
       continue;
     }
-
-    totalSignals++;
 
     const entry = curr.close;
     let stopLoss = signal === 'BUY' ? Math.max(stVal, vwap) : Math.min(stVal, vwap);
@@ -314,6 +316,29 @@ export function backtestMultitemporal(
         stopLoss = entry + minStopDist;
       }
     }
+
+    // Support / Resistance R:R validation (slice up to current index i to avoid future leak)
+    const sr = calculateSupportResistance(klines.slice(0, i + 1), curr.close);
+    if (signal === 'BUY' && sr.nearestResistance > 0) {
+      const riskDist = entry - stopLoss;
+      const rewardRoom = sr.nearestResistance - entry;
+      if (riskDist > 0 && rewardRoom > 0 && rewardRoom < riskDist * 1.5) {
+        signal = 'NEUTRAL';
+      }
+    } else if (signal === 'SELL' && sr.nearestSupport > 0) {
+      const riskDist = stopLoss - entry;
+      const rewardRoom = entry - sr.nearestSupport;
+      if (riskDist > 0 && rewardRoom > 0 && rewardRoom < riskDist * 1.5) {
+        signal = 'NEUTRAL';
+      }
+    }
+
+    if (signal === 'NEUTRAL') {
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
 
     let tradeOutcome: 'win' | 'loss' | 'timeout' = 'timeout';
     let exitPrice = entry;
@@ -691,6 +716,7 @@ export function computeScoringSignalsSeries(
   const rsiSeries = calculateRSISeries(closes, cfg.rsiPeriod);
   const bbSeries = calculateBollingerBandsSeries(klines, cfg.bbPeriod);
   const vwapSeries = cfg.useVwap ? calculateVWAPSeries(klines, interval) : new Array(length).fill(0);
+  const atrSeries = calculateATRSeries(klines, 14);
 
   let obvArr: number[] = [];
   let obvEMAArr: number[] = [];
@@ -722,11 +748,15 @@ export function computeScoringSignalsSeries(
     }
 
     const rsi = rsiSeries[i];
+    const rsiSlopeVal = calculateRSISlope(rsiSeries, i, 3);
     let s2 = 0;
     if      (rsi < cfg.rsiOversold)   s2 += 1;
     else if (rsi > cfg.rsiOverbought) s2 -= 1;
-    else if (rsi > 50)                s2 += 1;
-    else                              s2 -= 1;
+    else if (rsi > 50) {
+      if (rsiSlopeVal >= 0)           s2 += 1;
+    } else {
+      if (rsiSlopeVal <= 0)           s2 -= 1;
+    }
 
     let s3 = 0;
     const bbIdx = i - (cfg.bbPeriod - 1);
@@ -761,20 +791,54 @@ export function computeScoringSignalsSeries(
     else if (body < 0 && pctBody > 0.5) s5 -= 1;
     else if (body < 0)                  s5 -= 1;
 
+    // Layer 6 - Structure (Support / Resistance)
+    const sr = calculateSupportResistance(klines.slice(0, i + 1), closeVal);
+    let s6 = 0;
+    if (sr.nearestSupport > 0 || sr.nearestResistance > 0) {
+      const distSupport = sr.nearestSupport > 0 ? (closeVal - sr.nearestSupport) / closeVal : Infinity;
+      const distResist = sr.nearestResistance > 0 ? (sr.nearestResistance - closeVal) / closeVal : Infinity;
+      const nearThreshold = 0.015;
+      if (distSupport >= 0 && distSupport < nearThreshold && distSupport <= distResist) {
+        s6 += 1;
+      } else if (distResist >= 0 && distResist < nearThreshold && distResist < distSupport) {
+        s6 -= 1;
+      }
+    }
+
     const w1 = s1 * weights.trend;
     const w2 = s2 * weights.rsi;
     const w3 = s3 * weights.bollinger;
     const w4 = s4 * weights.volume;
     const w5 = s5 * weights.candle;
-    const totalScore = w1 + w2 + w3 + w4 + w5;
+    const w6 = s6 * 1.0;
+    const totalScore = w1 + w2 + w3 + w4 + w5 + w6;
 
     const maxTrend = cfg.emaMajor ? 2 : 1;
-    const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle;
+    const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle + 1.0;
     const threshold = maxPossible * 0.5;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     if      (totalScore >=  threshold) signal = 'BUY';
     else if (totalScore <= -threshold) signal = 'SELL';
+
+    // R:R Validation
+    if (signal !== 'NEUTRAL') {
+      const atr = atrSeries[i];
+      if (atr > 0) {
+        const slDist = 1.5 * atr;
+        if (signal === 'BUY' && sr.nearestResistance > 0) {
+          const rewardRoom = sr.nearestResistance - closeVal;
+          if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+            signal = 'NEUTRAL';
+          }
+        } else if (signal === 'SELL' && sr.nearestSupport > 0) {
+          const rewardRoom = closeVal - sr.nearestSupport;
+          if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+            signal = 'NEUTRAL';
+          }
+        }
+      }
+    }
 
     signals[i] = signal;
   }
