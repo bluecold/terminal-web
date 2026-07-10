@@ -49,6 +49,19 @@ export default function SignalPanel({
   const [loadingExtra, setLoadingExtra] = useState(false);
 
   useEffect(() => {
+    const APP_VERSION = 'v2026.07.10.2';
+    const cachedVersion = localStorage.getItem('terminal_app_version');
+    if (cachedVersion !== APP_VERSION) {
+      // Clear old terminal cache keys
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('terminal_extra_info_')) {
+          localStorage.removeItem(key);
+        }
+      }
+      localStorage.setItem('terminal_app_version', APP_VERSION);
+    }
+
     let isMounted = true;
     const cacheKey = `terminal_extra_info_${symbol}`;
     const cachedData = localStorage.getItem(cacheKey);
