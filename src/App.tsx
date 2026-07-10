@@ -497,11 +497,14 @@ function App() {
           </div>
         </div>
         <MarketTicker />
-        <div className="top-bar-right">
+        <div className="top-bar-right" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
           <div className="status-indicator">
             <div className="dot"></div>
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
+          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
+            v2026.07.10.1
+          </span>
         </div>
       </header>
 
