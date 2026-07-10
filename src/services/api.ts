@@ -179,7 +179,7 @@ export interface StockExtraInfo {
 export async function fetchZacksRank(symbol: string): Promise<StockExtraInfo | null> {
   try {
     const upperSymbol = symbol.toUpperCase();
-    const response = await fetch(`/api/zacks/index?t=${upperSymbol}`);
+    const response = await fetch(`/api/zacks/index?t=${upperSymbol}&cb=${Date.now()}`);
     if (!response.ok) {
       throw new Error(`Zacks responded with status ${response.status}`);
     }
@@ -292,7 +292,7 @@ export interface CryptoExtraInfo {
 
 export async function fetchCryptoFearAndGreed(): Promise<CryptoExtraInfo | null> {
   try {
-    const response = await fetch("https://api.alternative.me/fng/?limit=1");
+    const response = await fetch(`https://api.alternative.me/fng/?limit=1&t=${Date.now()}`);
     const data = await response.json();
     const fngData = data.data?.[0];
     if (!fngData) return null;
