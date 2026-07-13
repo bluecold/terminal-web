@@ -14,46 +14,42 @@ Recientemente se han realizado optimizaciones críticas en la matemática y lóg
 1. **RSI (Relative Strength Index)**: Utiliza suavizado RMA (Welles Wilder's Smoothing) en lugar de un simple promedio (SMA) para preservar el contexto histórico de la volatilidad. Incluye detección de **Pendiente (RSI Slope)** para filtrar señales en contra del momentum inmediato.
 2. **VWAP (Volume Weighted Average Price)**: Implementado para un entorno intradiario. Se reinicia en cada sesión diaria a las 00:00 UTC para criptomonedas, y a las 9:30 AM EST (apertura de NYSE) para acciones estadounidenses.
 3. **MACD**: Modificado para actuar como un trigger direccional. Se buscan cruces de la línea MACD y la línea de señal en las últimas 3 velas. Cuenta con un **filtro de desaceleración de histograma** que invalida señales si el momentum ya está decayendo.
-4. **EMA 200 (Filtro de Tendencia Macro)**: Integrado como filtro para evitar operar contra la tendencia principal. Si el precio está por debajo de la EMA 200, se bloquean las señales de compra; si está por encima, se bloquean las señales de venta.
-5. **Supertrend (10,3)**: Indicador de seguimiento de tendencia basado en ATR y bandas dinámicas, utilizado para determinar la dirección predominante del precio y confirmar cambios de tendencia.
-6. **Stochastic RSI (StochRSI)**: Oscilador estocástico aplicado a los valores del RSI, con líneas `%K` y `%D` suavizadas para detectar zonas extremas de sobrecompra o sobreventa antes que el RSI tradicional.
+4. **EMA 200 y EMA 50 (Filtro de Tendencia Macro)**: Integrados en la escala diaria (1D) y horaria (1H) para establecer el bias direccional. Evitan operar en contra de la tendencia principal.
+5. **ADX (14) con Suavizado Wilder (RMA)**: Indicador de fuerza de tendencia implementado en 1H para asegurar que solo operamos en momentum de expansión de volatilidad (ADX > 20).
+6. **Bollinger Bands (20,2)**: Utilizado en la escala de gatillo (5m) para identificar expansiones (Ruptura/Breakout) o rechazos (Reversión/Pullback).
 7. **Soportes y Resistencias (S/R)**: Detecta dinámicamente pivot highs/lows del precio y los consolida mediante clustering para mapear los niveles estructurales de soporte y resistencia más relevantes y cercanos.
+8. **Calidad de Vela (`Body Ratio`, `Close Position`)**: Permite determinar la decisión del impulso en velas de 5m antes del gatillo de ruptura o reversión.
 
 ## Sistemas de Señales (Grupos)
 Actualmente existen 4 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
-2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la nueva capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario. Posee un umbral adaptativo (1% para 5m, 1.2% para 1h, y 1.5% para 1d).
-3. **Standard Voting**: Agrupa las lecturas de RSI (con indicador visual de pendiente ▲/▼), MACD (con filtro de desaceleración), Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere ahora un consenso de 3 o más votos en una dirección, integrando además el filtro de la EMA 200 y volumen confirmatorio.
-4. **Filtro Maestro (Multitemporal)**: Estrategia institucional que alinea dos temporalidades (opera en 5m/1h y filtra según la tendencia macro de la EMA 200 en 1H/1D). Requiere un cambio de color del Supertrend (5m) + cruce de VWAP + RSI en zona de impulso sin sobrecompra (40-70 para compra, 30-60 para venta) + validación de pendiente del RSI y validación del R:R mínimo de 1.5:1 respecto a la estructura S/R.
+2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario.
+3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
+4. **VCME Sniper Engine (Multitemporal)**: Estrategia cuantitativa que alinea 3 temporalidades:
+   - **1D (Bias)**: Exige que el precio esté por encima de EMA 200/50 y que la pendiente de la EMA 200 de 1D sea positiva para LONG (o inversa para SHORT).
+   - **1H (Momentum)**: Exige precio sobre EMA 50, MACD cruzado al alza con histograma creciente, RSI entre 45 y 75 (zona de momentum sano), ADX > 20 (tendencia fuerte) y volumen superior a su media de 20 períodos.
+   - **5m (Gatillo)**: Ofrece dos modos de disparo: **Modo A (Ruptura)** si cierra fuera de Bandas de Bollinger con cuerpo decidido y volumen > 1.5x, o **Modo B (Reversión)** si perfora la banda pero cierra dentro con vela de rechazo y volumen de absorción.
+   - **Gestión de Riesgo**: Stop Loss estructural/ATR, salida TP1 a 1.5R (cierra 50% y mueve a breakeven) y TP2 (cierre por cruce inverso de EMA 9 en 5m).
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
-- **Simulación Multitemporal**: La estrategia "Filtro Maestro" realiza backtesting alineando las velas en formación con velas de mayor temporalidad cerradas en el pasado. Aplica filtros reales de RSI slope y R:R estructural.
-- **Salidas Tácticas (Filtro Maestro)**: Utiliza salidas basadas en el Supertrend y VWAP para fijar el Stop Loss al entrar, y cierra por cambio de color del Supertrend o sobrecompra/sobreventa extrema de RSI.
-- **Backtest de Scoring Refinado**: El backtest de Scoring calcula la nueva capa estructural S/R y aplica el filtro de R:R mínimo de 1.5:1 usando el ATR del activo para simular salidas realistas.
-- **Umbrales Adaptativos (ATR)**: El take-profit y stop-loss en las otras estrategias se adaptan a la volatilidad real del activo midiendo su ATR (Average True Range).
+- **Simulación Multitemporal VCME Sniper**: Realiza backtesting alineando las velas en formación con velas de mayor temporalidad (1H y 1D) cerradas en el pasado. Evalúa la performance intradiaria exacta simulando salidas parciales (TP1 a 1.5R + breakeven, y TP2 con trailing exit por EMA 9 o bandas).
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
-- **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas en 5m).
+- **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
-- **Motor de Backtesting O(n)**: Refactorizado de $O(n^2)$ a $O(n)$ calculando las series de indicadores técnicos (RSI, MACD, Bollinger Bands, ATR, VWAP, Stochastic RSI, Volumen) de una sola vez al cargar las velas y luego indexándolas en tiempo constante $O(1)$ en el loop del backtester.
-- **Unificación de Cargas y Timeframes**: Optimización del ciclo de vida en React (`App.tsx`). Al cambiar de activo, descarga todos los timeframes (5m, 1h, 1d) en paralelo una sola vez. Al cambiar de timeframe, la UI lee instantáneamente de la memoria (`allKlines[interval]`) con un coste de **0 ms**, eliminando llamadas redundantes al servidor y recálculos innecesarios. El scanner/polling en tiempo real solo actualiza el timeframe activo.
-- **Buscador de Ticker con Confirmación**: Cambiamos el input de búsqueda para que use un estado local y solo ejecute la cascada de fetches y análisis al presionar **Enter** o disparar el evento **onBlur**, evitando recargar la UI letra por letra.
-- **Confirmación de Vela Cerrada**: Las señales de la UI y del scanner en segundo plano se calculan sobre la última vela completamente cerrada (`length - 2`) para evitar el parpadeo y repintado de indicadores.
-- **Watchlist Paralelizada**: La carga de tickers en la Watchlist se realiza concurrentemente usando `Promise.all`.
-- **Leyenda Flotante Dinámica y Bandas de Bollinger**: Se añadió una leyenda interactiva en el gráfico que muestra OHLC y métricas de Bandas de Bollinger manipulando directamente el DOM mediante referencias (`useRef`), evitando re-renderizados lentos de React.
-- **Alertas en Segundo Plano con Cooldown**: Se implementó un scanner en segundo plano (`checkAllSignals`) que verifica cada 60 segundos si algún activo de la Watchlist ha cambiado de señal. Posee un cooldown de **2 horas** por activo para prevenir la fatiga de alertas.
-- **Historial Interactivo de Alertas (Watchlist)**: Registro visual persistente (vía `localStorage`) en la barra lateral izquierda que almacena las últimas 20 notificaciones.
-- **Calculadora de Gestión de Riesgo y Posición**: Sincronizada con el Stop Loss y Take Profit dinámicos del Filtro Maestro (Supertrend/VWAP) cuando la estrategia está activa.
+- **Motor de Backtesting O(n)**: Refactorizado de $O(n^2)$ a $O(n)$ calculando las series de indicadores técnicos de una sola vez al cargar las velas y luego indexándolas en tiempo constante $O(1)$ en el loop del backtester.
+- **Unificación de Cargas y Timeframes**: Al cambiar de activo, descarga todos los timeframes (5m, 1h, 1d) en paralelo una sola vez. Al cambiar de timeframe, la UI lee instantáneamente de la memoria (`allKlines[interval]`).
+- **Confirmación de Vela Cerrada**: Las señales de la UI y del scanner en segundo plano se calculan sobre la última vela completamente cerrada para evitar repintado.
+- **Alertas en Segundo Plano con Cooldown**: Se implementó un scanner en segundo plano (`checkAllSignals`) que verifica cada 60 segundos si algún activo ha cambiado de señal.
+- **Calculadora de Gestión de Riesgo y Posición**: Sincronizada con el Stop Loss y Take Profit dinámicos de VCME Sniper cuando la estrategia está activa.
 - **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela.
-- **Catalizadores de Volatilidad (Calendario)**: Sistema de prevención que advierte si hay reportes corporativos inminentes o eventos macro de 2026.
-- **Métricas de Contexto Fundamental y Sentimiento (Zacks & Fear/Greed)**: En la pestaña *Mercado*, se muestra información complementaria de fundamentales y sentimiento. El Zacks Rank oficial (escala 1 a 5) y la Beta (`volatility`) se obtienen del feed oficial de Zacks (`quote-feed.zacks.com`). El índice Fear & Greed de cripto se obtiene de `alternative.me`. Si los datos fundamentales no están disponibles, la interfaz oculta de forma limpia el precio objetivo y muestra un aviso explicativo transparente, sin recurrir a datos ficticios. Se implementó una caché local en `localStorage` por activo válida por 24 horas.
-- **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles para las 4 estrategias. Integra de forma limpia las señales, parámetros y backtests, mejorando la legibilidad y otorgando un aspecto institucional.
-- **Marquesina de Índices Bursátiles (Market Ticker)**: Un widget horizontal en la cabecera (inspirado en Yahoo Finance) que muestra de forma dinámica las cotizaciones de futuros (S&P, Dow, Nasdaq, Russell), VIX, materias primas (oro, crudo) y Bitcoin. Está completamente acelerado por GPU usando transiciones CSS y posee un mecanismo de pausa interactiva (`hover: paused`). Se consulta en paralelo cada 60 segundos mediante el endpoint `/v8/finance/chart` sin interferir con las operaciones o la red del resto de la app. Se oculta automáticamente en dispositivos móviles.
+- **Métricas de Contexto Fundamental y Sentimiento (Zacks & Fear/Greed)**: En la pestaña *Mercado*, se muestra información complementaria de fundamentales y sentimiento.
+- **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles.
+- **Marquesina de Índices Bursátiles (Market Ticker)**: Widget horizontal en la cabecera que muestra futuros, VIX, materias primas y Bitcoin.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
 - **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
-
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.

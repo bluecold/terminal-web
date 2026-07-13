@@ -7,7 +7,7 @@ import SignalPanel from './components/SignalPanel';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateMultitemporalSignal } from './utils/indicators';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal } from './utils/backtester';
 
 interface AlertItem {
@@ -79,10 +79,11 @@ function App() {
     
     let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
     if (allData) {
-      const macroTf = tf === '5m' ? '1h' : '1d';
-      const macroData = allData[macroTf] || [];
-      if (macroData.length >= 200) {
-        btMulti = backtestMultitemporal(data, macroData, tf, currentAsset);
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
+      const kl1h = allData['1h'] || [];
+      const kl1d = allData['1d'] || [];
+      if (kl5m.length >= 30 && kl1h.length >= 60 && kl1d.length >= 210) {
+        btMulti = backtestMultitemporal(kl5m, kl1h, kl1d, '5m', currentAsset);
       }
     }
 
@@ -114,9 +115,10 @@ function App() {
       const result = calculateScoringSignal(data, tf);
       signal = result.signal;
     } else if (bestStrategy === 'multitemporal' && allData) {
-      const macroTf = tf === '5m' ? '1h' : '1d';
-      const macroData = allData[macroTf] || [];
-      const result = calculateMultitemporalSignal(data, macroData, currentAsset);
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
+      const kl1h = allData['1h'] || [];
+      const kl1d = allData['1d'] || [];
+      const result = calculateVCMESniperSignal(kl5m, kl1h, kl1d, currentAsset);
       signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
@@ -299,11 +301,11 @@ function App() {
 
       for (const symbol of symbolsToScan) {
         try {
-          // Fetch current interval and macro interval data in parallel
-          const macroInterval = interval === '5m' ? '1h' : '1d';
-          const [data, macroData] = await Promise.all([
+          // Fetch current interval + 1h + 1d in parallel
+          const [data, data1h, data1d] = await Promise.all([
             fetchKlines(symbol, interval),
-            fetchKlines(symbol, macroInterval)
+            fetchKlines(symbol, '1h'),
+            fetchKlines(symbol, '1d')
           ]);
 
           if (!isMounted) return;
@@ -320,17 +322,18 @@ function App() {
             const btStd  = backtestStandard(data, interval);
             const btConf = backtestConfluencia(data, interval);
             const btScore = backtestScoring(data, interval);
-            
+
             let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-            if (macroData.length >= 200) {
-              btMulti = backtestMultitemporal(data, macroData, interval, symbol);
+            if (data.length >= 30 && data1h.length >= 60 && data1d.length >= 210) {
+              const kl5m = interval === '5m' ? data : data1h; // Use 5m data if available
+              btMulti = backtestMultitemporal(kl5m, data1h, data1d, '5m', symbol);
             }
 
             const candidates = [
               { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
               { key: 'confluencia', label: 'Confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
               { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
-              { key: 'multitemporal', label: 'Filtro Maestro', pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
+              { key: 'multitemporal', label: 'VCME Sniper', pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
             ];
 
             const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
@@ -348,7 +351,7 @@ function App() {
           } else {
             bestStrategy = cached.strategy;
             bestPF = cached.pf;
-            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'Filtro Maestro' : 'Standard';
+            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : 'Standard';
           }
 
           if (bestStrategy === 'none') {
@@ -368,7 +371,12 @@ function App() {
             const result = calculateScoringSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'multitemporal') {
-            const result = calculateMultitemporalSignal(closedData, macroData, symbol);
+            const result = calculateVCMESniperSignal(
+              closedData,
+              data1h || await fetchKlines(symbol, '1h'),
+              data1d || await fetchKlines(symbol, '1d'),
+              symbol
+            );
             overallSignal = result.signal;
           } else {
             const voting = calculateStandardVoting(closedData);
