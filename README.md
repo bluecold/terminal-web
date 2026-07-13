@@ -12,13 +12,13 @@
 * **Leyenda Flotante Dinámica (OHLC & BB):** Panel interactivo que se mueve con el cursor (`crosshair`) para mostrar datos del precio exacto e información de expansión de las Bandas de Bollinger sin causar costosos re-renderizados en React (manipulación directa del DOM).
 * **Watchlist Paralelizada:** Carga múltiple de tickers de manera concurrente para asegurar tiempos de espera mínimos.
 * **Multi-Soporte de Mercados:**
-  * **Criptomonedas:** Obtención de datos en tiempo real mediante la API pública de Binance (ej. `BTCUSDT`).
-  * **Mercados Tradicionales/Stocks:** Integración con Yahoo Finance V8 API (ej. `TSLA`, `MSFT`).
+  * **Criptomonedas:** Obtención de datos mediante WebSockets en tiempo real (Binance) y agregadores de datos históricos.
+  * **Mercados Tradicionales/Stocks:** Integración con Data Feeds de baja latencia para stocks, ETFs y futuros.
 * **Marquesina de Índices en Tiempo Real:** Barra superior interactiva (carrusel/marquee) al estilo Yahoo Finance que muestra cotizaciones en tiempo real y variaciones diarias de los principales mercados mundiales (S&P 500 Futures, Nasdaq, Dow Jones, Russell 2000, VIX, Gold, Crude Oil, Bitcoin). Utiliza animación fluida acelerada por GPU y pausa automática al pasar el cursor.
 * **Feed de Noticias Relevantes:** Muestra hasta 3 noticias recientes curadas desde Yahoo Finance del activo seleccionado, permitiendo entender rápidamente los fundamentales que mueven el precio.
 * **Alertas en Segundo Plano (Watchlist):** Notificaciones nativas del navegador (vía Notifications API) que escanean automáticamente toda tu Watchlist (y el activo en pantalla) cada 60 segundos. Cuenta con un filtro estricto de calidad (requiere que la mejor estrategia tenga un Profit Factor >= 1.3 y un volumen mínimo de operaciones según el timeframe) para evitar ruido y falsas señales.
 * **Historial Interactivo de Alertas:** Registro visual persistente (guardado en `localStorage`) en la barra lateral izquierda que almacena las últimas 20 alertas. Al hacer clic en cualquier tarjeta, el gráfico cambia automáticamente al símbolo y la temporalidad de la señal para que la revises al instante.
-* **Calculadora Dinámica de Gestión de Riesgo y Posición:** Herramienta para dimensionar tu operativa de forma profesional. Ingresando tu capital y el riesgo estipulado (ej: 1%), calcula el tamaño sugerido de la posición (unidades/USD) y margen necesario, cargando dinámicamente el Stop Loss y Take Profit adaptativos (ATR) de la estrategia activa.
+* **Calculadora de Position Sizing Dinámico y Gestión de Capital:** Herramienta cuantitativa profesional. Calcula el tamaño sugerido de la posición (unidades/USD) y margen necesario aplicando multiplicadores en tiempo real: Factor Confianza (según el score de la señal), Factor Volatilidad (ATR% del activo), Factor Salud de la Cuenta (Drawdown deslizable de 0% a 30%) y Penalización por Correlación de Sector. Integra un límite de riesgo máximo del 25% del capital total.
 * **Matriz de Confluencia Multitemporal:** Un widget que evalúa y expone en paralelo las señales técnicas del activo en 5m, 1h y 1d, permitiendo confirmar si la operación coincide con la tendencia de temporalidades superiores.
 * **Calendario de Catalizadores de Volatilidad:** Sistema de prevención que advierte al usuario si hay un reporte de ganancias corporativas inminente (consultado online para acciones) o eventos macro clave de 2026 pre-agendados (IPC/CPI y decisiones de la FOMC/Fed), alertando si quedan menos de 48 horas para el evento.
 * **Métricas de Contexto de Sentimiento y Fundamentales:**
@@ -33,20 +33,14 @@
 La aplicación cuenta con 4 agrupaciones principales que analizan los datos en tiempo real:
 
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
-2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa:
-   - **Tendencia:** Posición frente a las EMA y confirmación de la tendencia macro.
-   - **RSI:** Análisis de sobrecompra/sobreventa usando suavizado (RMA/Wilder's Smoothing) y confirmación de dirección de pendiente (RSI Slope).
-   - **Bollinger (%B):** Análisis de la posición del precio dentro de las bandas.
-   - **Volumen:** Presión compradora/vendedora usando VWAP en temporalidades cortas (5m, 1h) y OBV en gráficas diarias.
-   - **Vela (Price Action):** Fuerza y confirmación del cuerpo de las velas japonesas.
-   - **Estructura S/R (Layer 6):** Filtro de soportes y resistencias dinámicas para evitar tomar trades desfavorables.
-   - *Filtro R:R:* Requiere un ratio recompensa/riesgo estructural mínimo de **1.5:1** para activar señales BUY/SELL, previniendo operar cerca de muros clave.
+2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa tendencia, RSI, Bollinger (%B), volumen, vela y estructura S/R.
 3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal. Cuenta con indicadores visuales de pendiente en RSI, y un filtro de desaceleración en el histograma del MACD para evitar falsas señales en momentum decreciente.
-4. **VCME Sniper Engine (Multitemporal):** Estrategia cuantitativa que alinea 3 temporalidades:
-   - **1D (Bias):** Filtro estructural de tendencia diaria (EMA 200/50 y pendiente).
-   - **1H (Momentum):** Momentum dinámico y fuerza tendencial (EMA 50, MACD, RSI, ADX > 20 y volumen).
-   - **5m (Gatillo):** Entradas milimétricas mediante **Modo Breakout** (ruptura de Bollinger + VWAP con cuerpo y volumen confirmados) o **Modo Reversal** (absorción y rechazo en bandas exteriores).
-   - **Gestión de Riesgo:** Stop Loss estructurado/ATR y salidas dinámicas parciales (TP1 a 1.5R con breakeven, y TP2 con trailing exit por EMA 9).
+4. **VCME Sniper Engine v2 (Adaptive Scoring):** Estrategia cuantitativa avanzada que alinea 3 temporalidades en cascada:
+   - **1D (Bias):** Exige tendencia alcista/bajista macro (`Precio > EMA 200` y `EMA 20 > EMA 50` para LONG).
+   - **1H (Setup):** Requiere un pullback dinámico a la EMA 20 (`Low <= EMA 20`) y que el precio de cierre esté por encima del VWAP.
+   - **5m (Gatillo):** Entrada precisa por Breakout (ruptura con Squeeze en Bollinger + volumen >1.8x) o Reversal (absorción/toque de banda inferior con volumen >1.5x).
+   - **Scoring Adaptativo (0-100):** Calcula una confianza dinámica multiplicando por factores de régimen de volatilidad de mercado (ATR percentile), perfil del activo (rango diario %) y meta-learning de winrate histórico.
+   - **Gestión de Riesgo (3 Targets):** Stop Loss por ATR/Swing. Salidas parciales en TP1 (1.5R, cierra 40% y mueve a breakeven + 0.1 ATR), TP2 (1.0 ATR 1H, cierra 35%) y TP3 (2.5R, cierra 25% con trailing EMA 9).
 
 ---
 
