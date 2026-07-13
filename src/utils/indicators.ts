@@ -1729,6 +1729,7 @@ export interface VCMESniperResult {
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
+  takeProfit3: number;
   riskRewardRatio: number;
   // Context for UI display
   bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL';
@@ -1747,22 +1748,36 @@ export interface VCMESniperResult {
   isTrendUp: boolean;
   nearestSupport: number;
   nearestResistance: number;
+  // Adaptive scoring fields
+  score: number;
+  baseScore: number;
+  adaptiveFactor: number;
+  marketRegime: string;
+  volatilityProfile: string;
+  recentPerfLabel: string;
+  atrPercent: number;
+  avgDailyRange: number;
 }
 
 export function calculateVCMESniperSignal(
   klines5m: Kline[],
   klines1h: Kline[],
   klines1d: Kline[],
-  symbol?: string
+  symbol?: string,
+  recentWinRate?: number,
+  recentProfitFactor?: number
 ): VCMESniperResult {
   const fallback: VCMESniperResult = {
     signal: 'NEUTRAL', mode: 'NONE',
-    stopLoss: 0, takeProfit1: 0, takeProfit2: 0, riskRewardRatio: 0,
+    stopLoss: 0, takeProfit1: 0, takeProfit2: 0, takeProfit3: 0, riskRewardRatio: 0,
     bias1D: 'NEUTRAL', adx1H: 0, momentum1H: 'NEUTRAL',
     triggerDetail: 'Datos insuficientes',
     rsi1H: 50, macdHistDirection: 'PLANO',
     ema200_1D: 0, ema50_1H: 0, vwap5m: 0, bbUpper5m: 0, bbLower5m: 0,
     isTrendUp: false, nearestSupport: 0, nearestResistance: 0,
+    score: 0, baseScore: 0, adaptiveFactor: 1.0,
+    marketRegime: 'Normal', volatilityProfile: 'Normal', recentPerfLabel: 'Sin datos',
+    atrPercent: 0, avgDailyRange: 0
   };
 
   if (!klines5m || klines5m.length < 30) return fallback;
@@ -1770,51 +1785,53 @@ export function calculateVCMESniperSignal(
   if (!klines1d || klines1d.length < 210) return fallback;
 
   const curr5m = klines5m[klines5m.length - 1];
+  const prev5m = klines5m[klines5m.length - 2];
 
   // ═══════════════════════════════════════════════════════════
-  // LAYER 1: DAILY BIAS (1D)
+  // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D)
   // ═══════════════════════════════════════════════════════════
   const closes1d = klines1d.map(k => k.close);
   const ema200_1d = calculateEMA(closes1d, 200);
   const ema50_1d = calculateEMA(closes1d, 50);
+  const ema20_1d = calculateEMA(closes1d, 20);
 
   const lastEma200_1d = ema200_1d[ema200_1d.length - 1];
   const lastEma50_1d = ema50_1d[ema50_1d.length - 1];
+  const lastEma20_1d = ema20_1d[ema20_1d.length - 1];
   const lastClose1d = closes1d[closes1d.length - 1];
 
-  if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d)) {
-    return { ...fallback, triggerDetail: 'EMA 200/50 diaria no disponible' };
+  if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d) || isNaN(lastEma20_1d)) {
+    return { ...fallback, triggerDetail: 'EMA diaria no disponible' };
   }
 
-  // Slope of EMA 200 over 5 days
-  const slopeIdx = ema200_1d.length - 6;
-  const ema200Slope = slopeIdx >= 0 && !isNaN(ema200_1d[slopeIdx])
-    ? lastEma200_1d - ema200_1d[slopeIdx]
-    : 0;
+  // Rango diario promedio (últimas 20 velas)
+  const last20Ranges = klines1d.slice(-20).map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0);
+  const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
 
   let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  if (lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && ema200Slope > 0) {
+  if (lastClose1d > lastEma200_1d && lastEma20_1d > lastEma50_1d) {
     bias1D = 'ALCISTA';
-  } else if (lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && ema200Slope < 0) {
+  } else if (lastClose1d < lastEma200_1d && lastEma20_1d < lastEma50_1d) {
     bias1D = 'BAJISTA';
   }
 
-  if (bias1D === 'NEUTRAL') {
-    return { ...fallback, bias1D, ema200_1D: Number(lastEma200_1d.toFixed(2)), triggerDetail: 'Bias 1D neutral — sin tendencia definida' };
-  }
-
   // ═══════════════════════════════════════════════════════════
-  // LAYER 2: HOURLY MOMENTUM (1H)
-  // Find the latest CLOSED 1H candle before current 5m candle
+  // 2. FILTROS Y SETUP DE 1H
   // ═══════════════════════════════════════════════════════════
   const closes1h = klines1h.map(k => k.close);
+  const ema200_1h = calculateEMA(closes1h, 200);
   const ema50_1h = calculateEMA(closes1h, 50);
+  const ema20_1h = calculateEMA(closes1h, 20);
+  const ema9_1h = calculateEMA(closes1h, 9);
+  const ema21_1h = calculateEMA(closes1h, 21);
+  const rsiSeries1h = calculateRSISeries(closes1h, 14);
   const adxSeries1h = calculateADXSeries(klines1h, 14);
   const macdData1h = calculateMACDSeries(closes1h);
-  const rsiSeries1h = calculateRSISeries(closes1h, 14);
+  const atrSeries1h = calculateATRSeries(klines1h, 14);
+  const vwapSeries1h = calculateVWAPSeries(klines1h, '1h', symbol);
 
   // Volume SMA 20 for 1H
-  const vol1h: number[] = klines1h.map(k => k.volume);
+  const vol1h = klines1h.map(k => k.volume);
   const volSma1h: number[] = new Array(klines1h.length).fill(0);
   let volSum1h = 0;
   for (let i = 0; i < Math.min(20, vol1h.length); i++) volSum1h += vol1h[i];
@@ -1827,7 +1844,7 @@ export function calculateVCMESniperSignal(
   // Find latest closed 1H candle before current 5m
   let idx1h = -1;
   for (let h = klines1h.length - 1; h >= 0; h--) {
-    const endTime1h = klines1h[h].time + 3600; // 1H candle duration
+    const endTime1h = klines1h[h].time + 3600;
     if (endTime1h <= curr5m.time) {
       idx1h = h;
       break;
@@ -1835,77 +1852,49 @@ export function calculateVCMESniperSignal(
   }
 
   if (idx1h < 50) {
-    return { ...fallback, bias1D, ema200_1D: Number(lastEma200_1d.toFixed(2)), triggerDetail: 'Datos 1H insuficientes para EMA 50' };
+    return { ...fallback, bias1D, ema200_1D: Number(lastEma200_1d.toFixed(2)), triggerDetail: 'Datos 1H insuficientes' };
   }
 
   const close1h = closes1h[idx1h];
+  const ema200Val1h = ema200_1h[idx1h];
   const ema50Val1h = ema50_1h[idx1h];
-  const adxVal1h = adxSeries1h[idx1h];
+  const ema20Val1h = ema20_1h[idx1h];
+  const ema9Val1h = ema9_1h[idx1h];
+  const ema21Val1h = ema21_1h[idx1h];
   const rsiVal1h = rsiSeries1h[idx1h];
+  const adxVal1h = adxSeries1h[idx1h];
+  const atrVal1h = atrSeries1h[idx1h];
+  const vwapVal1h = vwapSeries1h[idx1h];
   const macdHist1h = macdData1h.histogram[idx1h];
   const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
-  const macdLine1h = macdData1h.macd[idx1h];
-  const macdSignal1h = macdData1h.signal[idx1h];
-  const currentVol1h = vol1h[idx1h];
-  const currentVolSma1h = volSma1h[idx1h];
 
-  if (isNaN(ema50Val1h) || isNaN(rsiVal1h) || isNaN(macdLine1h) || isNaN(macdSignal1h)) {
+  if (isNaN(ema20Val1h) || isNaN(rsiVal1h) || isNaN(vwapVal1h) || isNaN(atrVal1h)) {
     return { ...fallback, bias1D, ema200_1D: Number(lastEma200_1d.toFixed(2)), triggerDetail: 'Indicadores 1H no calculables' };
   }
 
-  const adxOk = !isNaN(adxVal1h) && adxVal1h > 20;
-  const volOk1h = currentVolSma1h > 0 && currentVol1h > currentVolSma1h;
-
-  // MACD histogram direction
-  let macdHistDir: 'CRECIENTE' | 'DECRECIENTE' | 'PLANO' = 'PLANO';
-  if (!isNaN(macdHist1h) && !isNaN(macdHistPrev1h)) {
-    if (macdHist1h > macdHistPrev1h) macdHistDir = 'CRECIENTE';
-    else if (macdHist1h < macdHistPrev1h) macdHistDir = 'DECRECIENTE';
+  // Volatility average for regime
+  const atrSma1hArr = new Array(klines1h.length).fill(0);
+  let atr1hSum = 0;
+  for (let idx = 0; idx < Math.min(50, atrSeries1h.length); idx++) {
+    atr1hSum += isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx];
   }
+  if (atrSeries1h.length >= 50) atrSma1hArr[49] = atr1hSum / 50;
+  for (let idx = 50; idx < atrSeries1h.length; idx++) {
+    atr1hSum = atr1hSum - (isNaN(atrSeries1h[idx - 50]) ? 0 : atrSeries1h[idx - 50]) + (isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx]);
+    atrSma1hArr[idx] = atr1hSum / 50;
+  }
+  const atrSma1h = atrSma1hArr[idx1h] || 1;
+
+  // 1H Pullback setups
+  const pullback1HLong = klines1h[idx1h].low <= ema20Val1h && close1h > vwapVal1h;
+  const pullback1HShort = klines1h[idx1h].high >= ema20Val1h && close1h < vwapVal1h;
 
   let momentum1H: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-
-  if (
-    close1h > ema50Val1h &&
-    macdLine1h > macdSignal1h &&
-    (macdHistDir === 'CRECIENTE') &&
-    rsiVal1h > 45 && rsiVal1h < 75 &&
-    adxOk &&
-    volOk1h
-  ) {
-    momentum1H = 'ALCISTA';
-  } else if (
-    close1h < ema50Val1h &&
-    macdLine1h < macdSignal1h &&
-    (macdHistDir === 'DECRECIENTE') &&
-    rsiVal1h > 25 && rsiVal1h < 55 &&
-    adxOk &&
-    volOk1h
-  ) {
-    momentum1H = 'BAJISTA';
-  }
-
-  // Check alignment: bias and momentum must match
-  const isBullishAligned = bias1D === 'ALCISTA' && momentum1H === 'ALCISTA';
-  const isBearishAligned = bias1D === 'BAJISTA' && momentum1H === 'BAJISTA';
-
-  if (!isBullishAligned && !isBearishAligned) {
-    return {
-      ...fallback, bias1D, momentum1H,
-      ema200_1D: Number(lastEma200_1d.toFixed(2)),
-      ema50_1H: Number(ema50Val1h.toFixed(2)),
-      adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
-      rsi1H: Number(rsiVal1h.toFixed(1)),
-      macdHistDirection: macdHistDir,
-      isTrendUp: bias1D === 'ALCISTA',
-      triggerDetail: momentum1H === 'NEUTRAL'
-        ? 'Momentum 1H neutral — esperando confirmación'
-        : 'Desalineación 1D/1H — sin operar',
-    };
-  }
+  if (pullback1HLong) momentum1H = 'ALCISTA';
+  else if (pullback1HShort) momentum1H = 'BAJISTA';
 
   // ═══════════════════════════════════════════════════════════
-  // LAYER 3: 5m TRIGGER
+  // 3. INDICADORES DE 5m Y PREPARACIÓN DE GATILLO
   // ═══════════════════════════════════════════════════════════
   const closes5m = klines5m.map(k => k.close);
   const bbSeries5m = calculateBollingerBandsSeries(klines5m, 20, 2);
@@ -1927,7 +1916,7 @@ export function calculateVCMESniperSignal(
   }
 
   const lastIdx = klines5m.length - 1;
-  const bbIdx = lastIdx - 19; // Bollinger series starts at index period-1
+  const bbIdx = lastIdx - 19;
   const bb = bbIdx >= 0 && bbIdx < bbSeries5m.length ? bbSeries5m[bbIdx] : null;
   const vwap5m = vwapSeries5m[lastIdx];
   const ema9Val = ema9_5m[lastIdx];
@@ -1937,140 +1926,292 @@ export function calculateVCMESniperSignal(
   const volCurr5m = vol5m[lastIdx];
   const volAvg5m = volSma5m[lastIdx];
 
-  if (!bb || isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema20Val) || isNaN(rsi5m) || atr5m <= 0) {
-    return {
-      ...fallback, bias1D, momentum1H,
-      ema200_1D: Number(lastEma200_1d.toFixed(2)),
-      ema50_1H: Number(ema50Val1h.toFixed(2)),
-      adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
-      rsi1H: Number(rsiVal1h.toFixed(1)),
-      macdHistDirection: macdHistDir,
-      isTrendUp: isBullishAligned,
-      triggerDetail: 'Indicadores 5m no calculables',
-    };
+  if (!bb || isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema20Val) || isNaN(rsi5m) || isNaN(atr5m)) {
+    return { ...fallback, bias1D, momentum1H, triggerDetail: 'Indicadores 5m no calculables' };
   }
 
-  const volConfirmed = volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m;
-  const bRatio = candleBodyRatio(curr5m);
-  const cPos = candleClosePosition(curr5m);
+  // Bollinger Band Width calculations
+  const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
+  const bbWidthAvg5m = new Array(klines5m.length).fill(0);
+  let bbWidthSum = 0;
+  const pSqueeze = 50;
+  for (let idx = 0; idx < Math.min(pSqueeze, bbWidth5m.length); idx++) bbWidthSum += bbWidth5m[idx];
+  if (bbWidth5m.length >= pSqueeze) bbWidthAvg5m[pSqueeze - 1] = bbWidthSum / pSqueeze;
+  for (let idx = pSqueeze; idx < bbWidth5m.length; idx++) {
+    bbWidthSum = bbWidthSum - bbWidth5m[idx - pSqueeze] + bbWidth5m[idx];
+    bbWidthAvg5m[idx] = bbWidthSum / pSqueeze;
+  }
 
-  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  let mode: 'BREAKOUT' | 'REVERSAL' | 'NONE' = 'NONE';
-  let triggerDetail = '';
+  const currBBWidth = bbWidth5m[lastIdx];
+  const prevBBWidth = lastIdx > 0 ? bbWidth5m[lastIdx - 1] : 0;
+  const prevBBWidthAvg = lastIdx > 0 ? bbWidthAvg5m[lastIdx - 1] : 0;
+  const isSqueeze = prevBBWidthAvg > 0 && prevBBWidth < 0.8 * prevBBWidthAvg;
 
-  if (isBullishAligned) {
-    // --- Mode A: BREAKOUT LONG ---
-    const breakoutLong =
-      curr5m.close > bb.upper &&
-      curr5m.close > vwap5m &&
-      ema9Val > ema20Val &&
-      volConfirmed &&
-      bRatio > 0.5 &&
-      cPos > 0.7 &&
-      rsi5m < 80;
+  // ATR percentile 40 calculation over last 100 candles
+  const last100Atr5m = atrSeries5m.slice(-100).filter(v => !isNaN(v)).sort((a, b) => a - b);
+  const atr40Percentile = last100Atr5m.length > 0
+    ? last100Atr5m[Math.floor(last100Atr5m.length * 0.4)]
+    : 0;
 
-    // --- Mode B: REVERSAL LONG ---
-    const reversalLong =
-      curr5m.low <= bb.lower &&
-      curr5m.close > bb.lower &&
-      curr5m.close > curr5m.open &&
-      volConfirmed;
-
-    if (breakoutLong) {
-      signal = 'BUY';
-      mode = 'BREAKOUT';
-      triggerDetail = `Ruptura BB superior ($${bb.upper.toFixed(2)}) + Vol ${(volCurr5m / volAvg5m).toFixed(1)}x + EMA9>EMA20`;
-    } else if (reversalLong) {
-      signal = 'BUY';
-      mode = 'REVERSAL';
-      triggerDetail = `Rechazo BB inferior ($${bb.lower.toFixed(2)}) + Vela alcista + Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`;
-    }
-  } else if (isBearishAligned) {
-    // --- Mode A: BREAKOUT SHORT ---
-    const breakoutShort =
-      curr5m.close < bb.lower &&
-      curr5m.close < vwap5m &&
-      ema9Val < ema20Val &&
-      volConfirmed &&
-      bRatio > 0.5 &&
-      cPos < 0.3 &&
-      rsi5m > 20;
-
-    // --- Mode B: REVERSAL SHORT ---
-    const reversalShort =
-      curr5m.high >= bb.upper &&
-      curr5m.close < bb.upper &&
-      curr5m.close < curr5m.open &&
-      volConfirmed;
-
-    if (breakoutShort) {
-      signal = 'SELL';
-      mode = 'BREAKOUT';
-      triggerDetail = `Ruptura BB inferior ($${bb.lower.toFixed(2)}) + Vol ${(volCurr5m / volAvg5m).toFixed(1)}x + EMA9<EMA20`;
-    } else if (reversalShort) {
-      signal = 'SELL';
-      mode = 'REVERSAL';
-      triggerDetail = `Rechazo BB superior ($${bb.upper.toFixed(2)}) + Vela bajista + Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`;
-    }
+  // MACD Histogram Direction for 1H display
+  let macdHistDir: 'CRECIENTE' | 'DECRECIENTE' | 'PLANO' = 'PLANO';
+  if (!isNaN(macdHist1h) && !isNaN(macdHistPrev1h)) {
+    if (macdHist1h > macdHistPrev1h) macdHistDir = 'CRECIENTE';
+    else if (macdHist1h < macdHistPrev1h) macdHistDir = 'DECRECIENTE';
   }
 
   // ═══════════════════════════════════════════════════════════
-  // RISK MANAGEMENT (SL / TP1 / TP2)
+  // 4. SISTEMA DE SCORING (0-100)
+  // ═══════════════════════════════════════════════════════════
+  const getScoreForDirection = (dir: 'LONG' | 'SHORT') => {
+    let score = 0;
+    const isLong = dir === 'LONG';
+
+    // A. Trend (30)
+    score += (isLong ? lastClose1d > lastEma200_1d : lastClose1d < lastEma200_1d) ? 10 : 0;
+    score += (isLong ? close1h > ema200Val1h : close1h < ema200Val1h) ? 8 : 0;
+    score += (isLong ? ema9Val1h > ema21Val1h : ema9Val1h < ema21Val1h) ? 7 : 0;
+    score += (isLong ? ema9Val > ema20Val : ema9Val < ema20Val) ? 5 : 0;
+
+    // B. Momentum (25)
+    const rsi5mInRange = isLong
+      ? rsi5m > 32 && rsi5m < 48
+      : rsi5m > 52 && rsi5m < 68;
+    score += rsi5mInRange ? 10 : 0;
+    score += (isLong ? rsiVal1h > 50 : rsiVal1h < 50) ? 8 : 0;
+
+    const percentB = bb.upper > bb.lower ? (curr5m.close - bb.lower) / (bb.upper - bb.lower) : 0.5;
+    const pctBExtreme = isLong ? percentB < 0.12 : percentB > 0.88;
+    score += pctBExtreme ? 7 : 0;
+
+    // C. Volatility (20)
+    score += (currBBWidth > 1.8) ? 8 : 0;
+    const nearBand = isLong
+      ? curr5m.close <= bb.lower * 1.003
+      : curr5m.close >= bb.upper * 0.997;
+    score += nearBand ? 8 : 0;
+    score += (atr5m > atr40Percentile) ? 4 : 0;
+
+    // D. Volume (15)
+    score += (volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m) ? 8 : 0;
+    score += (volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m) ? 4 : 0;
+    score += (isLong ? curr5m.close > vwap5m : curr5m.close < vwap5m) ? 3 : 0;
+
+    // E. MTF Alignment (10)
+    const activeBias = isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA';
+    const activeMom = isLong ? momentum1H === 'ALCISTA' : momentum1H === 'BAJISTA';
+    const activeTrigger = isLong ? (curr5m.close > prev5m.high && curr5m.close > vwap5m) : (curr5m.close < prev5m.low && curr5m.close < vwap5m);
+
+    if (activeBias && activeMom && activeTrigger) {
+      score += 10;
+    } else if (activeMom && activeTrigger) {
+      score += 6;
+    } else if (activeTrigger) {
+      score += 3;
+    }
+
+    // Penalización por conflicto
+    const dailyOpposite = isLong ? bias1D === 'BAJISTA' : bias1D === 'ALCISTA';
+    const hourlyOpposite = isLong ? momentum1H === 'BAJISTA' : momentum1H === 'ALCISTA';
+    if (dailyOpposite && hourlyOpposite) {
+      score -= 10;
+    }
+
+    return score;
+  };
+
+  const baseScoreLong = getScoreForDirection('LONG');
+  const baseScoreShort = getScoreForDirection('SHORT');
+
+  // ═══════════════════════════════════════════════════════════
+  // 5. AJUSTES ADAPTATIVOS
+  // ═══════════════════════════════════════════════════════════
+  let adaptiveFactor = 1.0;
+  let marketRegime = 'Normal';
+  let volatilityProfile = 'Normal';
+  let recentPerfLabel = 'Sin datos';
+
+  // A. Market Regime adjustment (using 1H ATR vs SMA 50)
+  if (atrVal1h > 1.2 * atrSma1h) {
+    adaptiveFactor *= 1.15;
+    marketRegime = 'Alta Volatilidad (+15% Size)';
+  } else if (atrVal1h < 0.8 * atrSma1h) {
+    adaptiveFactor *= 0.82;
+    marketRegime = 'Baja Volatilidad (Rango -18% Size)';
+  }
+
+  // B. Volatility Profile
+  if (avgDailyRange > 3.5) {
+    adaptiveFactor *= 1.12;
+    volatilityProfile = 'Alta Volatilidad (+12% Size)';
+  } else if (avgDailyRange < 1.2) {
+    adaptiveFactor *= 0.75;
+    volatilityProfile = 'Baja Volatilidad (-25% Size)';
+  }
+
+  // C. Recent Performance (Meta-learning)
+  if (recentWinRate !== undefined) {
+    let perfMult = 1.0;
+    if (recentWinRate > 0.68) {
+      perfMult += 0.12;
+      recentPerfLabel = `Excelente WR: ${(recentWinRate * 100).toFixed(0)}% (+12% Size)`;
+    } else if (recentWinRate < 0.45) {
+      perfMult -= 0.18;
+      recentPerfLabel = `Deficiente WR: ${(recentWinRate * 100).toFixed(0)}% (-18% Size)`;
+    } else {
+      recentPerfLabel = `Estable WR: ${(recentWinRate * 100).toFixed(0)}%`;
+    }
+    if (recentProfitFactor && recentProfitFactor > 1.8) {
+      perfMult += 0.08;
+      recentPerfLabel += ` | Buen PF: ${recentProfitFactor.toFixed(2)}`;
+    }
+    const clampedPerf = Math.max(0.65, Math.min(1.25, perfMult));
+    adaptiveFactor *= clampedPerf;
+  }
+
+  const finalScoreLong = Math.min(100, Math.max(0, Math.round(baseScoreLong * adaptiveFactor)));
+  const finalScoreShort = Math.min(100, Math.max(0, Math.round(baseScoreShort * adaptiveFactor)));
+
+  // Determine active signal based on score thresholds
+  // High volatility -> threshold 72, Quiet -> threshold 82, Normal -> threshold 76
+  let requiredThreshold = 76;
+  if (atrVal1h > 1.2 * atrSma1h) requiredThreshold = 72;
+  else if (atrVal1h < 0.8 * atrSma1h) requiredThreshold = 82;
+
+  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  let mode: 'BREAKOUT' | 'REVERSAL' | 'NONE' = 'NONE';
+  let baseScore = 0;
+  let finalScore = 0;
+
+  // LONG conditions
+  const isLongBias = bias1D === 'ALCISTA' && momentum1H === 'ALCISTA';
+  const condBreakoutLong = curr5m.close > prev5m.high && curr5m.close > vwap5m;
+  const condVolumeLong = volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m;
+  const condRsiLong = rsi5m > 40 && rsi5m < 68;
+  const condStructureLong = curr5m.close > curr5m.open;
+  
+  const triggerLong =
+    isLongBias &&
+    condBreakoutLong &&
+    condVolumeLong &&
+    isSqueeze &&
+    condRsiLong &&
+    condStructureLong;
+
+  // Rebound Reversal Long
+  const condReversalLong = curr5m.low <= bb.lower && curr5m.close > bb.lower && curr5m.close > curr5m.open && volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m;
+  const triggerReversalLong = isLongBias && condReversalLong && rsi5m < 42;
+
+  // SHORT conditions
+  const isShortBias = bias1D === 'BAJISTA' && momentum1H === 'BAJISTA';
+  const condBreakoutShort = curr5m.close < prev5m.low && curr5m.close < vwap5m;
+  const condVolumeShort = volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m;
+  const condRsiShort = rsi5m > 32 && rsi5m < 60;
+  const condStructureShort = curr5m.close < curr5m.open;
+
+  const triggerShort =
+    isShortBias &&
+    condBreakoutShort &&
+    condVolumeShort &&
+    isSqueeze &&
+    condRsiShort &&
+    condStructureShort;
+
+  // Rebound Reversal Short
+  const condReversalShort = curr5m.high >= bb.upper && curr5m.close < bb.upper && curr5m.close < curr5m.open && volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m;
+  const triggerReversalShort = isShortBias && condReversalShort && rsi5m > 58;
+
+  let triggerDetail = '';
+
+  if ((triggerLong || triggerReversalLong) && finalScoreLong >= requiredThreshold) {
+    signal = 'BUY';
+    mode = triggerLong ? 'BREAKOUT' : 'REVERSAL';
+    baseScore = baseScoreLong;
+    finalScore = finalScoreLong;
+    triggerDetail = triggerLong
+      ? `Ruptura alcista ($${prev5m.high.toFixed(2)}) con Squeeze (${currBBWidth.toFixed(1)}%) y Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`
+      : `Rebote Bollinger inferior ($${bb.lower.toFixed(2)}) con Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`;
+  } else if ((triggerShort || triggerReversalShort) && finalScoreShort >= requiredThreshold) {
+    signal = 'SELL';
+    mode = triggerShort ? 'BREAKOUT' : 'REVERSAL';
+    baseScore = baseScoreShort;
+    finalScore = finalScoreShort;
+    triggerDetail = triggerShort
+      ? `Ruptura bajista ($${prev5m.low.toFixed(2)}) con Squeeze (${currBBWidth.toFixed(1)}%) y Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`
+      : `Rechazo Bollinger superior ($${bb.upper.toFixed(2)}) con Vol ${(volCurr5m / volAvg5m).toFixed(1)}x`;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // 6. GESTIÓN DE RIESGO
   // ═══════════════════════════════════════════════════════════
   let stopLoss = 0;
   let takeProfit1 = 0;
   let takeProfit2 = 0;
+  let takeProfit3 = 0;
   let riskRewardRatio = 0;
 
-  // ATR from 1H for swing-grade SL
-  const atr1h = calculateATR(klines1h.slice(0, idx1h + 1), 14);
-
-  // Swing low/high from last 10 candles of 5m
-  const lookbackStart = Math.max(0, lastIdx - 10);
-  let swingLow5m = Infinity;
-  let swingHigh5m = -Infinity;
-  for (let i = lookbackStart; i <= lastIdx; i++) {
-    if (klines5m[i].low < swingLow5m) swingLow5m = klines5m[i].low;
-    if (klines5m[i].high > swingHigh5m) swingHigh5m = klines5m[i].high;
+  const entry = curr5m.close;
+  
+  // Swing high/low 5m last 5 candles
+  let swingLow5 = Infinity;
+  let swingHigh5 = -Infinity;
+  const lookbackS = Math.max(0, lastIdx - 5);
+  for (let s = lookbackS; s <= lastIdx; s++) {
+    if (klines5m[s].low < swingLow5) swingLow5 = klines5m[s].low;
+    if (klines5m[s].high > swingHigh5) swingHigh5 = klines5m[s].high;
   }
 
-  const entry = curr5m.close;
-
   if (signal === 'BUY') {
-    const slATR = entry - 1.5 * atr1h;
-    const slStructure = swingLow5m * 0.998; // small buffer below swing low
-    stopLoss = Math.min(slATR, slStructure); // most conservative (furthest)
+    const slATR = entry - 1.35 * atr5m;
+    const slStruct = swingLow5;
+    const slVwap = vwap5m - 0.5 * atr5m;
+    stopLoss = Math.max(slATR, slStruct, slVwap);
 
-    // Ensure SL is below entry with minimum distance
     const minDist = entry * 0.002;
     if (entry - stopLoss < minDist) stopLoss = entry - minDist;
 
     const risk = entry - stopLoss;
     takeProfit1 = entry + risk * 1.5;
-    takeProfit2 = entry + risk * 3.0;
-    riskRewardRatio = risk > 0 ? (takeProfit2 - entry) / risk : 0;
+    takeProfit2 = entry + 1.0 * atrVal1h;
+    takeProfit3 = entry + risk * 2.5;
+    riskRewardRatio = risk > 0 ? (takeProfit1 - entry) / risk : 1.5;
   } else if (signal === 'SELL') {
-    const slATR = entry + 1.5 * atr1h;
-    const slStructure = swingHigh5m * 1.002; // small buffer above swing high
-    stopLoss = Math.max(slATR, slStructure); // most conservative (furthest)
+    const slATR = entry + 1.35 * atr5m;
+    const slStruct = swingHigh5;
+    const slVwap = vwap5m + 0.5 * atr5m;
+    stopLoss = Math.min(slATR, slStruct, slVwap);
 
     const minDist = entry * 0.002;
     if (stopLoss - entry < minDist) stopLoss = entry + minDist;
 
     const risk = stopLoss - entry;
     takeProfit1 = entry - risk * 1.5;
-    takeProfit2 = entry - risk * 3.0;
-    riskRewardRatio = risk > 0 ? (entry - takeProfit2) / risk : 0;
+    takeProfit2 = entry - 1.0 * atrVal1h;
+    takeProfit3 = entry - risk * 2.5;
+    riskRewardRatio = risk > 0 ? (entry - takeProfit1) / risk : 1.5;
   }
 
-  // S/R for display
-  const sr = calculateSupportResistance(klines5m, entry);
-
+  // Fallback reasons if no signal was generated
   if (signal === 'NEUTRAL') {
-    triggerDetail = isBullishAligned || isBearishAligned
-      ? 'Alineación 1D+1H OK — esperando gatillo 5m'
-      : 'Sin alineación multi-temporal';
+    if (finalScoreLong > finalScoreShort) {
+      baseScore = baseScoreLong;
+      finalScore = finalScoreLong;
+    } else {
+      baseScore = baseScoreShort;
+      finalScore = finalScoreShort;
+    }
+    
+    if (bias1D === 'NEUTRAL') {
+      triggerDetail = 'Sesgo 1D neutral — esperando tendencia diaria';
+    } else if (momentum1H === 'NEUTRAL') {
+      triggerDetail = '1H Pullback inactivo — esperando retroceso a EMA20';
+    } else {
+      triggerDetail = `Alineación MTF OK | Score: ${finalScore}/${requiredThreshold} — esperando gatillo 5m`;
+    }
   }
+
+  const sr = calculateSupportResistance(klines5m, entry);
+  const atrPercent = entry > 0 ? (atr5m / entry * 100) : 0;
 
   return {
     signal,
@@ -2078,7 +2219,8 @@ export function calculateVCMESniperSignal(
     stopLoss: Number(stopLoss.toFixed(2)),
     takeProfit1: Number(takeProfit1.toFixed(2)),
     takeProfit2: Number(takeProfit2.toFixed(2)),
-    riskRewardRatio: Number(riskRewardRatio.toFixed(1)),
+    takeProfit3: Number(takeProfit3.toFixed(2)),
+    riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
     bias1D,
     adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
     momentum1H,
@@ -2093,5 +2235,13 @@ export function calculateVCMESniperSignal(
     isTrendUp: bias1D === 'ALCISTA',
     nearestSupport: sr.nearestSupport,
     nearestResistance: sr.nearestResistance,
+    score: finalScore,
+    baseScore,
+    adaptiveFactor: Number(adaptiveFactor.toFixed(2)),
+    marketRegime,
+    volatilityProfile,
+    recentPerfLabel,
+    atrPercent: Number(atrPercent.toFixed(2)),
+    avgDailyRange: Number(avgDailyRange.toFixed(2))
   };
 }

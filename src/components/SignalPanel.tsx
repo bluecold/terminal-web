@@ -47,6 +47,8 @@ export default function SignalPanel({
   const [stockInfo, setStockInfo] = useState<StockExtraInfo | null>(null);
   const [cryptoInfo, setCryptoInfo] = useState<CryptoExtraInfo | null>(null);
   const [loadingExtra, setLoadingExtra] = useState(false);
+  const [accountDrawdown, setAccountDrawdown] = useState(0); // in percent
+  const [sameSectorPositions, setSameSectorPositions] = useState(0); // open correlated trades
 
   useEffect(() => {
     const APP_VERSION = 'v2026.07.13.1';
@@ -248,10 +250,6 @@ export default function SignalPanel({
   const indicators = voting.indicators;
   const { rawSignal } = voting;
 
-  const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
-  const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
-  const multi: VCMESniperResult = useMemo(() => calculateVCMESniperSignal(klines5m, klines1h, klines1d, symbol), [klines5m, klines1h, klines1d, symbol]);
-
   // ── Backtest results (heavy computation, memoized) ──────────────────────
   const btStandard    = useMemo(() => klines.length > 20 ? backtestStandard(klines, interval)    : null, [klines, interval]);
   const btConfluencia = useMemo(() => klines.length > 20 ? backtestConfluencia(klines, interval) : null, [klines, interval]);
@@ -261,6 +259,19 @@ export default function SignalPanel({
       ? backtestMultitemporal(klines5m, klines1h, klines1d, '5m', symbol)
       : null;
   }, [klines5m, klines1h, klines1d, symbol]);
+
+  const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
+  const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
+  const multi: VCMESniperResult = useMemo(() => {
+    return calculateVCMESniperSignal(
+      klines5m,
+      klines1h,
+      klines1d,
+      symbol,
+      btMultitemporal ? btMultitemporal.winRate : undefined,
+      btMultitemporal ? btMultitemporal.profitFactor : undefined
+    );
+  }, [klines5m, klines1h, klines1d, symbol, btMultitemporal]);
 
   // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
   const bestStrategy = useMemo(() => {
@@ -368,12 +379,48 @@ export default function SignalPanel({
   const slPct = entryPrice > 0 ? Math.abs(entryPrice - slPrice) / entryPrice : activeSlPct;
   const tpPct = entryPrice > 0 ? Math.abs(entryPrice - tpPrice) / entryPrice : activeTpPct;
 
-  const riskUSD = capital * (riskPercent / 100);
+  // Position Sizing multipliers based on score, volatility, drawdown and correlation
+  const maxRiskPerTrade = capital * (riskPercent / 100);
   const priceDiff = Math.abs(entryPrice - slPrice);
+  const riskDistance = entryPrice > 0 ? priceDiff / entryPrice : 0.015;
+  const basePositionUSD = riskDistance > 0 ? maxRiskPerTrade / riskDistance : 0;
+
+  let confidenceMultiplier = 1.0;
+  let scoreTier = 'N/A';
+  if (bestStrategy === 'multitemporal') {
+    const score = multi.score;
+    if (score >= 90) { confidenceMultiplier = 1.65; scoreTier = 'ELITE'; }
+    else if (score >= 82) { confidenceMultiplier = 1.35; scoreTier = 'HIGH'; }
+    else if (score >= 76) { confidenceMultiplier = 1.10; scoreTier = 'GOOD'; }
+    else if (score >= 70) { confidenceMultiplier = 0.75; scoreTier = 'MEDIUM'; }
+    else { confidenceMultiplier = 0.40; scoreTier = 'LOW'; }
+  }
+
+  let volatilityMultiplier = 1.0;
+  if (bestStrategy === 'multitemporal') {
+    const atrPct = multi.atrPercent;
+    if (atrPct > 3.0) volatilityMultiplier = 0.70;
+    else if (atrPct > 2.0) volatilityMultiplier = 0.85;
+    else if (atrPct < 0.8) volatilityMultiplier = 1.25;
+  }
+
+  let healthMultiplier = 1.0;
+  if (accountDrawdown > 15) healthMultiplier = 0.40;
+  else if (accountDrawdown > 8) healthMultiplier = 0.65;
+  else if (accountDrawdown > 3) healthMultiplier = 0.85;
+
+  let correlationPenalty = 1.0;
+  if (sameSectorPositions >= 3) correlationPenalty = 0.45;
+  else if (sameSectorPositions === 2) correlationPenalty = 0.70;
+
+  let totalPositionValue = basePositionUSD * confidenceMultiplier * volatilityMultiplier * healthMultiplier * correlationPenalty;
   
-  const positionUnits = priceDiff > 0 ? riskUSD / priceDiff : 0;
-  const totalPositionValue = positionUnits * entryPrice;
+  // Hard limit: Max 25% of capital in one position
+  totalPositionValue = Math.min(totalPositionValue, capital * 0.25);
+  
+  const positionUnits = entryPrice > 0 ? totalPositionValue / entryPrice : 0;
   const requiredMargin = totalPositionValue / (isCrypto ? leverage : 1);
+  const riskUSD = totalPositionValue * riskDistance;
   return (
     <div className="signal-panel-content" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
       
@@ -1067,11 +1114,31 @@ export default function SignalPanel({
                         <BacktestCard name="VCME Sniper (1D+1H+5m)" result={btMultitemporal} />
                       </div>
                       <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>CONFLUENCIA & SCORING ADAPTATIVO</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(59, 130, 246, 0.04)', padding: '10px 12px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.15)', marginBottom: '10px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Score de Confianza Final:</span>
+                            <span style={{ color: multi.score >= 76 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '800', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
+                              {multi.score} / 100
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem' }}>
+                            <span style={{ color: 'var(--text-muted)' }}>Score Base: {multi.baseScore} pts</span>
+                            <span style={{ color: 'var(--accent-blue)', fontWeight: 'bold' }}>Multiplicador: {multi.adaptiveFactor}x</span>
+                          </div>
+                          <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                            <div>🌍 Régimen: <span style={{ color: '#fff' }}>{multi.marketRegime}</span></div>
+                            <div>📊 Perfil Volatilidad Activo: <span style={{ color: '#fff' }}>{multi.volatilityProfile}</span></div>
+                            <div>🔄 Meta-Learning (Performance Reciente): <span style={{ color: '#fff' }}>{multi.recentPerfLabel}</span></div>
+                          </div>
+                        </div>
+                      </div>
+                      <div>
                         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>SISTEMA DE 3 CAPAS</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                           {/* Layer 1: 1D Bias */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>📊 Bias 1D (EMA 200/50):</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>📊 Trend 1D (Precio {"\u003e"} EMA200 {"&"} EMA20 {"\u003e"} EMA50):</span>
                             <span style={{ color: biasColor, fontWeight: '700', fontSize: '0.75rem' }}>
                               {multi.bias1D === 'ALCISTA' ? '▲ ALCISTA' : multi.bias1D === 'BAJISTA' ? '▼ BAJISTA' : '─ NEUTRAL'}
                               <span style={{ fontWeight: 'normal', color: 'var(--text-muted)', fontSize: '0.7rem', marginLeft: '4px' }}>
@@ -1079,46 +1146,16 @@ export default function SignalPanel({
                               </span>
                             </span>
                           </div>
-                          {/* Layer 2: 1H Momentum */}
+                          {/* Layer 2: 1H Pullback */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>⚡ Momentum 1H (EMA50+MACD):</span>
+                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>⚡ Pullback 1H (Low {"\u2264"} EMA20 {"&"} Close {"\u003e"} VWAP):</span>
                             <span style={{ color: momColor, fontWeight: '700', fontSize: '0.75rem' }}>
-                              {multi.momentum1H === 'ALCISTA' ? '▲ ALCISTA' : multi.momentum1H === 'BAJISTA' ? '▼ BAJISTA' : '─ NEUTRAL'}
-                            </span>
-                          </div>
-                          {/* ADX */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>📈 ADX 1H (Fuerza):</span>
-                            <span style={{ 
-                              color: multi.adx1H > 20 ? 'var(--accent-green)' : 'var(--accent-red)', 
-                              fontWeight: '700', fontSize: '0.75rem' 
-                            }}>
-                              {multi.adx1H > 0 ? `${multi.adx1H} ${multi.adx1H > 20 ? '✓' : '✗ <20'}` : '-'}
-                            </span>
-                          </div>
-                          {/* MACD Histogram Direction */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>📉 MACD Hist 1H:</span>
-                            <span style={{ 
-                              color: multi.macdHistDirection === 'CRECIENTE' ? 'var(--accent-green)' : multi.macdHistDirection === 'DECRECIENTE' ? 'var(--accent-red)' : 'var(--text-muted)', 
-                              fontWeight: '700', fontSize: '0.75rem' 
-                            }}>
-                              {multi.macdHistDirection === 'CRECIENTE' ? '▲ CRECIENTE' : multi.macdHistDirection === 'DECRECIENTE' ? '▼ DECRECIENTE' : '─ PLANO'}
-                            </span>
-                          </div>
-                          {/* RSI 1H */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>📊 RSI 1H:</span>
-                            <span style={{ 
-                              color: multi.rsi1H > 45 && multi.rsi1H < 75 ? 'var(--accent-green)' : 'var(--text-muted)', 
-                              fontWeight: '700', fontSize: '0.75rem' 
-                            }}>
-                              {multi.rsi1H > 0 ? `${multi.rsi1H} ${multi.rsi1H > 45 && multi.rsi1H < 75 ? '(Sano)' : '(Extremo)'}` : '-'}
+                              {multi.momentum1H === 'ALCISTA' ? '▲ PULLBACK OK' : multi.momentum1H === 'BAJISTA' ? '▼ PULLBACK OK' : '─ INACTIVO'}
                             </span>
                           </div>
                           {/* Layer 3: 5m Trigger Detail */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Gatillo 5m:</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Gatillo 5m (Ruptura/Reversión):</span>
                             <span style={{ 
                               color: multi.mode !== 'NONE' ? sigColor : 'var(--text-muted)', 
                               fontWeight: '700', fontSize: '0.7rem',
@@ -1140,19 +1177,23 @@ export default function SignalPanel({
                       {/* Risk Management Levels */}
                       {multi.signal !== 'NEUTRAL' && (
                         <div>
-                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>GESTIÓN DE RIESGO</div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>GESTIÓN DE RIESGO SUGERIDA (ATR)</div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
-                              <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.stopLoss}</span>
+                              <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 (1.5R — cerrar 50%):</span>
-                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit1}</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 (1.5R — cerrar 40% + BE):</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit1.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 (3.0R — EMA9 trail):</span>
-                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit2}</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 (1.0 ATR 1H — cerrar 35%):</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit2.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🚀 TP3 (2.5R — 25% + trailing):</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit3.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-blue)' }}>⚖️ R:R Ratio:</span>
@@ -1229,7 +1270,7 @@ export default function SignalPanel({
                 </button>
               </div>
               <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-                SL/TP por ATR ({btStandard ? 'Standard' : 'Fijo'})
+                Gestión Dinámica: {bestStrategy === 'multitemporal' ? 'VCME Sniper v2' : 'Estándar'}
               </span>
             </div>
 
@@ -1256,7 +1297,7 @@ export default function SignalPanel({
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>RIESGO (%)</label>
+                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>RIESGO BASE (%)</label>
                 <input 
                   type="number" 
                   step="0.1"
@@ -1302,6 +1343,70 @@ export default function SignalPanel({
               )}
             </div>
 
+            {/* Advanced Position Sizing Controls */}
+            <div style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              gap: '10px',
+              padding: '10px 12px',
+              background: 'rgba(0, 0, 0, 0.15)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)'
+            }}>
+              <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'var(--accent-blue)', letterSpacing: '0.5px' }}>
+                PARÁMETROS DE CUENTA & CONTROL DE RIESGO
+              </div>
+              
+              {/* Account Drawdown Slider */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Drawdown de Cuenta:</span>
+                  <span style={{ color: accountDrawdown > 8 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>
+                    {accountDrawdown}%
+                  </span>
+                </div>
+                <input 
+                  type="range"
+                  min="0"
+                  max="30"
+                  value={accountDrawdown}
+                  onChange={e => setAccountDrawdown(parseInt(e.target.value))}
+                  style={{
+                    width: '100%',
+                    height: '4px',
+                    borderRadius: '2px',
+                    background: 'rgba(255,255,255,0.1)',
+                    outline: 'none',
+                    cursor: 'pointer'
+                  }}
+                />
+              </div>
+
+              {/* Correlation Positions Dropdown */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Posiciones correlacionadas abiertas:</span>
+                <select 
+                  value={sameSectorPositions}
+                  onChange={e => setSameSectorPositions(parseInt(e.target.value))}
+                  style={{
+                    background: 'rgba(0,0,0,0.3)',
+                    border: '1px solid var(--border-color)',
+                    color: '#fff',
+                    fontSize: '0.7rem',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    fontFamily: 'var(--font-mono)',
+                    outline: 'none'
+                  }}
+                >
+                  <option value={0}>0 posiciones</option>
+                  <option value={1}>1 posición</option>
+                  <option value={2}>2 posiciones (Penaliz. 30%)</option>
+                  <option value={3}>3+ posiciones (Penaliz. 55%)</option>
+                </select>
+              </div>
+            </div>
+
             {/* Price Plan (SL & TP Levels) */}
             <div style={{ 
               display: 'flex', 
@@ -1326,7 +1431,7 @@ export default function SignalPanel({
                 </div>
               </div>
               <div>
-                <span style={{ color: 'var(--accent-green)' }}>Target (+{(tpPct*100).toFixed(1)}%):</span>
+                <span style={{ color: 'var(--accent-green)' }}>Target 1 (+{(tpPct*100).toFixed(1)}%):</span>
                 <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
                   ${tpPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
@@ -1344,6 +1449,41 @@ export default function SignalPanel({
               </div>
             </div>
 
+            {/* Sizing Multipliers Breakdown */}
+            {bestStrategy === 'multitemporal' && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                padding: '10px 12px',
+                background: 'rgba(59, 130, 246, 0.03)',
+                border: '1px solid rgba(59, 130, 246, 0.1)',
+                borderRadius: '6px',
+                fontSize: '0.7rem'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '4px', fontWeight: 'bold', color: 'var(--accent-blue)' }}>
+                  <span>Multiplicadores de Capital (VCME v2)</span>
+                  <span>Impacto</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>1. Factor Confianza ({scoreTier} - {multi.score} pts):</span>
+                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{confidenceMultiplier.toFixed(2)}x</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>2. Factor Volatilidad (ATR 5m {multi.atrPercent}%):</span>
+                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{volatilityMultiplier.toFixed(2)}x</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>3. Protección Drawdown ({accountDrawdown}%):</span>
+                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{healthMultiplier.toFixed(2)}x</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>4. Penalización Correlación ({sameSectorPositions} open):</span>
+                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{correlationPenalty.toFixed(2)}x</span>
+                </div>
+              </div>
+            )}
+
             {/* Sizing Outputs */}
             <div style={{
               display: 'grid',
@@ -1355,7 +1495,7 @@ export default function SignalPanel({
               borderRadius: '6px',
             }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RIESGO EN USD:</span>
+                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RIESGO NETO EN USD:</span>
                 <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>
                   ${riskUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
@@ -1367,7 +1507,7 @@ export default function SignalPanel({
                 </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '6px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>TAMAÑO EN USD:</span>
+                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>VALOR TOTAL DE POSICIÓN:</span>
                 <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   ${totalPositionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>

@@ -16,9 +16,6 @@ import {
   calculateRSISlope,
   calculateSupportResistance,
   calculateATRSeries,
-  calculateADXSeries,
-  candleBodyRatio,
-  candleClosePosition,
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -240,14 +237,19 @@ export function backtestMultitemporal(
   const closes1d = klines1d.map(k => k.close);
   const ema200_1d = calculateEMA(closes1d, 200);
   const ema50_1d = calculateEMA(closes1d, 50);
+  const ema20_1d = calculateEMA(closes1d, 20);
 
   // 1H series
   const closes1h = klines1h.map(k => k.close);
-  const ema50_1h = calculateEMA(closes1h, 50);
-  const adxSeries1h = calculateADXSeries(klines1h, 14);
-  const macdData1h = calculateMACDSeries(closes1h);
+  const ema200_1h = calculateEMA(closes1h, 200);
+  const ema20_1h = calculateEMA(closes1h, 20);
+  const ema9_1h = calculateEMA(closes1h, 9);
+  const ema21_1h = calculateEMA(closes1h, 21);
   const rsiSeries1h = calculateRSISeries(closes1h, 14);
   const atrSeries1h = calculateATRSeries(klines1h, 14);
+  const vwapSeries1h = calculateVWAPSeries(klines1h, '1h', symbol);
+
+  // Volume 1H SMA 20
   const vol1h = klines1h.map(k => k.volume);
   const volSma1h: number[] = new Array(klines1h.length).fill(0);
   let volSum1h = 0;
@@ -265,6 +267,8 @@ export function backtestMultitemporal(
   const ema20_5m = calculateEMA(closes5m, 20);
   const vwapSeries5m = calculateVWAPSeries(klines5m, '5m', symbol);
   const rsiSeries5m = calculateRSISeries(closes5m, 14);
+  const atrSeries5m = calculateATRSeries(klines5m, 14);
+  
   const vol5m = klines5m.map(k => k.volume);
   const volSma5m: number[] = new Array(klines5m.length).fill(0);
   let volSum5m = 0;
@@ -273,6 +277,30 @@ export function backtestMultitemporal(
   for (let i = 20; i < vol5m.length; i++) {
     volSum5m = volSum5m - vol5m[i - 20] + vol5m[i];
     volSma5m[i] = volSum5m / 20;
+  }
+
+  // Bollinger Band Width series for 5m Squeeze
+  const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
+  const bbWidthAvg5m = new Array(klines5m.length).fill(0);
+  let bbWidthSum = 0;
+  const pSqueeze = 50;
+  for (let idx = 0; idx < Math.min(pSqueeze, bbWidth5m.length); idx++) bbWidthSum += bbWidth5m[idx];
+  if (bbWidth5m.length >= pSqueeze) bbWidthAvg5m[pSqueeze - 1] = bbWidthSum / pSqueeze;
+  for (let idx = pSqueeze; idx < bbWidth5m.length; idx++) {
+    bbWidthSum = bbWidthSum - bbWidth5m[idx - pSqueeze] + bbWidth5m[idx];
+    bbWidthAvg5m[idx] = bbWidthSum / pSqueeze;
+  }
+
+  // ATR SMA 50 for 1H Regime
+  const atrSma1hArr = new Array(klines1h.length).fill(0);
+  let atr1hSum = 0;
+  for (let idx = 0; idx < Math.min(50, atrSeries1h.length); idx++) {
+    atr1hSum += isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx];
+  }
+  if (atrSeries1h.length >= 50) atrSma1hArr[49] = atr1hSum / 50;
+  for (let idx = 50; idx < atrSeries1h.length; idx++) {
+    atr1hSum = atr1hSum - (isNaN(atrSeries1h[idx - 50]) ? 0 : atrSeries1h[idx - 50]) + (isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx]);
+    atrSma1hArr[idx] = atr1hSum / 50;
   }
 
   const latestEvalIdx = klines5m.length - 1;
@@ -287,6 +315,9 @@ export function backtestMultitemporal(
   let totalLossPct = 0;
   let nextAllowedIdx = 0;
 
+  // Track completed trades for Meta-learning
+  const completedTrades: { win: boolean; gain: number }[] = [];
+
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
       neutrals++;
@@ -294,9 +325,9 @@ export function backtestMultitemporal(
     }
 
     const curr = klines5m[i];
+    const prev = klines5m[i - 1];
 
-    // ── LAYER 1: 1D Bias ────────────────────────────────────────────────
-    // Find last closed 1D candle before this 5m candle
+    // ── LAYER 1: Daily Bias 1D ───────────────────────────────────────────
     let idx1d = -1;
     for (let d = klines1d.length - 1; d >= 0; d--) {
       const endTime1d = klines1d[d].time + 86400;
@@ -309,23 +340,18 @@ export function backtestMultitemporal(
 
     const lastEma200_1d = ema200_1d[idx1d];
     const lastEma50_1d = ema50_1d[idx1d];
+    const lastEma20_1d = ema20_1d[idx1d];
     const lastClose1d = closes1d[idx1d];
-    if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d)) { neutrals++; continue; }
+    if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d) || isNaN(lastEma20_1d)) { neutrals++; continue; }
 
-    const slopeIdx1d = idx1d - 5;
-    const ema200Slope = slopeIdx1d >= 0 && !isNaN(ema200_1d[slopeIdx1d])
-      ? lastEma200_1d - ema200_1d[slopeIdx1d]
-      : 0;
-
-    let bias1D: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-    if (lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && ema200Slope > 0) {
-      bias1D = 'UP';
-    } else if (lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && ema200Slope < 0) {
-      bias1D = 'DOWN';
+    let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
+    if (lastClose1d > lastEma200_1d && lastEma20_1d > lastEma50_1d) {
+      bias1D = 'ALCISTA';
+    } else if (lastClose1d < lastEma200_1d && lastEma20_1d < lastEma50_1d) {
+      bias1D = 'BAJISTA';
     }
-    if (bias1D === 'NEUTRAL') { neutrals++; continue; }
 
-    // ── LAYER 2: 1H Momentum ────────────────────────────────────────────
+    // ── LAYER 2: 1H Setup Pullback ──────────────────────────────────────────
     let idx1h = -1;
     for (let h = klines1h.length - 1; h >= 0; h--) {
       const endTime1h = klines1h[h].time + 3600;
@@ -337,117 +363,236 @@ export function backtestMultitemporal(
     if (idx1h < 50) { neutrals++; continue; }
 
     const close1h = closes1h[idx1h];
-    const ema50Val1h = ema50_1h[idx1h];
-    const adxVal = adxSeries1h[idx1h];
+    const ema200Val1h = ema200_1h[idx1h];
+    const ema20Val1h = ema20_1h[idx1h];
+    const ema9Val1h = ema9_1h[idx1h];
+    const ema21Val1h = ema21_1h[idx1h];
     const rsiVal1h = rsiSeries1h[idx1h];
-    const macdLine = macdData1h.macd[idx1h];
-    const macdSignal = macdData1h.signal[idx1h];
-    const macdHist = macdData1h.histogram[idx1h];
-    const macdHistPrev = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
+    const atrVal1h = atrSeries1h[idx1h];
+    const vwapVal1h = vwapSeries1h[idx1h];
+    const atrSma1h = atrSma1hArr[idx1h] || 1;
 
-    if (isNaN(ema50Val1h) || isNaN(rsiVal1h) || isNaN(macdLine) || isNaN(macdSignal)) {
+    if (isNaN(ema20Val1h) || isNaN(rsiVal1h) || isNaN(vwapVal1h) || isNaN(atrVal1h)) {
       neutrals++; continue;
     }
 
-    const adxOk = !isNaN(adxVal) && adxVal > 20;
-    const volOk1h = volSma1h[idx1h] > 0 && vol1h[idx1h] > volSma1h[idx1h];
-    const histCreciente = !isNaN(macdHist) && !isNaN(macdHistPrev) && macdHist > macdHistPrev;
-    const histDecreciente = !isNaN(macdHist) && !isNaN(macdHistPrev) && macdHist < macdHistPrev;
+    const pullback1HLong = klines1h[idx1h].low <= ema20Val1h && close1h > vwapVal1h;
+    const pullback1HShort = klines1h[idx1h].high >= ema20Val1h && close1h < vwapVal1h;
 
-    let momentum: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-    if (close1h > ema50Val1h && macdLine > macdSignal && histCreciente &&
-        rsiVal1h > 45 && rsiVal1h < 75 && adxOk && volOk1h) {
-      momentum = 'UP';
-    } else if (close1h < ema50Val1h && macdLine < macdSignal && histDecreciente &&
-               rsiVal1h > 25 && rsiVal1h < 55 && adxOk && volOk1h) {
-      momentum = 'DOWN';
-    }
+    let momentum1H: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
+    if (pullback1HLong) momentum1H = 'ALCISTA';
+    else if (pullback1HShort) momentum1H = 'BAJISTA';
 
-    const isBullish = bias1D === 'UP' && momentum === 'UP';
-    const isBearish = bias1D === 'DOWN' && momentum === 'DOWN';
-    if (!isBullish && !isBearish) { neutrals++; continue; }
-
-    // ── LAYER 3: 5m Trigger ─────────────────────────────────────────────
-    const bbIdx = i - 19;
-    const bb = bbIdx >= 0 && bbIdx < bbSeries5m.length ? bbSeries5m[bbIdx] : null;
+    // ── LAYER 3: 5m Indicators ──────────────────────────────────────────
+    const bb = bbSeries5m[i - 19];
     if (!bb) { neutrals++; continue; }
 
-    const vwap = vwapSeries5m[i];
-    const ema9 = ema9_5m[i];
-    const ema20 = ema20_5m[i];
+    const vwap5m = vwapSeries5m[i];
+    const ema9Val = ema9_5m[i];
+    const ema20Val = ema20_5m[i];
     const rsi5m = rsiSeries5m[i];
-    if (isNaN(vwap) || isNaN(ema9) || isNaN(ema20) || isNaN(rsi5m)) { neutrals++; continue; }
+    const atr5m = atrSeries5m[i];
+    const volCurr5m = vol5m[i];
+    const volAvg5m = volSma5m[i];
 
-    const volConfirmed = volSma5m[i] > 0 && vol5m[i] > 1.5 * volSma5m[i];
-    const bRatio = candleBodyRatio(curr);
-    const cPos = candleClosePosition(curr);
+    if (isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema20Val) || isNaN(rsi5m) || isNaN(atr5m)) {
+      neutrals++; continue;
+    }
+
+    // 5m squeeze
+    const prevBBWidth = bbWidth5m[i - 1];
+    const prevBBWidthAvg = bbWidthAvg5m[i - 1];
+    const isSqueeze = prevBBWidthAvg > 0 && prevBBWidth < 0.8 * prevBBWidthAvg;
+
+    // ATR percentile 40 (last 100)
+    const last100Atr5m = atrSeries5m.slice(Math.max(0, i - 100), i + 1).filter(v => !isNaN(v)).sort((a, b) => a - b);
+    const atr40Percentile = last100Atr5m.length > 0 ? last100Atr5m[Math.floor(last100Atr5m.length * 0.4)] : 0;
+
+    // Daily Range for active asset
+    const last20Ranges = closes1d.slice(Math.max(0, idx1d - 20), idx1d + 1).map((c, idx) => {
+      const kd = klines1d[Math.max(0, idx1d - 20) + idx];
+      return c > 0 ? (kd.high - kd.low) / c * 100 : 0;
+    });
+    const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
+
+    // ── Running Winrate (Meta-learning) ──────────────────────────────────
+    let recentWinRate = 0.50;
+    let recentProfitFactor = 1.0;
+    if (completedTrades.length > 0) {
+      const last20Trades = completedTrades.slice(-20);
+      const w = last20Trades.filter(t => t.win).length;
+      recentWinRate = w / last20Trades.length;
+      let gains = 0;
+      let losses = 0;
+      last20Trades.forEach(t => {
+        if (t.win) gains += t.gain;
+        else losses += Math.abs(t.gain);
+      });
+      recentProfitFactor = losses > 0 ? gains / losses : 1.5;
+    }
+
+    // ── ADAPTATIVE SCORING ───────────────────────────────────────────────
+    const getScore = (dir: 'LONG' | 'SHORT') => {
+      let score = 0;
+      const isLong = dir === 'LONG';
+
+      // A. Trend (30)
+      score += (isLong ? lastClose1d > lastEma200_1d : lastClose1d < lastEma200_1d) ? 10 : 0;
+      score += (isLong ? close1h > ema200Val1h : close1h < ema200Val1h) ? 8 : 0;
+      score += (isLong ? ema9Val1h > ema21Val1h : ema9Val1h < ema21Val1h) ? 7 : 0;
+      score += (isLong ? ema9Val > ema20Val : ema9Val < ema20Val) ? 5 : 0;
+
+      // B. Momentum (25)
+      const rsi5mInRange = isLong ? rsi5m > 32 && rsi5m < 48 : rsi5m > 52 && rsi5m < 68;
+      score += rsi5mInRange ? 10 : 0;
+      score += (isLong ? rsiVal1h > 50 : rsiVal1h < 50) ? 8 : 0;
+
+      const percentB = bb.upper > bb.lower ? (curr.close - bb.lower) / (bb.upper - bb.lower) : 0.5;
+      const pctBExtreme = isLong ? percentB < 0.12 : percentB > 0.88;
+      score += pctBExtreme ? 7 : 0;
+
+      // C. Volatility (20)
+      score += (bbWidth5m[i] > 1.8) ? 8 : 0;
+      const nearBand = isLong ? curr.close <= bb.lower * 1.003 : curr.close >= bb.upper * 0.997;
+      score += nearBand ? 8 : 0;
+      score += (atr5m > atr40Percentile) ? 4 : 0;
+
+      // D. Volume (15)
+      score += (volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m) ? 8 : 0;
+      score += (volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m) ? 4 : 0;
+      score += (isLong ? curr.close > vwap5m : curr.close < vwap5m) ? 3 : 0;
+
+      // E. MTF Alignment (10)
+      const activeBias = isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA';
+      const activeMom = isLong ? momentum1H === 'ALCISTA' : momentum1H === 'BAJISTA';
+      const activeTrigger = isLong ? (curr.close > prev.high && curr.close > vwap5m) : (curr.close < prev.low && curr.close < vwap5m);
+
+      if (activeBias && activeMom && activeTrigger) score += 10;
+      else if (activeMom && activeTrigger) score += 6;
+      else if (activeTrigger) score += 3;
+
+      if ((isLong ? bias1D === 'BAJISTA' : bias1D === 'ALCISTA') && (isLong ? momentum1H === 'BAJISTA' : momentum1H === 'ALCISTA')) {
+        score -= 10;
+      }
+
+      return score;
+    };
+
+    const baseScoreLong = getScore('LONG');
+    const baseScoreShort = getScore('SHORT');
+
+    // Adapt factors
+    let adaptiveFactor = 1.0;
+    if (atrVal1h > 1.2 * atrSma1h) adaptiveFactor *= 1.15;
+    else if (atrVal1h < 0.8 * atrSma1h) adaptiveFactor *= 0.82;
+
+    if (avgDailyRange > 3.5) adaptiveFactor *= 1.12;
+    else if (avgDailyRange < 1.2) adaptiveFactor *= 0.75;
+
+    let perfMult = 1.0;
+    if (recentWinRate > 0.68) perfMult += 0.12;
+    else if (recentWinRate < 0.45) perfMult -= 0.18;
+    if (recentProfitFactor > 1.8) perfMult += 0.08;
+    adaptiveFactor *= Math.max(0.65, Math.min(1.25, perfMult));
+
+    const finalScoreLong = Math.min(100, Math.max(0, Math.round(baseScoreLong * adaptiveFactor)));
+    const finalScoreShort = Math.min(100, Math.max(0, Math.round(baseScoreShort * adaptiveFactor)));
+
+    let requiredThreshold = 76;
+    if (atrVal1h > 1.2 * atrSma1h) requiredThreshold = 72;
+    else if (atrVal1h < 0.8 * atrSma1h) requiredThreshold = 82;
+
+    // Triggers
+    const isLongBias = bias1D === 'ALCISTA' && momentum1H === 'ALCISTA';
+    const condBreakoutLong = curr.close > prev.high && curr.close > vwap5m;
+    const condVolumeLong = volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m;
+    const condRsiLong = rsi5m > 40 && rsi5m < 68;
+    const condStructureLong = curr.close > curr.open;
+    const triggerLong = isLongBias && condBreakoutLong && condVolumeLong && isSqueeze && condRsiLong && condStructureLong;
+    const condReversalLong = curr.low <= bb.lower && curr.close > bb.lower && curr.close > curr.open && volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m;
+    const triggerReversalLong = isLongBias && condReversalLong && rsi5m < 42;
+
+    const isShortBias = bias1D === 'BAJISTA' && momentum1H === 'BAJISTA';
+    const condBreakoutShort = curr.close < prev.low && curr.close < vwap5m;
+    const condVolumeShort = volAvg5m > 0 && volCurr5m > 1.8 * volAvg5m;
+    const condRsiShort = rsi5m > 32 && rsi5m < 60;
+    const condStructureShort = curr.close < curr.open;
+    const triggerShort = isShortBias && condBreakoutShort && condVolumeShort && isSqueeze && condRsiShort && condStructureShort;
+    const condReversalShort = curr.high >= bb.upper && curr.close < bb.upper && curr.close < curr.open && volAvg5m > 0 && volCurr5m > 1.5 * volAvg5m;
+    const triggerReversalShort = isShortBias && condReversalShort && rsi5m > 58;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-    if (isBullish) {
-      const breakoutL = curr.close > bb.upper && curr.close > vwap && ema9 > ema20 &&
-                        volConfirmed && bRatio > 0.5 && cPos > 0.7 && rsi5m < 80;
-      const reversalL = curr.low <= bb.lower && curr.close > bb.lower &&
-                        curr.close > curr.open && volConfirmed;
-      if (breakoutL || reversalL) signal = 'BUY';
-    } else if (isBearish) {
-      const breakoutS = curr.close < bb.lower && curr.close < vwap && ema9 < ema20 &&
-                        volConfirmed && bRatio > 0.5 && cPos < 0.3 && rsi5m > 20;
-      const reversalS = curr.high >= bb.upper && curr.close < bb.upper &&
-                        curr.close < curr.open && volConfirmed;
-      if (breakoutS || reversalS) signal = 'SELL';
+    if ((triggerLong || triggerReversalLong) && finalScoreLong >= requiredThreshold) {
+      signal = 'BUY';
+    } else if ((triggerShort || triggerReversalShort) && finalScoreShort >= requiredThreshold) {
+      signal = 'SELL';
     }
 
-    if (signal === 'NEUTRAL') { neutrals++; continue; }
+    if (signal === 'NEUTRAL') {
+      neutrals++;
+      continue;
+    }
 
-    // ── Calculate Stop Loss ─────────────────────────────────────────────
+    // ── RISK LEVELS ──────────────────────────────────────────────────────
     const entry = curr.close;
-    const atr1h = atrSeries1h[idx1h];
-
-    // Swing low/high from last 10 candles
-    let swingLow = Infinity;
-    let swingHigh = -Infinity;
-    for (let s = Math.max(0, i - 10); s <= i; s++) {
-      if (klines5m[s].low < swingLow) swingLow = klines5m[s].low;
-      if (klines5m[s].high > swingHigh) swingHigh = klines5m[s].high;
+    let stopLoss = 0;
+    
+    let swingLow5 = Infinity;
+    let swingHigh5 = -Infinity;
+    const lookbackS = Math.max(0, i - 5);
+    for (let s = lookbackS; s <= i; s++) {
+      if (klines5m[s].low < swingLow5) swingLow5 = klines5m[s].low;
+      if (klines5m[s].high > swingHigh5) swingHigh5 = klines5m[s].high;
     }
 
-    let stopLoss: number;
     if (signal === 'BUY') {
-      const slATR = entry - 1.5 * atr1h;
-      const slStruct = swingLow * 0.998;
-      stopLoss = Math.min(slATR, slStruct);
+      const slATR = entry - 1.35 * atr5m;
+      const slStruct = swingLow5;
+      const slVwap = vwap5m - 0.5 * atr5m;
+      stopLoss = Math.max(slATR, slStruct, slVwap);
       const minDist = entry * 0.002;
       if (entry - stopLoss < minDist) stopLoss = entry - minDist;
     } else {
-      const slATR = entry + 1.5 * atr1h;
-      const slStruct = swingHigh * 1.002;
-      stopLoss = Math.max(slATR, slStruct);
+      const slATR = entry + 1.35 * atr5m;
+      const slStruct = swingHigh5;
+      const slVwap = vwap5m + 0.5 * atr5m;
+      stopLoss = Math.min(slATR, slStruct, slVwap);
       const minDist = entry * 0.002;
       if (stopLoss - entry < minDist) stopLoss = entry + minDist;
     }
 
     const risk = Math.abs(entry - stopLoss);
-    const tp1Price = signal === 'BUY' ? entry + risk * 1.5 : entry - risk * 1.5;
+    const tp1 = signal === 'BUY' ? entry + risk * 1.5 : entry - risk * 1.5;
+    const tp2 = signal === 'BUY' ? entry + 1.0 * atrVal1h : entry - 1.0 * atrVal1h;
+    const tp3 = signal === 'BUY' ? entry + risk * 2.5 : entry - risk * 2.5;
 
     totalSignals++;
 
-    // ── Simulate trade with partial exits ────────────────────────────────
+    // ── Simulate Multi-Target position ───────────────────────────────────
     let pnlPct = 0;
     let tradeOutcome: 'win' | 'loss' | 'timeout' = 'timeout';
     let exitIdx = i;
+    
+    // Position shares
     let tp1Hit = false;
+    let tp2Hit = false;
     let activeSL = stopLoss;
 
     for (let f = i + 1; f <= i + forwardWindow && f < klines5m.length; f++) {
       const k = klines5m[f];
 
       if (signal === 'BUY') {
-        // Check SL first (pessimistic)
+        // SL check
         if (k.low <= activeSL) {
-          if (tp1Hit) {
-            // 50% already at TP1, remaining 50% at breakeven (SL was moved to entry)
-            pnlPct = 0.5 * ((tp1Price - entry) / entry * 100); // TP1 portion
-            // remaining 50% at breakeven = 0%
+          if (tp2Hit) {
+            // TP1 (40% at +1.5R), TP2 (35% at +1.0 ATR 1H), remaining 25% at Breakeven
+            const tp1P = 0.40 * ((tp1 - entry) / entry * 100);
+            const tp2P = 0.35 * ((tp2 - entry) / entry * 100);
+            pnlPct = tp1P + tp2P; // remaining 25% = 0%
+            tradeOutcome = 'win';
+          } else if (tp1Hit) {
+            // TP1 (40% at +1.5R), remaining 60% at Breakeven
+            pnlPct = 0.40 * ((tp1 - entry) / entry * 100);
             tradeOutcome = 'win';
           } else {
             // Full loss at original SL
@@ -457,17 +602,34 @@ export function backtestMultitemporal(
           exitIdx = f;
           break;
         }
-        // Check TP1
-        if (!tp1Hit && k.high >= tp1Price) {
+
+        // Target 1
+        if (!tp1Hit && k.high >= tp1) {
           tp1Hit = true;
-          activeSL = entry; // Move SL to breakeven
+          activeSL = entry + 0.1 * atr5m; // Breakeven + minor buffer
         }
-        // TP2: EMA9 cross (trailing exit for remaining 50%)
-        if (tp1Hit) {
-          const ema9f = ema9_5m[f];
-          if (!isNaN(ema9f) && k.close < ema9f) {
-            const tp2Pnl = (k.close - entry) / entry * 100;
-            pnlPct = 0.5 * ((tp1Price - entry) / entry * 100) + 0.5 * tp2Pnl;
+
+        // Target 2
+        if (tp1Hit && !tp2Hit && k.high >= tp2) {
+          tp2Hit = true;
+        }
+
+        // Target 3: Trailing exit with EMA 9 (or direct hit)
+        if (tp2Hit) {
+          const ema9Valf = ema9_5m[f];
+          if (k.close < tp3 && !isNaN(ema9Valf) && k.close < ema9Valf) {
+            const tp1P = 0.40 * ((tp1 - entry) / entry * 100);
+            const tp2P = 0.35 * ((tp2 - entry) / entry * 100);
+            const tp3P = 0.25 * ((k.close - entry) / entry * 100);
+            pnlPct = tp1P + tp2P + tp3P;
+            tradeOutcome = 'win';
+            exitIdx = f;
+            break;
+          } else if (k.high >= tp3) {
+            const tp1P = 0.40 * ((tp1 - entry) / entry * 100);
+            const tp2P = 0.35 * ((tp2 - entry) / entry * 100);
+            const tp3P = 0.25 * ((tp3 - entry) / entry * 100);
+            pnlPct = tp1P + tp2P + tp3P;
             tradeOutcome = 'win';
             exitIdx = f;
             break;
@@ -476,8 +638,13 @@ export function backtestMultitemporal(
       } else {
         // SHORT
         if (k.high >= activeSL) {
-          if (tp1Hit) {
-            pnlPct = 0.5 * ((entry - tp1Price) / entry * 100);
+          if (tp2Hit) {
+            const tp1P = 0.40 * ((entry - tp1) / entry * 100);
+            const tp2P = 0.35 * ((entry - tp2) / entry * 100);
+            pnlPct = tp1P + tp2P;
+            tradeOutcome = 'win';
+          } else if (tp1Hit) {
+            pnlPct = 0.40 * ((entry - tp1) / entry * 100);
             tradeOutcome = 'win';
           } else {
             pnlPct = -risk / entry * 100;
@@ -486,15 +653,31 @@ export function backtestMultitemporal(
           exitIdx = f;
           break;
         }
-        if (!tp1Hit && k.low <= tp1Price) {
+
+        if (!tp1Hit && k.low <= tp1) {
           tp1Hit = true;
-          activeSL = entry;
+          activeSL = entry - 0.1 * atr5m;
         }
-        if (tp1Hit) {
-          const ema9f = ema9_5m[f];
-          if (!isNaN(ema9f) && k.close > ema9f) {
-            const tp2Pnl = (entry - k.close) / entry * 100;
-            pnlPct = 0.5 * ((entry - tp1Price) / entry * 100) + 0.5 * tp2Pnl;
+
+        if (tp1Hit && !tp2Hit && k.low <= tp2) {
+          tp2Hit = true;
+        }
+
+        if (tp2Hit) {
+          const ema9Valf = ema9_5m[f];
+          if (k.close > tp3 && !isNaN(ema9Valf) && k.close > ema9Valf) {
+            const tp1P = 0.40 * ((entry - tp1) / entry * 100);
+            const tp2P = 0.35 * ((entry - tp2) / entry * 100);
+            const tp3P = 0.25 * ((entry - k.close) / entry * 100);
+            pnlPct = tp1P + tp2P + tp3P;
+            tradeOutcome = 'win';
+            exitIdx = f;
+            break;
+          } else if (k.low <= tp3) {
+            const tp1P = 0.40 * ((entry - tp1) / entry * 100);
+            const tp2P = 0.35 * ((entry - tp2) / entry * 100);
+            const tp3P = 0.25 * ((entry - tp3) / entry * 100);
+            pnlPct = tp1P + tp2P + tp3P;
             tradeOutcome = 'win';
             exitIdx = f;
             break;
@@ -503,33 +686,29 @@ export function backtestMultitemporal(
       }
     }
 
-    // Timeout: calculate actual P&L at end of window
     if (tradeOutcome === 'timeout') {
       const lastF = Math.min(i + forwardWindow, klines5m.length - 1);
       const exitPrice = klines5m[lastF].close;
       exitIdx = lastF;
-      if (tp1Hit) {
-        const tp2Pnl = signal === 'BUY'
-          ? (exitPrice - entry) / entry * 100
-          : (entry - exitPrice) / entry * 100;
-        pnlPct = 0.5 * ((signal === 'BUY' ? tp1Price - entry : entry - tp1Price) / entry * 100) + 0.5 * tp2Pnl;
-      } else {
-        pnlPct = signal === 'BUY'
-          ? (exitPrice - entry) / entry * 100
-          : (entry - exitPrice) / entry * 100;
-      }
+      const tp1P = tp1Hit ? 0.40 * ((signal === 'BUY' ? tp1 - entry : entry - tp1) / entry * 100) : 0;
+      const tp2P = tp2Hit ? 0.35 * ((signal === 'BUY' ? tp2 - entry : entry - tp2) / entry * 100) : 0;
+      
+      let leftWeight = 1.0;
+      if (tp1Hit) leftWeight -= 0.40;
+      if (tp2Hit) leftWeight -= 0.35;
+      
+      const tp3P = leftWeight * ((signal === 'BUY' ? exitPrice - entry : entry - exitPrice) / entry * 100);
+      pnlPct = tp1P + tp2P + tp3P;
     }
 
-    if (tradeOutcome === 'win') {
+    if (tradeOutcome === 'win' || (tradeOutcome === 'timeout' && pnlPct > 0)) {
       wins++;
       totalGainPct += pnlPct;
-    } else if (tradeOutcome === 'loss') {
+      completedTrades.push({ win: true, gain: pnlPct });
+    } else {
       losses++;
       totalLossPct += Math.abs(pnlPct);
-    } else {
-      timeouts++;
-      if (pnlPct > 0) totalGainPct += pnlPct;
-      else totalLossPct += Math.abs(pnlPct);
+      completedTrades.push({ win: false, gain: pnlPct });
     }
 
     nextAllowedIdx = exitIdx + cooldownPeriod;

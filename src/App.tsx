@@ -118,7 +118,7 @@ function App() {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []);
       const kl1h = allData['1h'] || [];
       const kl1d = allData['1d'] || [];
-      const result = calculateVCMESniperSignal(kl5m, kl1h, kl1d, currentAsset);
+      const result = calculateVCMESniperSignal(kl5m, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor);
       signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
@@ -317,13 +317,14 @@ function App() {
           let bestStrategy = 'none';
           let strategyLabel = '';
           let bestPF = 0;
+          let btMulti = { profitFactor: 1.0, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, totalSignals: 0 };
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
             const btStd  = backtestStandard(data, interval);
             const btConf = backtestConfluencia(data, interval);
             const btScore = backtestScoring(data, interval);
 
-            let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+            btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
             if (data.length >= 30 && data1h.length >= 60 && data1d.length >= 210) {
               const kl5m = interval === '5m' ? data : data1h; // Use 5m data if available
               btMulti = backtestMultitemporal(kl5m, data1h, data1d, '5m', symbol);
@@ -375,7 +376,9 @@ function App() {
               closedData,
               data1h || await fetchKlines(symbol, '1h'),
               data1d || await fetchKlines(symbol, '1d'),
-              symbol
+              symbol,
+              btMulti.winRate,
+              btMulti.profitFactor
             );
             overallSignal = result.signal;
           } else {

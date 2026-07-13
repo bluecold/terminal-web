@@ -25,15 +25,16 @@ Actualmente existen 4 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
 2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario.
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
-4. **VCME Sniper Engine (Multitemporal)**: Estrategia cuantitativa que alinea 3 temporalidades:
-   - **1D (Bias)**: Exige que el precio esté por encima de EMA 200/50 y que la pendiente de la EMA 200 de 1D sea positiva para LONG (o inversa para SHORT).
-   - **1H (Momentum)**: Exige precio sobre EMA 50, MACD cruzado al alza con histograma creciente, RSI entre 45 y 75 (zona de momentum sano), ADX > 20 (tendencia fuerte) y volumen superior a su media de 20 períodos.
-   - **5m (Gatillo)**: Ofrece dos modos de disparo: **Modo A (Ruptura)** si cierra fuera de Bandas de Bollinger con cuerpo decidido y volumen > 1.5x, o **Modo B (Reversión)** si perfora la banda pero cierra dentro con vela de rechazo y volumen de absorción.
-   - **Gestión de Riesgo**: Stop Loss estructural/ATR, salida TP1 a 1.5R (cierra 50% y mueve a breakeven) y TP2 (cierre por cruce inverso de EMA 9 en 5m).
+4. **VCME Sniper Engine v2 (Adaptive Scoring)**: Estrategia cuantitativa avanzada que alinea 3 temporalidades:
+   - **1D (Bias)**: Exige que el precio esté por encima de EMA 200 y que la EMA 20 esté por encima de la EMA 50 para LONG (o inversa para SHORT).
+   - **1H (Setup)**: Exige un pullback dinámico a la EMA 20 (low <= EMA 20) y precio por encima del VWAP.
+   - **5m (Gatillo)**: Ofrece dos modos de disparo con Bollinger Bands, ruptura del máximo previo con compresión (Squeeze) y volumen > 1.8x, o reversión en bandas con volumen > 1.5x.
+   - **Scoring Adaptativo (0-100)**: Pondera 5 capas (Tendencia, Momentum, Volatilidad, Volumen, Alineación). Aplica multiplicadores adaptativos por régimen de mercado (ATR 1H), perfil del activo (rango diario) y performance reciente del sistema (meta-learning). Dispara señal si finalScore >= 72/76/82.
+   - **Gestión de Riesgo**: Stop Loss conservador max/min (ATR, swing low 5 velas, VWAP). Salida TP1 a 1.5R (cierra 40% y mueve a breakeven + 0.1 ATR), TP2 a 1.0 * ATR 1H (cierra 35%) y TP3 a 2.5R (cierra 25% con trailing stop por EMA 9).
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
-- **Simulación Multitemporal VCME Sniper**: Realiza backtesting alineando las velas en formación con velas de mayor temporalidad (1H y 1D) cerradas en el pasado. Evalúa la performance intradiaria exacta simulando salidas parciales (TP1 a 1.5R + breakeven, y TP2 con trailing exit por EMA 9 o bandas).
+- **Simulación Multitemporal VCME Sniper v2**: Realiza backtesting simulando las 3 capas, el score adaptativo y las salidas TP1, TP2 y TP3.
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 
@@ -42,7 +43,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Unificación de Cargas y Timeframes**: Al cambiar de activo, descarga todos los timeframes (5m, 1h, 1d) en paralelo una sola vez. Al cambiar de timeframe, la UI lee instantáneamente de la memoria (`allKlines[interval]`).
 - **Confirmación de Vela Cerrada**: Las señales de la UI y del scanner en segundo plano se calculan sobre la última vela completamente cerrada para evitar repintado.
 - **Alertas en Segundo Plano con Cooldown**: Se implementó un scanner en segundo plano (`checkAllSignals`) que verifica cada 60 segundos si algún activo ha cambiado de señal.
-- **Calculadora de Gestión de Riesgo y Posición**: Sincronizada con el Stop Loss y Take Profit dinámicos de VCME Sniper cuando la estrategia está activa.
+- **Calculadora de Position Sizing Dinámico**: Incorpora multiplicadores adaptativos de confianza (según el score de la señal), volatilidad (según el ATR% del activo), salud de la cuenta (según el drawdown deslizable ingresado) y penalización por correlación de sector para sugerir el tamaño de posición óptimo en dólares y acciones/criptomonedas.
 - **Matriz de Confluencia Multitemporal**: Panel visual que resume la tendencia técnica del activo actual en las escalas de 5m, 1h y 1d de forma paralela.
 - **Métricas de Contexto Fundamental y Sentimiento (Zacks & Fear/Greed)**: En la pestaña *Mercado*, se muestra información complementaria de fundamentales y sentimiento.
 - **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles.
