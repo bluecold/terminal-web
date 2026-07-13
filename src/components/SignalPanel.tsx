@@ -551,7 +551,10 @@ export default function SignalPanel({
             const sig = rawSignal;
             const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
             const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
-            const winRateText = btStandard && !btStandard.insufficient ? `${Math.round(btStandard.winRate * 100)}% WR` : '— WR';
+            const resolvedCount = btStandard ? (btStandard.wins + btStandard.losses) : 0;
+            const winRateText = btStandard && !btStandard.insufficient && resolvedCount > 0 
+              ? `${Math.round(btStandard.winRate * 100)}% WR` 
+              : '— WR';
             
             return (
               <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
@@ -664,7 +667,10 @@ export default function SignalPanel({
             const sig = exp.signal;
             const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
             const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
-            const winRateText = btConfluencia && !btConfluencia.insufficient ? `${Math.round(btConfluencia.winRate * 100)}% WR` : '— WR';
+            const resolvedCount = btConfluencia ? (btConfluencia.wins + btConfluencia.losses) : 0;
+            const winRateText = btConfluencia && !btConfluencia.insufficient && resolvedCount > 0 
+              ? `${Math.round(btConfluencia.winRate * 100)}% WR` 
+              : '— WR';
             
             return (
               <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
@@ -783,7 +789,10 @@ export default function SignalPanel({
             const sig = score.signal;
             const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
             const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
-            const winRateText = btScoring && !btScoring.insufficient ? `${Math.round(btScoring.winRate * 100)}% WR` : '— WR';
+            const resolvedCount = btScoring ? (btScoring.wins + btScoring.losses) : 0;
+            const winRateText = btScoring && !btScoring.insufficient && resolvedCount > 0 
+              ? `${Math.round(btScoring.winRate * 100)}% WR` 
+              : '— WR';
             
             return (
               <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
@@ -999,7 +1008,10 @@ export default function SignalPanel({
             const sig = multi.signal;
             const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
             const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
-            const winRateText = btMultitemporal && !btMultitemporal.insufficient ? `${Math.round(btMultitemporal.winRate * 100)}% WR` : '— WR';
+            const resolvedCount = btMultitemporal ? (btMultitemporal.wins + btMultitemporal.losses) : 0;
+            const winRateText = btMultitemporal && !btMultitemporal.insufficient && resolvedCount > 0 
+              ? `${Math.round(btMultitemporal.winRate * 100)}% WR` 
+              : '— WR';
             const modeLabel = multi.mode === 'BREAKOUT' ? '🔥 RUPTURA' : multi.mode === 'REVERSAL' ? '🔄 REVERSIÓN' : '';
             
             const biasColor = multi.bias1D === 'ALCISTA' ? 'var(--accent-green)' : multi.bias1D === 'BAJISTA' ? 'var(--accent-red)' : 'var(--text-muted)';
