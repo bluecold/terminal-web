@@ -279,9 +279,9 @@ export function backtestMultitemporal(
     volSma5m[i] = volSum5m / 20;
   }
 
-  // Bollinger Band Width series for 5m Squeeze
+  // Bollinger Band Width series for 5m Squeeze (bbSeries5m is shorter by ~19)
   const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
-  const bbWidthAvg5m = new Array(klines5m.length).fill(0);
+  const bbWidthAvg5m = new Array(bbWidth5m.length).fill(0);
   let bbWidthSum = 0;
   const pSqueeze = 50;
   for (let idx = 0; idx < Math.min(pSqueeze, bbWidth5m.length); idx++) bbWidthSum += bbWidth5m[idx];
@@ -290,6 +290,8 @@ export function backtestMultitemporal(
     bbWidthSum = bbWidthSum - bbWidth5m[idx - pSqueeze] + bbWidth5m[idx];
     bbWidthAvg5m[idx] = bbWidthSum / pSqueeze;
   }
+  // Offset to map klines5m index to bbWidth5m index: bbWidthIdx = klines5mIdx - 19
+  const bbOffset = 19;
 
   // ATR SMA 50 for 1H Regime
   const atrSma1hArr = new Array(klines1h.length).fill(0);
@@ -399,9 +401,10 @@ export function backtestMultitemporal(
       neutrals++; continue;
     }
 
-    // 5m squeeze
-    const prevBBWidth = bbWidth5m[i - 1];
-    const prevBBWidthAvg = bbWidthAvg5m[i - 1];
+    // 5m squeeze (map klines5m index to bbWidth5m index)
+    const bbI = i - bbOffset;
+    const prevBBWidth = bbI > 0 ? bbWidth5m[bbI - 1] : 0;
+    const prevBBWidthAvg = bbI > 0 ? bbWidthAvg5m[bbI - 1] : 0;
     const isSqueeze = prevBBWidthAvg > 0 && prevBBWidth < 0.8 * prevBBWidthAvg;
 
     // ATR percentile 40 (last 100)
@@ -443,16 +446,16 @@ export function backtestMultitemporal(
       score += (isLong ? ema9Val > ema20Val : ema9Val < ema20Val) ? 5 : 0;
 
       // B. Momentum (25)
-      const rsi5mInRange = isLong ? rsi5m > 32 && rsi5m < 48 : rsi5m > 52 && rsi5m < 68;
+      const rsi5mInRange = isLong ? rsi5m > 35 && rsi5m < 65 : rsi5m > 35 && rsi5m < 65;
       score += rsi5mInRange ? 10 : 0;
-      score += (isLong ? rsiVal1h > 50 : rsiVal1h < 50) ? 8 : 0;
+      score += (isLong ? rsiVal1h > 45 : rsiVal1h < 55) ? 8 : 0;
 
       const percentB = bb.upper > bb.lower ? (curr.close - bb.lower) / (bb.upper - bb.lower) : 0.5;
       const pctBExtreme = isLong ? percentB < 0.12 : percentB > 0.88;
       score += pctBExtreme ? 7 : 0;
 
       // C. Volatility (20)
-      score += (bbWidth5m[i] > 1.8) ? 8 : 0;
+      score += (bbI >= 0 && bbI < bbWidth5m.length && bbWidth5m[bbI] > 1.8) ? 8 : 0;
       const nearBand = isLong ? curr.close <= bb.lower * 1.003 : curr.close >= bb.upper * 0.997;
       score += nearBand ? 8 : 0;
       score += (atr5m > atr40Percentile) ? 4 : 0;

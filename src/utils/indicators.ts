@@ -1930,9 +1930,9 @@ export function calculateVCMESniperSignal(
     return { ...fallback, bias1D, momentum1H, triggerDetail: 'Indicadores 5m no calculables' };
   }
 
-  // Bollinger Band Width calculations
+  // Bollinger Band Width calculations (bbSeries5m is shorter than klines5m by ~19)
   const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
-  const bbWidthAvg5m = new Array(klines5m.length).fill(0);
+  const bbWidthAvg5m = new Array(bbWidth5m.length).fill(0);
   let bbWidthSum = 0;
   const pSqueeze = 50;
   for (let idx = 0; idx < Math.min(pSqueeze, bbWidth5m.length); idx++) bbWidthSum += bbWidth5m[idx];
@@ -1942,9 +1942,11 @@ export function calculateVCMESniperSignal(
     bbWidthAvg5m[idx] = bbWidthSum / pSqueeze;
   }
 
-  const currBBWidth = bbWidth5m[lastIdx];
-  const prevBBWidth = lastIdx > 0 ? bbWidth5m[lastIdx - 1] : 0;
-  const prevBBWidthAvg = lastIdx > 0 ? bbWidthAvg5m[lastIdx - 1] : 0;
+  // Use BB-series relative indices (not klines5m indices!)
+  const lastBBIdx = bbWidth5m.length - 1;
+  const currBBWidth = lastBBIdx >= 0 ? bbWidth5m[lastBBIdx] : 0;
+  const prevBBWidth = lastBBIdx > 0 ? bbWidth5m[lastBBIdx - 1] : 0;
+  const prevBBWidthAvg = lastBBIdx > 0 ? bbWidthAvg5m[lastBBIdx - 1] : 0;
   const isSqueeze = prevBBWidthAvg > 0 && prevBBWidth < 0.8 * prevBBWidthAvg;
 
   // ATR percentile 40 calculation over last 100 candles
@@ -1975,10 +1977,10 @@ export function calculateVCMESniperSignal(
 
     // B. Momentum (25)
     const rsi5mInRange = isLong
-      ? rsi5m > 32 && rsi5m < 48
-      : rsi5m > 52 && rsi5m < 68;
+      ? rsi5m > 35 && rsi5m < 65
+      : rsi5m > 35 && rsi5m < 65;
     score += rsi5mInRange ? 10 : 0;
-    score += (isLong ? rsiVal1h > 50 : rsiVal1h < 50) ? 8 : 0;
+    score += (isLong ? rsiVal1h > 45 : rsiVal1h < 55) ? 8 : 0;
 
     const percentB = bb.upper > bb.lower ? (curr5m.close - bb.lower) / (bb.upper - bb.lower) : 0.5;
     const pctBExtreme = isLong ? percentB < 0.12 : percentB > 0.88;
