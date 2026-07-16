@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import './App.css';
 import { Search } from 'lucide-react';
 import Chart from './components/Chart';
@@ -453,7 +453,7 @@ function App() {
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = klines.length > 0 ? (klines.slice().reverse().find(k => k.volume > 0)?.volume || 0) : 0;
-  const closes = klines.map(k => k.close);
+  const closes = useMemo(() => klines.map(k => k.close), [klines]);
 
   const isCurrentInWatchlist = watchlistSymbols.includes(currentAsset);
 

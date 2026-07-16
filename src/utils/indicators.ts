@@ -342,13 +342,7 @@ export function calculateVWAP(klines: Kline[], interval: string = '1h', symbol?:
       } else {
         // NYSE session: daily reset based on America/New_York local date
         try {
-          const formatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/New_York',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-          });
-          sessionId = formatter.format(date); // Format: MM/DD/YYYY
+          sessionId = nycFormatter.format(date); // Format: MM/DD/YYYY
         } catch (e) {
           // Fallback to UTC
           sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
@@ -1266,13 +1260,7 @@ export function calculateVWAPSeries(klines: Kline[], interval: string = '1h', sy
         sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
       } else {
         try {
-          const formatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/New_York',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-          });
-          sessionId = formatter.format(date);
+          sessionId = nycFormatter.format(date);
         } catch (e) {
           sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
         }
@@ -1812,6 +1800,13 @@ export interface VCMESniperResult {
   avgDailyRange: number;
 }
 
+const nycFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+
 export function getSessionId(kline: Kline, interval: string, symbol?: string): string {
   const date = new Date(kline.time * 1000);
   if (interval === '5m' || interval === '1h') {
@@ -1820,13 +1815,7 @@ export function getSessionId(kline: Kline, interval: string, symbol?: string): s
       return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
     } else {
       try {
-        const formatter = new Intl.DateTimeFormat('en-US', {
-          timeZone: 'America/New_York',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        });
-        return formatter.format(date);
+        return nycFormatter.format(date);
       } catch (e) {
         return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
       }
