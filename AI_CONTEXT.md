@@ -25,16 +25,27 @@ Actualmente existen 4 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
 2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario.
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
-4. **VCME Sniper Engine v2 (Adaptive Scoring)**: Estrategia cuantitativa avanzada que alinea 3 temporalidades:
-   - **1D (Bias)**: Exige que el precio esté por encima de EMA 200 y que la EMA 20 esté por encima de la EMA 50 para LONG (o inversa para SHORT).
-   - **1H (Setup)**: Exige un pullback dinámico a la EMA 20 (low <= EMA 20) y precio por encima del VWAP.
-   - **5m (Gatillo)**: Ofrece dos modos de disparo con Bollinger Bands, ruptura del máximo previo con compresión (Squeeze) y volumen > 1.8x, o reversión en bandas con volumen > 1.5x.
-   - **Scoring Adaptativo (0-100)**: Pondera 5 capas (Tendencia, Momentum, Volatilidad, Volumen, Alineación). Aplica multiplicadores adaptativos por régimen de mercado (ATR 1H), perfil del activo (rango diario) y performance reciente del sistema (meta-learning). Dispara señal si finalScore >= 72/76/82.
-   - **Gestión de Riesgo**: Stop Loss conservador max/min (ATR, swing low 5 velas, VWAP). Salida TP1 a 1.5R (cierra 40% y mueve a breakeven + 0.1 ATR), TP2 a 1.0 * ATR 1H (cierra 35%) y TP3 a 2.5R (cierra 25% con trailing stop por EMA 9).
+4. **VCME Sniper Engine v3 (Híbrido)**: Estrategia cuantitativa avanzada que alinea 3 temporalidades:
+   - **1D (Bias/Dirección)**: Determina el permiso para operar. Para LONG exige precio por encima de la EMA 200 diaria, la EMA 50 diaria por encima de la EMA 200 diaria, y un ADX diario > 20 con el +DI diario por encima del -DI diario (inverso para SHORT).
+   - **1H (Setup)**: Estructura stateless que busca un setup técnico alineado en las últimas 3 horas (cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50 y 70, y el histograma del MACD en expansión positiva) sin invalidaciones intermedias (cierres bajo VWAP o cruces cruzados de EMAs).
+   - **5m (Gatillo/Ejecución)**: Ofrece tres estrategias de entrada:
+     - **Estrategia A (Pullback):** Retroceso a EMAs/VWAP y posterior ruptura del máximo de las últimas 3 velas con volumen de confirmación >= 1.5x.
+     - **Estrategia B (Breakout):** Breakout de la sesión ORB (Rango de Apertura) y banda superior de Bollinger, con compresión previa (Bollinger Band Width por debajo del percentil 20 histórico) y validación en la vela siguiente para mitigar falsos rompimientos.
+     - **Estrategia C (Mean Reversion):** Reversión a la media en sobreextensión contraria (fuera de bandas y RSI sobrecomprado/sobrevendido) con divergencias precio/RSI, permitida únicamente si el régimen diario (1D Bias) es Neutral.
+   - **Filtros de Calidad e Invalidation**:
+     - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2 * ATR del VWAP.
+     - *Cuerpo Decisivo*: Vela de gatillo con un ratio de cuerpo >= 40% (evitando Dojis).
+     - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
+     - *Límite de Riesgo*: Distancia del Stop Loss estructural limitada a un máximo de 1.2% del precio del activo.
+   - **Gestión de Riesgo y Salidas Complejas**:
+     - **TP Escalonados:** TP1 al 1.0 * Risk (cierre del 50% y mover SL a breakeven), TP2 al 2.0 * Risk (cierre del 25%), y TP3 al 3.0 * Risk (cierre del 25%).
+     - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
+     - **Time Stop:** Cierre de la posición si tras 12 velas de 5m (1 hora) el beneficio no ha alcanzado al menos `+0.5R`.
+     - **Emergency Exit:** Salida anticipada al cierre de cualquier vela de 5m que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
-- **Simulación Multitemporal VCME Sniper v2**: Realiza backtesting simulando las 3 capas, el score adaptativo y las salidas TP1, TP2 y TP3.
+- **Simulación Multitemporal VCME Sniper v3**: Realiza backtesting simulando las 3 capas, el score de confluencia técnica, y las salidas complejas (Time Stop, Emergency Exit y Chandelier Trailing).
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 

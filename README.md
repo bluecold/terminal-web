@@ -35,12 +35,23 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa tendencia, RSI, Bollinger (%B), volumen, vela y estructura S/R.
 3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal. Cuenta con indicadores visuales de pendiente en RSI, y un filtro de desaceleración en el histograma del MACD para evitar falsas señales en momentum decreciente.
-4. **VCME Sniper Engine v2 (Adaptive Scoring):** Estrategia cuantitativa avanzada que alinea 3 temporalidades en cascada:
-   - **1D (Bias):** Exige tendencia alcista/bajista macro (`Precio > EMA 200` y `EMA 20 > EMA 50` para LONG).
-   - **1H (Setup):** Requiere un pullback dinámico a la EMA 20 (`Low <= EMA 20`) y que el precio de cierre esté por encima del VWAP.
-   - **5m (Gatillo):** Entrada precisa por Breakout (ruptura con Squeeze en Bollinger + volumen >1.8x) o Reversal (absorción/toque de banda inferior con volumen >1.5x).
-   - **Scoring Adaptativo (0-100):** Calcula una confianza dinámica multiplicando por factores de régimen de volatilidad de mercado (ATR percentile), perfil del activo (rango diario %) y meta-learning de winrate histórico.
-   - **Gestión de Riesgo (3 Targets):** Stop Loss por ATR/Swing. Salidas parciales en TP1 (1.5R, cierra 40% y mueve a breakeven + 0.1 ATR), TP2 (1.0 ATR 1H, cierra 35%) y TP3 (2.5R, cierra 25% con trailing EMA 9).
+4. **VCME Sniper Engine v3 (Híbrido):** Estrategia cuantitativa avanzada que alinea 3 temporalidades en cascada:
+   - **1D (Bias/Dirección):** Exige precio por encima de la EMA 200 diaria, la EMA 50 diaria por encima de la EMA 200 diaria, y un ADX diario > 20 con el +DI diario por encima del -DI diario para LONG (o inversa para SHORT).
+   - **1H (Setup):** Estructura stateless que busca un setup técnico alineado en las últimas 3 horas (cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50 y 70, y el histograma del MACD en expansión positiva) sin invalidaciones intermedias.
+   - **5m (Gatillo/Ejecución):** Ofrece tres estrategias de entrada:
+     - **Estrategia A (Pullback):** Pullback a EMAs/VWAP y posterior ruptura del máximo de las últimas 3 velas con volumen de confirmación >= 1.5x.
+     - **Estrategia B (Breakout):** Breakout de la sesión ORB (Rango de Apertura) y banda superior de Bollinger, con compresión previa (Bollinger Band Width por debajo del percentil 20 histórico) y validación en la vela siguiente para mitigar falsos rompimientos.
+     - **Estrategia C (Mean Reversion):** Reversión a la media en la banda de Bollinger contraria con divergencia precio/RSI, permitida únicamente si el bias diario (1D Bias) es Neutral.
+   - **Filtros de Calidad e Invalidation:**
+     - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2 * ATR del VWAP.
+     - *Cuerpo Decisivo*: Vela de gatillo con un ratio de cuerpo >= 40% (evitando Dojis).
+     - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
+     - *Límite de Riesgo*: Distancia del Stop Loss estructural limitada a un máximo de 1.2% del precio del activo.
+   - **Gestión de Riesgo y Salidas Complejas:**
+     - **TP Escalonados:** TP1 al 1.0 * Risk (cierre del 50% y mover SL a breakeven), TP2 al 2.0 * Risk (cierre del 25%), y TP3 al 3.0 * Risk (cierre del 25%).
+     - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
+     - **Time Stop:** Cierre de la posición si tras 12 velas de 5m (1 hora) el beneficio no ha alcanzado al menos `+0.5R`.
+     - **Emergency Exit:** Salida anticipada al cierre de cualquier vela de 5m que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
 
 ---
 
