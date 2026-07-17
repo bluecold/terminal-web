@@ -21,7 +21,8 @@ import {
   checkBullishDivergence,
   checkBearishDivergence,
   candleBodyRatio,
-  getSessionId
+  getSessionId,
+  calculateTimeOfDayVolumeAvg
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -216,11 +217,13 @@ export function backtestMultitemporal(
   klines1h: Kline[],
   klines1d: Kline[],
   _interval: string,
-  symbol?: string
+  symbol?: string,
+  style: 'dayTrading' | 'swing' = 'dayTrading',
+  triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
   const evalWindow = 150;
-  const forwardWindow = 576; // ~48 hours of 5m candles
-  const cooldownPeriod = 24;  // 2 hours cooldown between signals
+  const forwardWindow = style === 'swing' ? 48 : 576; // ~48 hours of candles
+  const cooldownPeriod = style === 'swing' ? 2 : 24;  // 2 hours cooldown between signals
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
@@ -259,7 +262,7 @@ export function backtestMultitemporal(
   const bbSeries5m = calculateBollingerBandsSeries(klines5m, 20, 2);
   const ema9_5m = calculateEMA(closes5m, 9);
   const ema21_5m = calculateEMA(closes5m, 21);
-  const vwapSeries5m = calculateVWAPSeries(klines5m, '5m', symbol);
+  const vwapSeries5m = calculateVWAPSeries(klines5m, style === 'swing' ? '1h' : '5m', symbol);
   const rsiSeries5m = calculateRSISeries(closes5m, 14);
   const atrSeries5m = calculateATRSeries(klines5m, 14);
   
@@ -417,7 +420,7 @@ export function backtestMultitemporal(
       }
     }
 
-    // ── LAYER 3: 5m Indicators ──────────────────────────────────────────
+    // ── LAYER 3: Trigger Timeframe Indicators ──────────────────────────
     const bbIdx = i - 19;
     const bb = bbIdx >= 0 && bbIdx < bbSeries5m.length ? bbSeries5m[bbIdx] : null;
     if (!bb) { neutrals++; continue; }
@@ -428,7 +431,9 @@ export function backtestMultitemporal(
     const rsi5m = rsiSeries5m[i];
     const atr5m = atrSeries5m[i];
     const volCurr5m = vol5m[i];
-    const volAvg5m = volSma5m[i];
+    
+    // Seasonal Volume RVOL
+    const volAvg5m = calculateTimeOfDayVolumeAvg(klines5m, i, 20);
 
     if (isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
       neutrals++; continue;
@@ -439,17 +444,6 @@ export function backtestMultitemporal(
     const p20BBWidth = last100Widths.length > 0 ? last100Widths[Math.floor(last100Widths.length * 0.2)] : 0;
     const last20Widths = bbWidth5m.slice(Math.max(0, bbIdx - 20), bbIdx + 1);
     const squeezePrev = last20Widths.some(w => w < p20BBWidth);
-
-    // ── Running Winrate (Meta-learning) ──────────────────────────────────
-    if (completedTrades.length > 0) {
-      const last20Trades = completedTrades.slice(-20);
-      let gains = 0;
-      let losses = 0;
-      last20Trades.forEach(t => {
-        if (t.win) gains += t.gain;
-        else losses += Math.abs(t.gain);
-      });
-    }
 
     // ── CONFLUENCE SCORING ───────────────────────────────────────────────
     const getConfluenceScore = (dir: 'LONG' | 'SHORT') => {
@@ -495,7 +489,36 @@ export function backtestMultitemporal(
 
     // ── TRIGGERS ─────────────────────────────────────────────────────────
     
-    // A. Pullback Trigger
+    // Helper to check for a breakout at any historical index in backtester
+    const checkBreakoutAtIdx = (idx: number, dir: 'LONG' | 'SHORT') => {
+      if (idx < 20 || idx >= klines5m.length) return false;
+      const k = klines5m[idx];
+      const prevK = klines5m[idx - 1];
+      const bbIndex = idx - 19;
+      const b = bbIndex >= 0 && bbIndex < bbSeries5m.length ? bbSeries5m[bbIndex] : null;
+      const prevB = (bbIndex - 1) >= 0 && (bbIndex - 1) < bbSeries5m.length ? bbSeries5m[bbIndex - 1] : null;
+      const rsi = rsiSeries5m[idx];
+      const vw = vwapSeries5m[idx];
+      const rvol = k.volume / (volSma5m[idx] || 1);
+
+      if (!b || !prevB || isNaN(rsi) || isNaN(vw)) return false;
+
+      if (dir === 'LONG') {
+        const gateVWAP = k.close > vw;
+        const gateBreakout = k.close > b.upper && prevK.close <= prevB.upper;
+        const gateVol = rvol >= 1.5;
+        const gateRSI = rsi > 50 && rsi < 75;
+        return gateVWAP && gateBreakout && gateVol && gateRSI;
+      } else {
+        const gateVWAP = k.close < vw;
+        const gateBreakout = k.close < b.lower && prevK.close >= prevB.lower;
+        const gateVol = rvol >= 1.5;
+        const gateRSI = rsi < 50 && rsi > 25;
+        return gateVWAP && gateBreakout && gateVol && gateRSI;
+      }
+    };
+
+    // A. Pullback Trigger (Solo agresivo)
     const hasPullbackLong = (idx: number) => {
       if (idx < oldestEvalIdx) return false;
       const low = klines5m[idx].low;
@@ -523,38 +546,85 @@ export function backtestMultitemporal(
     };
 
     const maxPrevHigh3 = Math.max(klines5m[i - 1].high, klines5m[i - 2].high, klines5m[i - 3].high);
-    const condPullbackLong = (hasPullbackLong(i) || hasPullbackLong(i - 1) || hasPullbackLong(i - 2)) &&
+    const condPullbackLong = triggerMode === 'agresivo' &&
+                             (hasPullbackLong(i) || hasPullbackLong(i - 1) || hasPullbackLong(i - 2)) &&
                              curr.close > maxPrevHigh3 &&
                              curr.close > curr.open &&
                              volCurr5m / volAvg5m >= 1.5 &&
                              curr.close > vwap5m;
 
     const minPrevLow3 = Math.min(klines5m[i - 1].low, klines5m[i - 2].low, klines5m[i - 3].low);
-    const condPullbackShort = (hasPullbackShort(i) || hasPullbackShort(i - 1) || hasPullbackShort(i - 2)) &&
+    const condPullbackShort = triggerMode === 'agresivo' &&
+                              (hasPullbackShort(i) || hasPullbackShort(i - 1) || hasPullbackShort(i - 2)) &&
                               curr.close < minPrevLow3 &&
                               curr.close < curr.open &&
                               volCurr5m / volAvg5m >= 1.5 &&
                               curr.close < vwap5m;
 
     // B. Breakout Trigger
-    const orb = getOpeningRange(klines5m, i, '5m', symbol);
-    const prevOrb = getOpeningRange(klines5m, i - 1, '5m', symbol);
+    let condBreakoutLong = false;
+    let condBreakoutShort = false;
 
-    const breakoutLongPrev = prevOrb.isActive &&
-                             prev.close > prevOrb.high + 0.10 * atrSeries5m[i - 1] &&
-                             bbIdx > 0 && prev.close > bbSeries5m[bbIdx - 1].upper &&
-                             (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
-                             (prev.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[i - 1];
+    if (triggerMode === 'conservador') {
+      let recentBreakoutIdx = -1;
+      for (let offset = 1; offset <= 5; offset++) {
+        const idx = i - offset;
+        if (checkBreakoutAtIdx(idx, 'LONG')) {
+          recentBreakoutIdx = idx;
+          break;
+        }
+      }
 
-    const condBreakoutLong = squeezePrev && breakoutLongPrev && curr.low > orb.high;
+      if (recentBreakoutIdx !== -1) {
+        const breakoutBB = bbSeries5m[recentBreakoutIdx - 19];
+        if (breakoutBB) {
+          const level = breakoutBB.upper;
+          const retestSostenido = curr.low >= level * 0.998 && curr.close > level;
+          if (retestSostenido) {
+            condBreakoutLong = true;
+          }
+        }
+      }
 
-    const breakoutShortPrev = prevOrb.isActive &&
-                              prev.close < prevOrb.low - 0.10 * atrSeries5m[i - 1] &&
-                              bbIdx > 0 && prev.close < bbSeries5m[bbIdx - 1].lower &&
-                              (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
-                              (bbSeries5m[bbIdx - 1].lower - prev.close) <= 1.0 * atrSeries5m[i - 1];
+      let recentBreakdownIdx = -1;
+      for (let offset = 1; offset <= 5; offset++) {
+        const idx = i - offset;
+        if (checkBreakoutAtIdx(idx, 'SHORT')) {
+          recentBreakdownIdx = idx;
+          break;
+        }
+      }
 
-    const condBreakoutShort = squeezePrev && breakoutShortPrev && curr.high < orb.low;
+      if (recentBreakdownIdx !== -1) {
+        const breakdownBB = bbSeries5m[recentBreakdownIdx - 19];
+        if (breakdownBB) {
+          const level = breakdownBB.lower;
+          const retestSostenido = curr.high <= level * 1.002 && curr.close < level;
+          if (retestSostenido) {
+            condBreakoutShort = true;
+          }
+        }
+      }
+    } else {
+      const orb = getOpeningRange(klines5m, i, style === 'swing' ? '1h' : '5m', symbol);
+      const prevOrb = getOpeningRange(klines5m, i - 1, style === 'swing' ? '1h' : '5m', symbol);
+
+      const breakoutLongPrev = prevOrb.isActive &&
+                               prev.close > prevOrb.high + 0.10 * atrSeries5m[i - 1] &&
+                               bbIdx > 0 && prev.close > bbSeries5m[bbIdx - 1].upper &&
+                               (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
+                               (prev.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[i - 1];
+
+      condBreakoutLong = squeezePrev && breakoutLongPrev && curr.low > orb.high;
+
+      const breakoutShortPrev = prevOrb.isActive &&
+                                prev.close < prevOrb.low - 0.10 * atrSeries5m[i - 1] &&
+                                bbIdx > 0 && prev.close < bbSeries5m[bbIdx - 1].lower &&
+                                (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
+                                (bbSeries5m[bbIdx - 1].lower - prev.close) <= 1.0 * atrSeries5m[i - 1];
+
+      condBreakoutShort = squeezePrev && breakoutShortPrev && curr.high < orb.low;
+    }
 
     // C. Mean Reversion Trigger
     const condMRLong = bias1D === 'NEUTRAL' &&
@@ -574,11 +644,12 @@ export function backtestMultitemporal(
       const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
       if (isCrypto) return 60;
       let sessionStartIdx = i;
-      const currentSession = getSessionId(curr, '5m', symbol);
-      while (sessionStartIdx > 0 && getSessionId(klines5m[sessionStartIdx - 1], '5m', symbol) === currentSession) {
+      const currentSession = getSessionId(curr, style === 'swing' ? '1h' : '5m', symbol);
+      while (sessionStartIdx > 0 && getSessionId(klines5m[sessionStartIdx - 1], style === 'swing' ? '1h' : '5m', symbol) === currentSession) {
         sessionStartIdx--;
       }
-      return (i - sessionStartIdx) * 5;
+      const unitMinutes = style === 'swing' ? 60 : 5;
+      return (i - sessionStartIdx) * unitMinutes;
     })();
 
     const qualityLong = (curr.close - vwap5m) <= 2.0 * atr5m &&
@@ -611,7 +682,15 @@ export function backtestMultitemporal(
     if (atrVal1h > 1.2 * atrSma1h) requiredThreshold = 33; // score >= 3
     else if (atrVal1h < 0.8 * atrSma1h) requiredThreshold = 55; // score >= 5
 
-    if (signal !== 'NEUTRAL' && finalScorePercent < requiredThreshold) {
+    // Grade Confidence
+    let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
+    if (finalScorePercent >= 70) {
+      confidence = 'ALTA';
+    } else if (finalScorePercent >= requiredThreshold) {
+      confidence = 'MODERADA';
+    }
+
+    if (signal !== 'NEUTRAL' && confidence === 'DESCARTAR') {
       signal = 'NEUTRAL';
     }
 
@@ -624,39 +703,52 @@ export function backtestMultitemporal(
     const entry = curr.close;
     let stopLoss = 0;
     
-    let swingLow10 = Infinity;
-    let swingHigh10 = -Infinity;
-    for (let s = i - 10; s < i; s++) {
-      if (klines5m[s].low < swingLow10) swingLow10 = klines5m[s].low;
-      if (klines5m[s].high > swingHigh10) swingHigh10 = klines5m[s].high;
+    // Swing style SL lookback is 5 bars, Day Trading is 10 bars
+    const lookbackS = Math.max(0, i - (style === 'swing' ? 5 : 10));
+    let swingLow = Infinity;
+    let swingHigh = -Infinity;
+    for (let s = lookbackS; s < i; s++) {
+      if (klines5m[s].low < swingLow) swingLow = klines5m[s].low;
+      if (klines5m[s].high > swingHigh) swingHigh = klines5m[s].high;
     }
 
+    const atrMult = style === 'swing' ? 1.0 : 1.5;
+    const tp1Mult = style === 'swing' ? 2.0 : 1.5;
+    const tp2Mult = style === 'swing' ? 4.0 : 2.5;
+    const tp3Mult = style === 'swing' ? 5.0 : 3.5;
+
     if (signal === 'BUY') {
-      const slATR = entry - 1.5 * atr5m;
-      const slStruct = swingLow10 - 0.25 * atr5m;
-      stopLoss = Math.max(slATR, slStruct);
+      const slATR = entry - atrMult * atr5m;
+      const slStruct = swingLow - 0.25 * atr5m;
+      
+      // Conservative SL: Math.min (lowest price, furthest from entry)
+      stopLoss = Math.min(slATR, slStruct);
       
       const riskPercent = (entry - stopLoss) / entry;
-      if (riskPercent > 0.012) {
+      const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
+      if (riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
       }
     } else {
-      const slATR = entry + 1.5 * atr5m;
-      const slStruct = swingHigh10 + 0.25 * atr5m;
-      stopLoss = Math.min(slATR, slStruct);
+      const slATR = entry + atrMult * atr5m;
+      const slStruct = swingHigh + 0.25 * atr5m;
+      
+      // Conservative SL: Math.max (highest price, furthest from entry)
+      stopLoss = Math.max(slATR, slStruct);
       
       const riskPercent = (stopLoss - entry) / entry;
-      if (riskPercent > 0.012) {
+      const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
+      if (riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
       }
     }
 
     const risk = Math.abs(entry - stopLoss);
-    const tp1 = signal === 'BUY' ? entry + risk * 1.0 : entry - risk * 1.0;
-    const tp2 = signal === 'BUY' ? entry + risk * 2.0 : entry - risk * 2.0;
-    const tp3 = signal === 'BUY' ? entry + risk * 3.0 : entry - risk * 3.0;
+    const tp1 = signal === 'BUY' ? entry + risk * tp1Mult : entry - risk * tp1Mult;
+    const tp2 = signal === 'BUY' ? entry + risk * tp2Mult : entry - risk * tp2Mult;
+    const tp3 = signal === 'BUY' ? entry + risk * tp3Mult : entry - risk * tp3Mult;
 
     totalSignals++;
 
@@ -677,7 +769,7 @@ export function backtestMultitemporal(
       if (k.high > highestHigh) highestHigh = k.high;
       if (k.low < lowestLow) lowestLow = k.low;
 
-      // Time Stop: 1 hour exit
+      // Time Stop: 12 candles
       if (!tp1Hit && (f - i) >= 12) {
         const currentPnl = signal === 'BUY' ? (k.close - entry) : (entry - k.close);
         if (currentPnl < 0.5 * risk) {
@@ -828,20 +920,6 @@ export function backtestMultitemporal(
       }
     }
 
-    if (tradeOutcome === 'timeout') {
-      const lastF = Math.min(i + forwardWindow, klines5m.length - 1);
-      const exitPrice = klines5m[lastF].close;
-      exitIdx = lastF;
-      const tp1P = tp1Hit ? 0.50 * ((signal === 'BUY' ? tp1 - entry : entry - tp1) / entry * 100) : 0;
-      const tp2P = tp2Hit ? 0.25 * ((signal === 'BUY' ? tp2 - entry : entry - tp2) / entry * 100) : 0;
-      
-      let leftWeight = 1.0;
-      if (tp1Hit) leftWeight -= 0.50;
-      if (tp2Hit) leftWeight -= 0.25;
-      
-      const tp3P = leftWeight * ((signal === 'BUY' ? exitPrice - entry : entry - exitPrice) / entry * 100);
-      pnlPct = tp1P + tp2P + tp3P;
-    }
 
     if (tradeOutcome === 'win' || (tradeOutcome === 'timeout' && pnlPct > 0)) {
       wins++;
@@ -877,11 +955,11 @@ export function backtestMultitemporal(
     profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
-    label: `últimas ${actualWindow} velas (5m)`,
-    forwardLabel: '48 hs max',
+    label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '48 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
-    targetMultiplier: 1.5,
+    targetMultiplier: style === 'swing' ? 2.0 : 1.5,
     insufficient: false
   };
 }

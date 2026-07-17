@@ -65,6 +65,21 @@ function App() {
   const [klines, setKlines] = useState<Kline[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [executionStyle, setExecutionStyle] = useState<'dayTrading' | 'swing'>(() => {
+    return (localStorage.getItem('terminal_execution_style') as 'dayTrading' | 'swing') || 'dayTrading';
+  });
+  const [triggerMode, setTriggerMode] = useState<'agresivo' | 'conservador'>(() => {
+    return (localStorage.getItem('terminal_trigger_mode') as 'agresivo' | 'conservador') || 'agresivo';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('terminal_execution_style', executionStyle);
+  }, [executionStyle]);
+
+  useEffect(() => {
+    localStorage.setItem('terminal_trigger_mode', triggerMode);
+  }, [triggerMode]);
+
   // ── Confluence Matrix & Earnings Events States ───────────────────────────
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
   const [allKlines, setAllKlines] = useState<Record<string, Kline[]>>({ '5m': [], '1h': [], '1d': [] });
@@ -82,8 +97,9 @@ function App() {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []);
       const kl1h = allData['1h'] || [];
       const kl1d = allData['1d'] || [];
-      if (kl5m.length >= 30 && kl1h.length >= 60 && kl1d.length >= 210) {
-        btMulti = backtestMultitemporal(kl5m, kl1h, kl1d, '5m', currentAsset);
+      const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
+      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 210) {
+        btMulti = backtestMultitemporal(triggerKlines, kl1h, kl1d, '5m', currentAsset, executionStyle, triggerMode);
       }
     }
 
@@ -118,7 +134,8 @@ function App() {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []);
       const kl1h = allData['1h'] || [];
       const kl1d = allData['1d'] || [];
-      const result = calculateVCMESniperSignal(kl5m, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor);
+      const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
+      const result = calculateVCMESniperSignal(triggerKlines, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode);
       signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
@@ -327,7 +344,8 @@ function App() {
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
             if (data.length >= 30 && data1h.length >= 60 && data1d.length >= 210) {
               const kl5m = interval === '5m' ? data : data1h; // Use 5m data if available
-              btMulti = backtestMultitemporal(kl5m, data1h, data1d, '5m', symbol);
+              const triggerKlines = executionStyle === 'swing' ? data1h : kl5m;
+              btMulti = backtestMultitemporal(triggerKlines, data1h, data1d, '5m', symbol, executionStyle, triggerMode);
             }
 
             const candidates = [
@@ -363,6 +381,7 @@ function App() {
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
           let overallSignal: string;
+          let signalConfidence = '';
           const closedData = data.slice(0, -1);
 
           if (bestStrategy === 'confluencia') {
@@ -372,15 +391,20 @@ function App() {
             const result = calculateScoringSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'multitemporal') {
+            const kl5m = interval === '5m' ? closedData : (data1h ? data1h.slice(0, -1) : []);
+            const triggerKlines = executionStyle === 'swing' ? (data1h ? data1h.slice(0, -1) : []) : kl5m;
             const result = calculateVCMESniperSignal(
-              closedData,
+              triggerKlines,
               data1h || await fetchKlines(symbol, '1h'),
               data1d || await fetchKlines(symbol, '1d'),
               symbol,
               btMulti.winRate,
-              btMulti.profitFactor
+              btMulti.profitFactor,
+              executionStyle,
+              triggerMode
             );
             overallSignal = result.signal;
+            signalConfidence = result.confidence;
           } else {
             const voting = calculateStandardVoting(closedData);
             overallSignal = voting.rawSignal;
@@ -412,7 +436,8 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${interval}`] = now;
 
-            new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})`, {
+            const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
+            new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})${confidenceString}`, {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
               tag: `${symbol}-${interval}`,
             });
@@ -514,7 +539,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.16.1
+            v2026.07.17.1
           </span>
         </div>
       </header>
@@ -731,6 +756,10 @@ function App() {
             confluenceSignals={confluenceSignals}
             earningsDate={earningsDate}
             allKlines={allKlines}
+            executionStyle={executionStyle}
+            setExecutionStyle={setExecutionStyle}
+            triggerMode={triggerMode}
+            setTriggerMode={setTriggerMode}
           />
         </aside>
       </div>
