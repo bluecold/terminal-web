@@ -294,6 +294,28 @@ export function backtestMultitemporal(
   const latestEvalIdx = klines5m.length - 1;
   const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
 
+  // B3 fix: Pre-compute Support/Resistance with a rolling window of 100 candles
+  // to avoid O(n²) klines5m.slice(0, i+1) inside the main loop.
+  // We compute S/R at regular intervals (every 12 candles = ~1 hour for 5m) and cache.
+  const srCacheInterval = 12;
+  const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
+  for (let idx = oldestEvalIdx; idx <= klines5m.length - 1; idx += srCacheInterval) {
+    const windowStart = Math.max(0, idx - 100);
+    const windowSlice = klines5m.slice(windowStart, idx + 1);
+    const sr = calculateSupportResistance(windowSlice, klines5m[idx].close);
+    srCache.set(idx, { nearestSupport: sr.nearestSupport, nearestResistance: sr.nearestResistance });
+  }
+  // Helper: get nearest cached S/R for any index
+  const getCachedSR = (idx: number) => {
+    // Find the closest cached index at or before idx
+    const cacheIdx = Math.floor(idx / srCacheInterval) * srCacheInterval;
+    const cached = srCache.get(cacheIdx);
+    if (cached) return cached;
+    // Fallback: check the previous cache slot
+    const prevCacheIdx = cacheIdx - srCacheInterval;
+    return srCache.get(prevCacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
+  };
+
   let totalSignals = 0;
   let wins = 0;
   let losses = 0;
@@ -465,7 +487,7 @@ export function backtestMultitemporal(
 
       if (squeezePrev) pt += 1;
 
-      const srLevel = calculateSupportResistance(klines5m.slice(0, i + 1), curr.close);
+      const srLevel = getCachedSR(i);
       const distSupport = srLevel.nearestSupport > 0 ? (curr.close - srLevel.nearestSupport) / curr.close : Infinity;
       const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr.close) / curr.close : Infinity;
       const nearLevel = isLong ? distSupport < 0.005 : distResist < 0.005;
@@ -921,11 +943,30 @@ export function backtestMultitemporal(
     }
 
 
-    if (tradeOutcome === 'win' || (tradeOutcome === 'timeout' && pnlPct > 0)) {
+    // B2+B4 fix: Properly classify timeouts. Marginal P&L (< 0.3%) on timeout
+    // should not inflate WinRate — count as timeout instead of win.
+    if (tradeOutcome === 'win') {
       wins++;
       totalGainPct += pnlPct;
       completedTrades.push({ win: true, gain: pnlPct });
+    } else if (tradeOutcome === 'timeout') {
+      timeouts++;
+      if (pnlPct >= 0.3) {
+        // Meaningful positive outcome despite timeout — count as win
+        wins++;
+        totalGainPct += pnlPct;
+        completedTrades.push({ win: true, gain: pnlPct });
+      } else if (pnlPct <= -0.3) {
+        // Meaningful negative outcome — count as loss
+        losses++;
+        totalLossPct += Math.abs(pnlPct);
+        completedTrades.push({ win: false, gain: pnlPct });
+      } else {
+        // Marginal P&L (between -0.3% and +0.3%) — true timeout, don't distort stats
+        completedTrades.push({ win: false, gain: pnlPct });
+      }
     } else {
+      // tradeOutcome === 'loss'
       losses++;
       totalLossPct += Math.abs(pnlPct);
       completedTrades.push({ win: false, gain: pnlPct });
@@ -1089,6 +1130,16 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
   const volData = calculateVolumeSignalSeries(klines);
   const ema200 = calculateEMA(closes, 200);
 
+  // Pre-compute RVOL series (sliding 20-bar volume average) for B1 fix
+  const rvolSeries: number[] = new Array(length).fill(0);
+  let volSumRvol = 0;
+  for (let v = 0; v < Math.min(20, length); v++) volSumRvol += klines[v].volume;
+  for (let v = 20; v < length; v++) {
+    const avgV = volSumRvol / 20;
+    rvolSeries[v] = avgV > 0 ? klines[v].volume / avgV : 0;
+    volSumRvol = volSumRvol - klines[v - 20].volume + klines[v].volume;
+  }
+
   for (let i = 34; i < length; i++) {
     const rsiVal = rsiSeries[i];
     const rsiSig = rsiVal < 30 ? 'BUY' : rsiVal > 70 ? 'SELL' : 'NEUTRAL';
@@ -1141,6 +1192,17 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
       rawSignal = 'STRONG SELL';
     } else if (sellVotes > buyVotes) {
       rawSignal = 'SELL';
+    }
+
+    // RVOL filter matching UI logic (B1 fix): asymmetric thresholds + weak consensus penalty
+    if (rawSignal !== 'NEUTRAL' && i >= 20) {
+      const rvol = rvolSeries[i];
+      const rvolThreshold = rawSignal.includes('BUY') ? 1.2 : 0.8;
+      const voteMargin = Math.abs(buyVotes - sellVotes);
+      const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.5) : rvolThreshold;
+      if (rvol < effectiveRvolThreshold) {
+        rawSignal = 'NEUTRAL';
+      }
     }
 
     let finalSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';

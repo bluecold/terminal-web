@@ -1188,14 +1188,21 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
     rawSignal = 'SELL';
   }
 
-  // Relative volume confirmation filter (RVOL >= 1.2)
+  // Relative volume confirmation filter
+  // BUYs require RVOL >= 1.2 (breakouts need volume confirmation)
+  // SELLs require RVOL >= 0.8 (breakdowns can occur on lower volume / distribution)
   const lastCandle = klines[klines.length - 1];
   const lastVol = lastCandle ? lastCandle.volume : 0;
   const recentVols = klines.slice(Math.max(0, klines.length - 21), klines.length - 1).map(k => k ? k.volume : 0);
   const avgVol = recentVols.reduce((a, b) => a + b, 0) / Math.max(1, recentVols.length);
   const rvol = avgVol > 0 ? lastVol / avgVol : 0;
 
-  if ((rawSignal.includes('BUY') || rawSignal.includes('SELL')) && rvol < 1.2) {
+  const rvolThreshold = rawSignal.includes('BUY') ? 1.2 : 0.8;
+  // Weak consensus (margin < 2 votes) requires stronger volume confirmation
+  const voteMargin = Math.abs(buyVotes - sellVotes);
+  const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.5) : rvolThreshold;
+
+  if (rawSignal !== 'NEUTRAL' && rvol < effectiveRvolThreshold) {
     rawSignal = 'NEUTRAL';
   }
 
