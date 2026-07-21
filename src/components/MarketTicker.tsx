@@ -33,9 +33,30 @@ export default function MarketTicker() {
     }
   };
 
+  const [isPageVisible, setIsPageVisible] = useState(() => !document.hidden);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setIsPageVisible(visible);
+      if (visible) {
+        loadData(); // Immediately refresh data when tab is re-focused
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 60000); // Polling every 60 seconds
+    const interval = setInterval(() => {
+      if (!document.hidden) {
+        loadData();
+      }
+    }, 60000); // Polling every 60 seconds only when tab is visible
     return () => clearInterval(interval);
   }, []);
 
@@ -54,7 +75,7 @@ export default function MarketTicker() {
 
   return (
     <div className="ticker-wrapper">
-      <div className="ticker-scroll">
+      <div className="ticker-scroll" style={{ animationPlayState: isPageVisible ? 'running' : 'paused' }}>
         {tickerItems.map((item, idx) => {
           const isPositive = item.change >= 0;
           const formattedPrice = item.price.toLocaleString(undefined, {
