@@ -407,11 +407,10 @@ export function calculateExperimentalSignal(klines: Kline[], interval: string = 
 
   const hammer = isHammer(curr);
   const engulfing = isEngulfing(curr, prev);
-
+  const bRatio = candleBodyRatio(curr);
   const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > ema9;
   const bullish_candle = hammer || engulfing === 1 || strongBullish;
   const bearish_candle = engulfing === -1;
-  const bRatio = candleBodyRatio(curr);
 
   const is_buy = curr.close > vwap && ema9 > ema20 && curr.volume > volAvg && bullish_candle && bRatio >= 0.4;
   const is_sell = curr.close < vwap && ema9 < ema20 && curr.volume > volAvg && (bearish_candle || curr.close < ema20) && bRatio >= 0.4;
