@@ -671,7 +671,7 @@ export function backtestMultitemporal(
         sessionStartIdx--;
       }
       const unitMinutes = style === 'swing' ? 60 : 5;
-      return (i - sessionStartIdx) * unitMinutes;
+      return (i - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
     })();
 
     const qualityLong = (curr.close - vwap5m) <= 2.0 * atr5m &&
@@ -1250,15 +1250,16 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
 
     const hammer = isHammer(curr);
     const engulf = isEngulfing(curr, prev);
-
-    const bullish_candle = hammer || engulf === 1;
-    const bearish_candle = engulf === -1;
     const bRatio = candleBodyRatio(curr);
 
     const e9 = ema9[i];
     const e20 = ema20[i];
     const vw = vwap[i];
     const vAvg = volSMA[i];
+
+    const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > e9;
+    const bullish_candle = hammer || engulf === 1 || strongBullish;
+    const bearish_candle = engulf === -1;
 
     const is_buy = curr.close > vw && e9 > e20 && curr.volume > vAvg && bullish_candle && bRatio >= 0.4;
     const is_sell = curr.close < vw && e9 < e20 && curr.volume > vAvg && (bearish_candle || curr.close < e20) && bRatio >= 0.4;
@@ -1320,6 +1321,23 @@ export function computeScoringSignalsSeries(
     }
     obvEMAArr = calculateEMA(obvArr, 10);
   }
+
+  // Pre-calculate Support/Resistance cache to optimize backtest performance O(n)
+  const srCacheInterval = 12;
+  const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
+  for (let idx = 59; idx < length; idx += srCacheInterval) {
+    const windowStart = Math.max(0, idx - 100);
+    const windowSlice = klines.slice(windowStart, idx + 1);
+    const sr = calculateSupportResistance(windowSlice, klines[idx].close);
+    srCache.set(idx, { nearestSupport: sr.nearestSupport, nearestResistance: sr.nearestResistance });
+  }
+  const getCachedSR = (idx: number) => {
+    const cacheIdx = Math.floor(idx / srCacheInterval) * srCacheInterval;
+    const cached = srCache.get(cacheIdx);
+    if (cached) return cached;
+    const prevCacheIdx = cacheIdx - srCacheInterval;
+    return srCache.get(prevCacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
+  };
 
   for (let i = 59; i < length; i++) {
     const curr = klines[i];
@@ -1393,7 +1411,7 @@ export function computeScoringSignalsSeries(
     }
 
     // Layer 6 - Structure (Support / Resistance)
-    const sr = calculateSupportResistance(klines.slice(0, i + 1), closeVal);
+    const sr = getCachedSR(i);
     let s6 = 0;
     if (sr.nearestSupport > 0 || sr.nearestResistance > 0) {
       const distSupport = sr.nearestSupport > 0 ? (closeVal - sr.nearestSupport) / closeVal : Infinity;

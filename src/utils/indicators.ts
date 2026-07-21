@@ -408,7 +408,8 @@ export function calculateExperimentalSignal(klines: Kline[], interval: string = 
   const hammer = isHammer(curr);
   const engulfing = isEngulfing(curr, prev);
 
-  const bullish_candle = hammer || engulfing === 1;
+  const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > ema9;
+  const bullish_candle = hammer || engulfing === 1 || strongBullish;
   const bearish_candle = engulfing === -1;
   const bRatio = candleBodyRatio(curr);
 
@@ -1078,9 +1079,9 @@ export function calculateStochRSI(
     const currD = dSeries[len - 1];
 
     if (!isNaN(prevK) && !isNaN(prevD)) {
-      if (currK < 20 && prevK <= prevD && currK > currD) {
+      if ((prevK < 20 || currK < 25) && prevK <= prevD && currK > currD) {
         signal = 'BUY';
-      } else if (currK > 80 && prevK >= prevD && currK < currD) {
+      } else if ((prevK > 80 || currK > 75) && prevK >= prevD && currK < currD) {
         signal = 'SELL';
       }
     }
@@ -1459,9 +1460,9 @@ export function calculateStochRSISeries(
     if (isNaN(prevK) || isNaN(prevD) || isNaN(currK) || isNaN(currD)) continue;
 
     let sig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-    if (currK < 20 && prevK <= prevD && currK > currD) {
+    if ((prevK < 20 || currK < 25) && prevK <= prevD && currK > currD) {
       sig = 'BUY';
-    } else if (currK > 80 && prevK >= prevD && currK < currD) {
+    } else if ((prevK > 80 || currK > 75) && prevK >= prevD && currK < currD) {
       sig = 'SELL';
     }
     signals[i] = sig;
@@ -2342,7 +2343,7 @@ export function calculateVCMESniperSignal(
       sessionStartIdx--;
     }
     const unitMinutes = style === 'swing' ? 60 : 5;
-    return (lastIdx - sessionStartIdx) * unitMinutes;
+    return (lastIdx - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
   })();
 
   const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m && // no chasing

@@ -54,6 +54,12 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
+- **Actualización v2026.07.21.1**:
+  - Ajuste de tolerancia en Stochastic RSI (`prevK < 20 || currK < 25`) para capturar cruces al salir de sobreventa/sobrecompra.
+  - Simetrización de señales de COMPRA en Confluencia para admitir impulso alcista fuerte (`close > open && bRatio >= 0.4 && close > ema9`).
+  - Corrección de `minutesSinceOpen` en timeframe 1H (Swing) para permitir evaluar la primera vela de la sesión bursátil.
+  - Optimización a caché rodante $O(n)$ de niveles S/R en el engine de backtest de Scoring.
+  - Sincronización del umbral de Estrategia Líder (`pf >= 1.3`) entre la interfaz visual y el escáner de alarmas en segundo plano.
 - **Motor de Backtesting O(n)**: Refactorizado de $O(n^2)$ a $O(n)$ calculando las series de indicadores técnicos de una sola vez al cargar las velas y luego indexándolas en tiempo constante $O(1)$ en el loop del backtester.
 - **Unificación de Cargas y Timeframes**: Al cambiar de activo, descarga todos los timeframes (5m, 1h, 1d) en paralelo una sola vez. Al cambiar de timeframe, la UI lee instantáneamente de la memoria (`allKlines[interval]`).
 - **Confirmación de Vela Cerrada**: Las señales de la UI y del scanner en segundo plano se calculan sobre la última vela completamente cerrada para evitar repintado.

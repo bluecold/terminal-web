@@ -59,7 +59,7 @@ export default function SignalPanel({
   const [sameSectorPositions, setSameSectorPositions] = useState(0); // open correlated trades
 
   useEffect(() => {
-    const APP_VERSION = 'v2026.07.20.1';
+    const APP_VERSION = 'v2026.07.21.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -253,6 +253,10 @@ export default function SignalPanel({
   const klines1h = useMemo(() => allKlines['1h'] || [], [allKlines]);
   const klines1d = useMemo(() => allKlines['1d'] || [], [allKlines]);
 
+  const closedKlines5m = useMemo(() => klines5m.length > 1 ? klines5m.slice(0, -1) : klines5m, [klines5m]);
+  const closedKlines1h = useMemo(() => klines1h.length > 1 ? klines1h.slice(0, -1) : klines1h, [klines1h]);
+  const closedKlines1d = useMemo(() => klines1d.length > 1 ? klines1d.slice(0, -1) : klines1d, [klines1d]);
+
   // ── Unified Standard Voting (single source of truth) ────────────────────
   const voting   = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
   const indicators = voting.indicators;
@@ -272,18 +276,18 @@ export default function SignalPanel({
   const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
   const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
   const multi: VCMESniperResult = useMemo(() => {
-    const triggerKlines = executionStyle === 'swing' ? klines1h : klines5m;
+    const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
     return calculateVCMESniperSignal(
       triggerKlines,
-      klines1h,
-      klines1d,
+      closedKlines1h,
+      closedKlines1d,
       symbol,
       btMultitemporal ? btMultitemporal.winRate : undefined,
       btMultitemporal ? btMultitemporal.profitFactor : undefined,
       executionStyle,
       triggerMode
     );
-  }, [klines5m, klines1h, klines1d, symbol, btMultitemporal, executionStyle, triggerMode]);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, btMultitemporal, executionStyle, triggerMode]);
 
   // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
   const bestStrategy = useMemo(() => {
@@ -296,8 +300,13 @@ export default function SignalPanel({
     ];
     
     const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
-    const viable = candidates.filter(s => s.resolved >= minResolved).sort((a, b) => b.pf - a.pf);
+    const viable = candidates
+      .filter(s => s.resolved >= minResolved && s.pf >= 1.3)
+      .sort((a, b) => b.pf - a.pf);
     if (viable.length > 0) return viable[0].key;
+
+    const fallbackViable = candidates.filter(s => s.resolved >= minResolved).sort((a, b) => b.pf - a.pf);
+    if (fallbackViable.length > 0) return fallbackViable[0].key;
     return [...candidates].sort((a, b) => b.pf - a.pf)[0].key;
   }, [btStandard, btConfluencia, btScoring, btMultitemporal, interval]);
 
