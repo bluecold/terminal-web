@@ -587,7 +587,8 @@ export function calculateScoringSignal(
   const pctB = bandWidth > 0 ? (curr.close - bbResult.lower) / bandWidth : 0.5;
 
   // Layer 3 — Bollinger %B & Squeeze
-  const bbWidthRatio = bbResult.middle > 0 ? bandWidth / bbResult.middle : 0;
+  const bbMiddle = (bbResult.upper + bbResult.lower) / 2;
+  const bbWidthRatio = bbMiddle > 0 ? bandWidth / bbMiddle : 0;
   let s3 = 0; let n3 = `%B: ${pctB.toFixed(2)}`;
   if      (curr.close <= bbResult.lower)  { s3 += 1; n3 += ' | En/bajo banda inf. (rebote)'; }
   else if (curr.close >= bbResult.upper)  { s3 -= 1; n3 += ' | En/sobre banda sup. (rechazo)'; }
@@ -1808,7 +1809,7 @@ export function candleClosePosition(k: Kline): number {
 
 export interface VCMESniperResult {
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
-  mode: 'BREAKOUT' | 'REVERSAL' | 'NONE';
+  mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'REVERSAL' | 'NONE';
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;

@@ -743,6 +743,8 @@ export function backtestMultitemporal(
 
     const atrMult = style === 'swing' ? 1.0 : 1.5;
     const tp1Mult = style === 'swing' ? 2.0 : 1.5;
+    const tp2Mult = style === 'swing' ? 4.0 : 2.5;
+    const tp3Mult = style === 'swing' ? 5.0 : 3.5;
 
     if (signal === 'BUY') {
       const slATR = entry - atrMult * atr5m;
