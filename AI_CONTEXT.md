@@ -69,6 +69,11 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Métricas de Contexto Fundamental y Sentimiento (Zacks & Fear/Greed)**: En la pestaña *Mercado*, se muestra información complementaria de fundamentales y sentimiento.
 - **Rediseño del Panel Lateral Derecho (UI/UX)**: Interfaz estructurada en tres pestañas (Estrategias, Calculadora, Mercado) con acordeones expandibles.
 - **Marquesina de Índices Bursátiles (Market Ticker)**: Widget horizontal en la cabecera que muestra futuros, VIX, materias primas y Bitcoin.
+- **Actualización v2026.07.22.1 — Fixes Críticos en Sistema de Alertas**:
+  - **Cold Start Fix**: El scanner ahora dispara alertas en la primera ejecución si la señal es BUY/SELL, sin exigir un `prevSignal` previo que antes nunca existía al arrancar.
+  - **Throttling Recovery**: Añadido listener `visibilitychange` que ejecuta `checkAllSignals()` inmediatamente al recuperar el foco de la pestaña/ventana, compensando el throttling de `setInterval` en background.
+  - **Fallback de Estrategia**: Cuando ninguna estrategia cumple `PF >= 1.3` con suficientes trades resueltos, se usa un fallback escalonado (PF >= 1.0 con umbral relajado → Standard Voting) en lugar de descartar silenciosamente el símbolo.
+  - **Dependencias Stale**: Agregados `executionStyle` y `triggerMode` al array de dependencias del `useEffect` del scanner para evitar closures con valores obsoletos.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.

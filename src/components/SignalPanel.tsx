@@ -59,7 +59,7 @@ export default function SignalPanel({
   const [sameSectorPositions, setSameSectorPositions] = useState(0); // open correlated trades
 
   useEffect(() => {
-    const APP_VERSION = 'v2026.07.21.1';
+    const APP_VERSION = 'v2026.07.22.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys

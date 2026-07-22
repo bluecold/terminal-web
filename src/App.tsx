@@ -364,6 +364,21 @@ function App() {
               bestStrategy = viable[0].key;
               strategyLabel = viable[0].label;
               bestPF = viable[0].pf;
+            } else {
+              // Fix 3: Fallback — use best available strategy instead of 'none'
+              const fallback = [...candidates]
+                .filter(s => s.resolved >= Math.max(minResolved - 1, 2))
+                .sort((a, b) => b.pf - a.pf);
+              if (fallback.length > 0 && fallback[0].pf >= 1.0) {
+                bestStrategy = fallback[0].key;
+                strategyLabel = fallback[0].label;
+                bestPF = fallback[0].pf;
+              } else {
+                // Ultimate fallback: Standard Voting (always available)
+                bestStrategy = 'standard';
+                strategyLabel = 'Standard';
+                bestPF = btStd.profitFactor;
+              }
             }
 
             bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, timestamp: now };
@@ -371,12 +386,6 @@ function App() {
             bestStrategy = cached.strategy;
             bestPF = cached.pf;
             strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : 'Standard';
-          }
-
-          if (bestStrategy === 'none') {
-            const voting = calculateStandardVoting(data);
-            lastSignalsRef.current[symbol] = voting.rawSignal;
-            continue;
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
@@ -422,8 +431,13 @@ function App() {
 
           // ── Check transition & handle Cooldown ──────────────────────────
           const prevSignal = lastSignalsRef.current[symbol];
+          const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
 
-          if (prevSignal && prevSignal !== overallSignal && (overallSignal.includes('BUY') || overallSignal.includes('SELL'))) {
+          // Fix 1: Cold Start — on first scan, fire alert immediately if signal is actionable
+          const isFirstScan = prevSignal === undefined;
+          const isTransition = prevSignal !== undefined && prevSignal !== overallSignal;
+
+          if (isActionableSignal && (isFirstScan || isTransition)) {
             const lastAlertTime = alertCooldownsRef.current[`${symbol}-${interval}`] || 0;
             const cooldownMs = 2 * 60 * 60 * 1000; // 2 hours
             
@@ -470,11 +484,21 @@ function App() {
     checkAllSignals();
     const intervalId = setInterval(checkAllSignals, 60000);
 
+    // Fix 2: Throttling recovery — run scanner immediately when tab regains focus
+    const handleVisibilityChange = () => {
+      if (!document.hidden && isMounted) {
+        checkAllSignals();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       isMounted = false;
       clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [watchlistSymbols, currentAsset, interval]);
+    // Fix 4: include executionStyle and triggerMode to avoid stale closures
+  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = klines.length > 0 ? (klines.slice().reverse().find(k => k.volume > 0)?.volume || 0) : 0;
@@ -539,7 +563,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.21.1
+            v2026.07.22.1
           </span>
         </div>
       </header>
