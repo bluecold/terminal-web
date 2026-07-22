@@ -35,27 +35,27 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa tendencia, RSI, Bollinger (%B), volumen, vela y estructura S/R.
 3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal. Cuenta con indicadores visuales de pendiente en RSI, y un filtro de desaceleración en el histograma del MACD para evitar falsas señales en momentum decreciente.
-4. **VCME Sniper Engine v3 (Híbrido - Upgraded):** Estrategia cuantitativa avanzada con selección interactiva de perfil y gatillo:
-   - **Perfiles de Ejecución**:
-     - *Day Trading (Intradía)*: Gatillo en 5m, ventana de evaluación corta (576 velas de 5m), Stop Loss ajustado por ATR/estructura local y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
-     - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
-   - **Modos de Gatillo**:
-     - *Agresivo (Ruptura)*: Disparo inmediato al cumplir las condiciones de confluencia de la vela de gatillo.
-     - *Conservador (Retest)*: Busca confirmación mediante retest de los niveles de ruptura (retroceso de hasta 5 velas a las BB u ORB roto) para asegurar que el rompimiento es verídico en mercados de alta volatilidad.
-   - **Volumen Estacional (U-Shape)**: Implementación de RVOL estacional diario que compara el volumen actual con el promedio de la misma franja de hora y minuto UTC de los últimos 20 días para mayor precisión técnica.
-   - **Clasificación de Confianza**: Gradúa las señales en `ALTA`, `MODERADA` o `DESCARTAR` (que neutraliza la señal) según el puntaje de confluencia y el nivel de volatilidad relativo.
-   - **1D (Bias/Dirección):** Exige precio por encima de la EMA 200 diaria, la EMA 50 diaria por encima de la EMA 200 diaria, y un ADX diario > 20 con el +DI diario por encima del -DI diario para LONG (o inversa para SHORT).
-   - **1H (Setup):** Estructura stateless que busca un setup técnico alineado en las últimas 3 horas (cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50 y 70, y el histograma del MACD en expansión positiva) sin invalidaciones intermedias.
-   - **Gatillo/Ejecución**: Ofrece tres estrategias de entrada (Pullback, Breakout, Mean Reversion) aplicadas al timeframe del perfil seleccionado (5m o 1H).
-   - **Filtros de Calidad e Invalidation:**
-     - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2 * ATR del VWAP.
-     - *Cuerpo Decisivo*: Vela de gatillo con un ratio de cuerpo >= 40% (evitando Dojis).
-     - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
-     - *Límite de Riesgo*: Distancia del Stop Loss estructural limitada a un máximo de 1.2% (Intradía) o 3.5% (Swing).
-   - **Gestión de Riesgo y Salidas Complejas:**
-     - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
-     - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
-     - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
+4. **VCME Sniper Engine v4 (Quant Engine - Upgraded):** Estrategia cuantitativa avanzada multitemporal con selección interactiva de perfil y gatillo:
+    - **Perfiles de Ejecución**:
+      - *Day Trading (Intradía)*: Gatillo en 5m, ventana de evaluación corta (576 velas de 5m), Stop Loss ajustado por ATR/estructura local (0.8 ATR a 1.8 ATR) y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
+      - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
+    - **Modos de Gatillo**:
+      - *Agresivo (Ruptura)*: Disparo inmediato al cumplir las condiciones de confluencia y geometría de la vela de gatillo (`closePosition >= 0.60`, mecha superior `<= 0.25`).
+      - *Conservador (Retest)*: Busca confirmación mediante retest de los niveles de ruptura (retroceso de hasta 6 velas con expiración) para asegurar que el rompimiento es verídico en mercados de alta volatilidad.
+    - **Volumen Estacional (U-Shape)**: Implementación de RVOL estacional diario que compara el volumen actual con el promedio de la misma franja de hora y minuto UTC de los últimos 20 días para mayor precisión técnica.
+    - **Clasificación de Confianza**: Gradúa las señales en `ALTA`, `MODERADA` o `DESCARTAR` (que neutraliza la señal) según el puntaje de confluencia y el nivel de volatilidad relativo.
+    - **1D (Bias/Dirección):** Exige precio por encima de la EMA 200 diaria, la EMA 50 diaria por encima de la EMA 200 diaria, ADX diario > 20 con el +DI diario por encima del -DI diario, y distancia a la EMA 200 `> 0.3 * ATR 1D` para LONG.
+    - **1H (Setup):** Estructura stateless que busca un setup técnico alineado en las últimas 3 horas (cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50 y 70, y el histograma del MACD en expansión positiva) sin invalidaciones intermedias.
+    - **Gatillo/Ejecución**: Ofrece tres estrategias de entrada (Pullback, Breakout, Mean Reversion) aplicadas al timeframe del perfil seleccionado (5m o 1H).
+    - **Geometría de Vela e Invalidation:**
+      - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2.2 * ATR del VWAP.
+      - *Geometría Cuantitativa*: Cierre en el 40% superior de la vela (`closePosition >= 0.60`) y mecha adversa `<= 0.25` (evitando martillos invertidos / dojis).
+      - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
+      - *Límite de Riesgo ATR*: Stop Loss acotado dinámicamente entre `0.8 * ATR` y `1.8 * ATR` (máx. 1.2% Intradía o 3.5% Swing).
+    - **Gestión de Riesgo y Salidas Complejas:**
+      - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
+      - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
+      - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
 
 ---
 

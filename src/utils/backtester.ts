@@ -21,6 +21,9 @@ import {
   checkBullishDivergence,
   checkBearishDivergence,
   candleBodyRatio,
+  closePosition,
+  upperWickRatio,
+  lowerWickRatio,
   getSessionId,
   calculateTimeOfDayVolumeAvg
 } from './indicators';
@@ -676,11 +679,15 @@ export function backtestMultitemporal(
 
     const qualityLong = (curr.close - vwap5m) <= 2.0 * atr5m &&
                         candleBodyRatio(curr) >= 0.4 &&
+                        closePosition(curr) >= 0.60 &&
+                        upperWickRatio(curr) <= 0.25 &&
                         minutesSinceOpen >= 15 &&
                         volCurr5m / volAvg5m < 8.0;
 
     const qualityShort = (vwap5m - curr.close) <= 2.0 * atr5m &&
                          candleBodyRatio(curr) >= 0.4 &&
+                         closePosition(curr) <= 0.40 &&
+                         lowerWickRatio(curr) <= 0.25 &&
                          minutesSinceOpen >= 15 &&
                          volCurr5m / volAvg5m < 8.0;
 
@@ -736,19 +743,24 @@ export function backtestMultitemporal(
 
     const atrMult = style === 'swing' ? 1.0 : 1.5;
     const tp1Mult = style === 'swing' ? 2.0 : 1.5;
-    const tp2Mult = style === 'swing' ? 4.0 : 2.5;
-    const tp3Mult = style === 'swing' ? 5.0 : 3.5;
 
     if (signal === 'BUY') {
       const slATR = entry - atrMult * atr5m;
       const slStruct = swingLow - 0.25 * atr5m;
       
-      // Conservative SL: Math.min (lowest price, furthest from entry)
       stopLoss = Math.min(slATR, slStruct);
-      
-      const riskPercent = (entry - stopLoss) / entry;
+      let risk = entry - stopLoss;
+      const minRisk = 0.8 * atr5m;
+      const maxRisk = 1.8 * atr5m;
+
+      if (risk < minRisk) {
+        stopLoss = entry - minRisk;
+        risk = minRisk;
+      }
+
+      const riskPercent = risk / entry;
       const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
-      if (riskPercent > maxAllowedRisk) {
+      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
       }
@@ -756,12 +768,19 @@ export function backtestMultitemporal(
       const slATR = entry + atrMult * atr5m;
       const slStruct = swingHigh + 0.25 * atr5m;
       
-      // Conservative SL: Math.max (highest price, furthest from entry)
       stopLoss = Math.max(slATR, slStruct);
-      
-      const riskPercent = (stopLoss - entry) / entry;
+      let risk = stopLoss - entry;
+      const minRisk = 0.8 * atr5m;
+      const maxRisk = 1.8 * atr5m;
+
+      if (risk < minRisk) {
+        stopLoss = entry + minRisk;
+        risk = minRisk;
+      }
+
+      const riskPercent = risk / entry;
       const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
-      if (riskPercent > maxAllowedRisk) {
+      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
       }

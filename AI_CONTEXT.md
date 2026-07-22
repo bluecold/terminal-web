@@ -74,6 +74,12 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Throttling Recovery**: Añadido listener `visibilitychange` que ejecuta `checkAllSignals()` inmediatamente al recuperar el foco de la pestaña/ventana, compensando el throttling de `setInterval` en background.
   - **Fallback de Estrategia**: Cuando ninguna estrategia cumple `PF >= 1.3` con suficientes trades resueltos, se usa un fallback escalonado (PF >= 1.0 con umbral relajado → Standard Voting) en lugar de descartar silenciosamente el símbolo.
   - **Dependencias Stale**: Agregados `executionStyle` y `triggerMode` al array de dependencias del `useEffect` del scanner para evitar closures con valores obsoletos.
+- **Actualización v2026.07.22.2 — Quant Signal Engine v4 Upgrade**:
+  - **Geometría de Velas Cuantitativa**: Integración de `closePosition`, `upperWickRatio` y `lowerWickRatio` en los 4 motores de señales para eliminar disparos en velas Doji o con mechas de rechazo adversas.
+  - **Standard Voting Mejora**: Exige `closePosition >= 0.55` para BUY y `<= 0.45` para SELL antes de emitir voto definitivo.
+  - **Confluencia (Signal 1) Mejora**: Incorporado filtro anti-extensiones VWAP/ATR (`|close - vwap| <= 2.2 * ATR`) y cuerpo decisivo (`closePosition >= 0.60`).
+  - **Scoring Multicapa (Signal 2) Mejora**: Bonus por compresión de Bollinger (`bbWidthRatio < 0.05`) en Capa 3 y penalización por mecha de rechazo en Capa 5.
+  - **VCME Sniper Engine v4**: Integración de acotamiento de riesgo ATR (`0.8 * ATR <= Risk <= 1.8 * ATR`), validación de mechas en calidad de vela y sincronización 1:1 con el motor de backtesting.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
