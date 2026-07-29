@@ -30,7 +30,7 @@
 
 ## 🧠 Modelos de Señales Integrados
 
-La aplicación cuenta con 4 agrupaciones principales que analizan los datos en tiempo real:
+La aplicación cuenta con **5 estrategias principales** que analizan los datos en tiempo real:
 
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa tendencia, RSI, Bollinger (%B), volumen, vela y estructura S/R.
@@ -56,6 +56,14 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
       - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
       - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
       - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
+5. **Multifractal MTF Engine (Signal 5):** Motor de alertas multifractal con arquitectura de compuertas lógicas secuenciales 1D → 1H → 5M y 4 sub-indicadores dedicados:
+    - **Capa 1 — Sesgo Macro (1D Andian Oscillator):** Descompone velas diarias en fuerza alcista (GREEN) y bajista (RED), suavizadas con EMA y normalizadas contra el rango promedio. Determina BULLISH o BEARISH. Solo permite operar en la dirección del sesgo.
+    - **Capa 2 — Contexto Volatilidad (1H Revolution Band):** Bollinger Bands horarias que miden el ancho del canal vs. su historial de 200 barras. Cuando cae al percentil 15 (COMPRIMIDO), indica que una expansión explosiva es inminente.
+    - **Capa 3 — Gatillo (5M):** Combina *Volume Composition* (compra/venta activa con multiplicador ≥ 1.5x) y *Dread Blitz MCD* (oscilador de momentum normalizado por ATR con Bollinger Bands).
+    - **Estrategias de Entrada:**
+      - *⚡ Ruptura con Expansión:* Cierre rompe banda + volumen institucional + dominancia activa ≥ 65%. Requiere las 3 capas alineadas.
+      - *🔄 Reversión a la Media:* Divergencia en Dread Blitz + absorción pasiva en mechas.
+    - **Gestión de Riesgo:** Stop Loss dinámico en midpoint de banda (Ruptura) o bajo mecha de absorción (Reversión). Invalidación automática en 3 velas. Filtro de apertura NYSE (09:30-09:45 EST).
 
 ---
 
@@ -100,8 +108,9 @@ La aplicación cuenta con 4 agrupaciones principales que analizan los datos en t
 FinceptTerminal cuenta con un motor de backtesting optimizado a $O(n)$ integrado directamente en el frontend, lo que permite evaluar la rentabilidad histórica de las estrategias casi instantáneamente sin necesidad de un backend pesado:
 
 - **Umbrales Adaptativos (ATR):** El `Stop Loss` y `Take Profit` se calculan dinámicamente según la volatilidad real del activo (ATR), permitiendo comparar de forma justa criptomonedas (alta volatilidad) con acciones (baja volatilidad).
-- **Manejo de Sesiones (Gaps):** Detección automática de huecos de mercado para acciones de EEUU. Las señales intradiarias que cruzarían un gap overnight son descartadas para simular una operativa realista.
-- **Métricas Avanzadas:** Calcula y expone métricas institucionales como **Profit Factor**, **Expectancy (Esperanza Matemática)**, y **Resolution Rate**, además del tradicional WinRate (basado estrictamente en operaciones resueltas).
+- **Simulación Multifractal MTF:** Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M sobre las últimas 150 velas de 5m con cooldown de 12 velas para prevenir look-ahead bias, forward window de 1 hora, e invalidación temprana en 3 velas.
+- **Manejo de Sesiones (Gaps):** Detección automática de huecos de mercado para acciones de EEUU. Las señales intradiarias que cruzarían un gap overnight son descartadas.
+- **Métricas Avanzadas:** Calcula y expone métricas institucionales como **Profit Factor**, **Expectancy (Esperanza Matemática)**, y **Resolution Rate**, además del tradicional WinRate.
 - **Control de Cooldown:** Previene la distorsión estadística al ignorar señales duplicadas dentro de la ventana de vida de una operación activa.
 
 ---

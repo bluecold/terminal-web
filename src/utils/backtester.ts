@@ -25,7 +25,11 @@ import {
   upperWickRatio,
   lowerWickRatio,
   getSessionId,
-  calculateTimeOfDayVolumeAvg
+  calculateTimeOfDayVolumeAvg,
+  calculateRevolutionVolatilityBand,
+  calculateVolumeComposition,
+  calculateAndianOscillator,
+  calculateDreadBlitz
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -1485,4 +1489,199 @@ export function computeScoringSignalsSeries(
 
   return signals;
 }
+
+// ─── Multifractal MTF Backtester ──────────────────────────────────────────
+
+export function backtestMultifractalMTF(
+  klines5m: Kline[],
+  klines1h: Kline[],
+  klines1d: Kline[],
+  _interval: string = '5m',
+  _symbol: string = 'ASSET'
+): BacktestResult {
+  const evalWindow = 150;
+  const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
+  const cooldownPeriod = 12; // Must be >= forwardWindow to prevent overlapping trades
+
+  const fallbackResult: BacktestResult = {
+    totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
+    winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+    neutrals: 0,
+    label: `últimas 150 velas (5m)`,
+    forwardLabel: '12 velas (1 hs max)',
+    threshold: 0,
+    targetThreshold: 0,
+    targetMultiplier: 1.5,
+    insufficient: true
+  };
+
+  if (!klines5m || klines5m.length < evalWindow + 20) return fallbackResult;
+
+  const k1h = klines1h && klines1h.length >= 20 ? klines1h : klines5m;
+  const k1d = klines1d && klines1d.length >= 14 ? klines1d : klines5m;
+
+  const volBands1H = calculateRevolutionVolatilityBand(k1h);
+  const andian1D = calculateAndianOscillator(k1d);
+
+  const volBands5M = calculateRevolutionVolatilityBand(klines5m);
+  const volComp5M = calculateVolumeComposition(klines5m);
+  const dreadBlitz5M = calculateDreadBlitz(klines5m);
+
+  let totalSignals = 0;
+  let wins = 0;
+  let losses = 0;
+  let timeouts = 0;
+  let neutrals = 0;
+  let totalGainPct = 0;
+  let totalLossPct = 0;
+  let lastSignalIdx = -cooldownPeriod - 1;
+
+  const latestEvalIdx = klines5m.length - 1;
+  const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
+
+  for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
+    if (i - lastSignalIdx < cooldownPeriod) {
+      neutrals++;
+      continue;
+    }
+
+    const curr = klines5m[i];
+    const prev = klines5m[i - 1];
+
+    const idx1h = Math.min(
+      Math.floor((i / klines5m.length) * volBands1H.length),
+      volBands1H.length - 1
+    );
+    const recent1H = volBands1H.slice(Math.max(0, idx1h - 3), idx1h + 1);
+    const isCompressed1H = recent1H.some(b => b.isCompressed);
+
+    const idx1d = Math.min(
+      Math.floor((i / klines5m.length) * andian1D.length),
+      andian1D.length - 1
+    );
+    const bias1D = andian1D[idx1d] ? andian1D[idx1d].bias : 'NEUTRAL';
+
+    const band5M = volBands5M[i];
+    const volComp = volComp5M[i];
+    const dread = dreadBlitz5M[i];
+    const prevDread = dreadBlitz5M[i - 1] || dread;
+
+    if (!band5M || !volComp || !dread) {
+      neutrals++;
+      continue;
+    }
+
+    const candleDate = new Date(curr.time);
+    const utcTotalMins = candleDate.getUTCHours() * 60 + candleDate.getUTCMinutes();
+    const isNyseOpening = utcTotalMins >= 13 * 60 + 30 && utcTotalMins < 13 * 60 + 45;
+    const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
+
+    let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    let stopLossPrice = 0;
+
+    if (bias1D === 'BULLISH' && isCompressed1H && curr.close > band5M.upper && volComp.volumeMultiplier >= minVolMultiplier && volComp.activeBuyPercent >= 65) {
+      signal = 'BUY';
+      stopLossPrice = band5M.midpoint;
+    } else if (bias1D === 'BEARISH' && isCompressed1H && curr.close < band5M.lower && volComp.volumeMultiplier >= minVolMultiplier && volComp.activeSellPercent >= 65) {
+      signal = 'SELL';
+      stopLossPrice = band5M.midpoint;
+    } else if (dread.isOversold && curr.low < prev.low && dread.mcd > prevDread.mcd && volComp.isPassiveBuyAbsorption) {
+      signal = 'BUY';
+      stopLossPrice = curr.low - (band5M.upper - band5M.lower) * 0.25;
+    } else if (dread.isOverbought && curr.high > prev.high && dread.mcd < prevDread.mcd && volComp.isPassiveSellAbsorption) {
+      signal = 'SELL';
+      stopLossPrice = curr.high + (band5M.upper - band5M.lower) * 0.25;
+    }
+
+    if (signal === 'NEUTRAL') {
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+    lastSignalIdx = i;
+
+    const entryPrice = curr.close;
+    const risk = Math.abs(entryPrice - stopLossPrice);
+    const takeProfitPrice = signal === 'BUY'
+      ? entryPrice + risk * 1.5
+      : entryPrice - risk * 1.5;
+
+    let outcome: 'WIN' | 'LOSS' | 'TIMEOUT' = 'TIMEOUT';
+
+    for (let f = 1; f <= forwardWindow; f++) {
+      const fIdx = i + f;
+      if (fIdx >= klines5m.length) break;
+      const fCandle = klines5m[fIdx];
+
+      if (f <= 3) {
+        const fBand = volBands5M[fIdx];
+        if (fBand) {
+          if (signal === 'BUY' && fCandle.close < fBand.midpoint) {
+            outcome = 'LOSS';
+            totalLossPct += Math.abs((fCandle.close - entryPrice) / entryPrice);
+            break;
+          } else if (signal === 'SELL' && fCandle.close > fBand.midpoint) {
+            outcome = 'LOSS';
+            totalLossPct += Math.abs((entryPrice - fCandle.close) / entryPrice);
+            break;
+          }
+        }
+      }
+
+      if (signal === 'BUY') {
+        if (fCandle.high >= takeProfitPrice) {
+          outcome = 'WIN';
+          totalGainPct += Math.abs((takeProfitPrice - entryPrice) / entryPrice);
+          break;
+        }
+        if (fCandle.low <= stopLossPrice) {
+          outcome = 'LOSS';
+          totalLossPct += Math.abs((stopLossPrice - entryPrice) / entryPrice);
+          break;
+        }
+      } else {
+        if (fCandle.low <= takeProfitPrice) {
+          outcome = 'WIN';
+          totalGainPct += Math.abs((entryPrice - takeProfitPrice) / entryPrice);
+          break;
+        }
+        if (fCandle.high >= stopLossPrice) {
+          outcome = 'LOSS';
+          totalLossPct += Math.abs((entryPrice - stopLossPrice) / entryPrice);
+          break;
+        }
+      }
+    }
+
+    if (outcome === 'WIN') wins++;
+    else if (outcome === 'LOSS') losses++;
+    else timeouts++;
+  }
+
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
+  const resolutionRate = totalSignals > 0 ? Number((resolved / totalSignals).toFixed(3)) : 0;
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : wins > 0 ? 3.0 : 0;
+  const expectancy = totalSignals > 0 ? Number(((wins * 1.5 - losses * 1.0) / totalSignals).toFixed(2)) : 0;
+
+  return {
+    totalSignals,
+    wins,
+    losses,
+    timeouts,
+    winRate,
+    resolutionRate,
+    profitFactor,
+    expectancy,
+    neutrals,
+    label: `últimas ${evalWindow} velas (5m)`,
+    forwardLabel: '12 velas (1 hs max)',
+    threshold: 0.01,
+    targetThreshold: 0.015,
+    targetMultiplier: 1.5,
+    insufficient: totalSignals === 0
+  };
+}
+
 

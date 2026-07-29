@@ -1,10 +1,11 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, type VCMESniperResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, type VCMESniperResult, type MultifractalMTFSignalResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import {
   backtestStandard,
   backtestConfluencia,
   backtestScoring,
   backtestMultitemporal,
+  backtestMultifractalMTF,
   getTrendFilter
 } from '../utils/backtester';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
@@ -273,6 +274,12 @@ export default function SignalPanel({
       : null;
   }, [klines5m, klines1h, klines1d, symbol, executionStyle, triggerMode]);
 
+  const btMultifractal = useMemo(() => {
+    return klines5m.length >= 30
+      ? backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', symbol)
+      : null;
+  }, [klines5m, klines1h, klines1d, symbol]);
+
   const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
   const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
   const multi: VCMESniperResult = useMemo(() => {
@@ -289,6 +296,10 @@ export default function SignalPanel({
     );
   }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, btMultitemporal, executionStyle, triggerMode]);
 
+  const multifractal: MultifractalMTFSignalResult = useMemo(() => {
+    return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol]);
+
   // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
   const bestStrategy = useMemo(() => {
     if (!btStandard || !btConfluencia || !btScoring) return 'standard';
@@ -297,6 +308,7 @@ export default function SignalPanel({
       { key: 'confluencia',  pf: btConfluencia.profitFactor, resolved: btConfluencia.wins + btConfluencia.losses },
       { key: 'scoring',      pf: btScoring.profitFactor,     resolved: btScoring.wins + btScoring.losses },
       { key: 'multitemporal',pf: btMultitemporal ? btMultitemporal.profitFactor : 0, resolved: btMultitemporal ? btMultitemporal.wins + btMultitemporal.losses : 0 },
+      { key: 'multifractal', pf: btMultifractal ? btMultifractal.profitFactor : 0, resolved: btMultifractal ? btMultifractal.wins + btMultifractal.losses : 0 },
     ];
     
     const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
@@ -308,7 +320,7 @@ export default function SignalPanel({
     const fallbackViable = candidates.filter(s => s.resolved >= minResolved).sort((a, b) => b.pf - a.pf);
     if (fallbackViable.length > 0) return fallbackViable[0].key;
     return [...candidates].sort((a, b) => b.pf - a.pf)[0].key;
-  }, [btStandard, btConfluencia, btScoring, btMultitemporal, interval]);
+  }, [btStandard, btConfluencia, btScoring, btMultitemporal, btMultifractal, interval]);
 
   // Synchronize expanded strategy with the best strategy when it changes
   useEffect(() => {
@@ -321,8 +333,9 @@ export default function SignalPanel({
     if (bestStrategy === 'confluencia') return exp.signal;
     if (bestStrategy === 'scoring') return score.signal;
     if (bestStrategy === 'multitemporal') return multi.signal;
+    if (bestStrategy === 'multifractal') return multifractal.signal;
     return rawSignal;
-  }, [bestStrategy, exp.signal, score.signal, multi.signal, rawSignal]);
+  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, rawSignal]);
 
   const trend = useMemo(() => getTrendFilter(closedCloses), [closedCloses]);
   let overallSignal = rawOverallSignal;
@@ -1313,6 +1326,251 @@ export default function SignalPanel({
                           {klines.length > 0 ? `S: $${multi.nearestSupport > 0 ? multi.nearestSupport.toFixed(2) : '-'} | R: $${multi.nearestResistance > 0 ? multi.nearestResistance.toFixed(2) : '-'}` : '-'}
                         </span>
                       </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 5. Estrategia Multifractal MTF Engine */}
+          {(() => {
+            const id = 'multifractal';
+            const isExpanded = expandedStrategy === id;
+            const isRecommended = bestStrategy === id;
+            const sig = multifractal.signal;
+            const sigColor = sig.includes('BUY') ? 'var(--accent-green)' : sig.includes('SELL') ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const sigBg = sig.includes('BUY') ? 'var(--accent-green-bg)' : sig.includes('SELL') ? 'var(--accent-red-bg)' : 'rgba(255,255,255,0.02)';
+            const resolvedCount = btMultifractal ? (btMultifractal.wins + btMultifractal.losses) : 0;
+            const winRateText = btMultifractal && !btMultifractal.insufficient && resolvedCount > 0 
+              ? `${Math.round(btMultifractal.winRate * 100)}% WR` 
+              : '— WR';
+            const stratLabel = multifractal.strategy === 'BREAKOUT_EXPANSION' ? '⚡ RUPTURA EXPANSIÓN' : multifractal.strategy === 'MEAN_REVERSION' ? '🔄 REVERSIÓN MEDIA' : '';
+
+            return (
+              <div className={`sp-strategy-card ${isRecommended ? 'recommended' : ''}`}>
+                <div 
+                  className="sp-strategy-card-header" 
+                  onClick={() => setExpandedStrategy(isExpanded ? null : id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Multifractal MTF</span>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(1D+1H+5M)</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: 'var(--accent-blue-bg)', 
+                        color: 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        LÍDER
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ 
+                      fontSize: '0.65rem', 
+                      fontWeight: '800', 
+                      color: sigColor, 
+                      backgroundColor: sigBg,
+                      border: `1px solid ${sigColor === 'var(--text-secondary)' ? 'rgba(255, 255, 255, 0.06)' : sigColor + '20'}`,
+                      padding: '2px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {closes.length === 0 ? 'WAITING...' : sig === 'NEUTRAL' ? 'NEUTRO' : `${sig} ${stratLabel}`}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
+                      {winRateText}
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="sp-strategy-card-content">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>RENDIMIENTO HISTÓRICO</div>
+                        <BacktestCard name="Signal 5 · Multifractal MTF Engine" result={btMultifractal} />
+                      </div>
+
+                      {/* LAYER 1: Macro 1D — Andian Oscillator */}
+                      <div style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>CAPA 1 · SESGO MACRO (1D ANDIAN)</div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Sesgo Direccional:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            padding: '1px 8px',
+                            borderRadius: '4px',
+                            color: multifractal.bias1D === 'BULLISH' ? 'var(--accent-green)' : multifractal.bias1D === 'BEARISH' ? 'var(--accent-red)' : 'var(--text-muted)',
+                            backgroundColor: multifractal.bias1D === 'BULLISH' ? 'rgba(16, 185, 129, 0.08)' : multifractal.bias1D === 'BEARISH' ? 'rgba(244, 63, 94, 0.08)' : 'transparent',
+                            border: `1px solid ${multifractal.bias1D === 'BULLISH' ? 'rgba(16, 185, 129, 0.2)' : multifractal.bias1D === 'BEARISH' ? 'rgba(244, 63, 94, 0.2)' : 'rgba(255,255,255,0.06)'}`
+                          }}>
+                            {multifractal.bias1D === 'BULLISH' ? '▲ ALCISTA' : multifractal.bias1D === 'BEARISH' ? '▼ BAJISTA' : '─ NEUTRAL'}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)', borderRadius: '4px', padding: '6px 8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginBottom: '2px' }}>GREEN</div>
+                            <div style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>{multifractal.andianGreen}</div>
+                          </div>
+                          <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)', borderRadius: '4px', padding: '6px 8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginBottom: '2px' }}>RED</div>
+                            <div style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>{multifractal.andianRed}</div>
+                          </div>
+                          <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)', borderRadius: '4px', padding: '6px 8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginBottom: '2px' }}>ORANGE</div>
+                            <div style={{ fontSize: '0.8rem', fontWeight: '700', color: '#f59e0b', fontFamily: 'var(--font-mono)' }}>{multifractal.andianOrange}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* LAYER 2: Context 1H — Volatility Squeeze */}
+                      <div style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>CAPA 2 · CONTEXTO VOLATILIDAD (1H)</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Revolution Band Squeeze:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            color: multifractal.isCompressed1H ? '#38bdf8' : 'var(--text-muted)'
+                          }}>
+                            {multifractal.isCompressed1H ? '⚡ COMPRIMIDO (P15)' : 'NORMAL'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Ancho de Canal:</span>
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                            {multifractal.volatilityWidth1H}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* LAYER 3: Trigger 5M — Volume + Dread Blitz */}
+                      <div style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>CAPA 3 · GATILLO (5M)</div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Dread Blitz MCD:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            fontFamily: 'var(--font-mono)',
+                            color: multifractal.isOverbought5M ? 'var(--accent-red)' : multifractal.isOversold5M ? 'var(--accent-green)' : 'var(--text-primary)'
+                          }}>
+                            {multifractal.dreadBlitzMCD}
+                            {multifractal.isOverbought5M && ' ⬆ SOBRECOMPRA'}
+                            {multifractal.isOversold5M && ' ⬇ SOBREVENTA'}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Vol. Multiplicador (vs SMA20):</span>
+                          <span style={{
+                            fontWeight: '700',
+                            fontFamily: 'var(--font-mono)',
+                            color: multifractal.volumeMultiplier5M >= 1.5 ? 'var(--accent-green)' : 'var(--text-muted)'
+                          }}>
+                            {multifractal.volumeMultiplier5M}x {multifractal.volumeMultiplier5M >= 1.5 ? '✓' : ''}
+                          </span>
+                        </div>
+
+                        {/* Volume Composition Bar */}
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
+                            <span>Compra Activa: {multifractal.activeVolumePercent5M}%</span>
+                            <span>Venta Activa: {(100 - multifractal.activeVolumePercent5M).toFixed(1)}%</span>
+                          </div>
+                          <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', overflow: 'hidden', display: 'flex' }}>
+                            <div style={{
+                              width: `${multifractal.activeVolumePercent5M}%`,
+                              background: 'var(--accent-green)',
+                              borderRadius: '3px 0 0 3px',
+                              transition: 'width 0.4s ease'
+                            }} />
+                            <div style={{
+                              flex: 1,
+                              background: 'var(--accent-red)',
+                              borderRadius: '0 3px 3px 0'
+                            }} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Risk Management & Reasoning */}
+                      {multifractal.signal !== 'NEUTRAL' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px', marginBottom: '2px' }}>GESTIÓN DE RIESGO E INVALIDACIÓN</div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Precio de Entrada:</span>
+                            <span style={{ color: 'var(--text-primary)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multifractal.triggerPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
+                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multifractal.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                          </div>
+                          <div style={{
+                            fontSize: '0.65rem',
+                            color: 'var(--text-secondary)',
+                            fontStyle: 'italic',
+                            lineHeight: '1.3',
+                            padding: '6px 8px',
+                            background: 'rgba(56, 189, 248, 0.04)',
+                            border: '1px solid rgba(56, 189, 248, 0.1)',
+                            borderRadius: '4px',
+                            marginTop: '2px'
+                          }}>
+                            💡 {multifractal.reasoning}
+                          </div>
+                          <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', lineHeight: '1.3', marginTop: '2px' }}>
+                            ⚠️ Invalidación automática: si el cierre cae bajo el punto medio de la banda en las próximas 3 velas de 5m, la tesis de velocidad institucional queda anulada.
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Reasoning when NEUTRAL */}
+                      {multifractal.signal === 'NEUTRAL' && (
+                        <div style={{
+                          fontSize: '0.7rem',
+                          color: 'var(--text-muted)',
+                          fontStyle: 'italic',
+                          padding: '8px 10px',
+                          background: 'rgba(0,0,0,0.1)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '6px',
+                          lineHeight: '1.3'
+                        }}>
+                          {multifractal.reasoning}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

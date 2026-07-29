@@ -21,7 +21,7 @@ Recientemente se han realizado optimizaciones críticas en la matemática y lóg
 8. **Calidad de Vela (`Body Ratio`, `Close Position`)**: Permite determinar la decisión del impulso en velas de 5m antes del gatillo de ruptura o reversión.
 
 ## Sistemas de Señales (Grupos)
-Actualmente existen 4 agrupaciones principales de señales:
+Actualmente existen 5 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
 2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario.
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
@@ -46,10 +46,22 @@ Actualmente existen 4 agrupaciones principales de señales:
      - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
      - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
      - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
+5. **Multifractal MTF Engine (Signal 5)**: Motor de alertas multifractal basado en un flujo de compuertas lógicas secuenciales 1D → 1H → 5M:
+   - **Capa 1 — Sesgo Macro (1D Andian Oscillator)**: Descompone velas diarias en fuerza alcista (GREEN) y bajista (RED), suavizadas con EMA y normalizadas contra el rango promedio. Determina BULLISH (GREEN > ORANGE, RED en percentil 20) o BEARISH (inverso). Solo permite operar en la dirección del sesgo.
+   - **Capa 2 — Contexto Volatilidad (1H Revolution Band)**: Bollinger Bands horarias que miden el ancho del canal vs. su historial de 200 barras. Cuando el ancho cae al percentil 15 (COMPRIMIDO), indica que una expansión explosiva es inminente.
+   - **Capa 3 — Gatillo (5M)**: Combina dos sub-indicadores:
+     - *Volume Composition*: Descompone cada vela en compra activa `(close - low) / range` y venta activa `(high - close) / range`. Requiere multiplicador de volumen ≥ 1.5x (2.5x en apertura NYSE) y dominancia ≥ 65%.
+     - *Dread Blitz MCD*: Oscilador de momentum (precio vs EMA12, normalizado por ATR) con Bollinger Bands para detectar sobrecompra/sobreventa.
+   - **Dos Estrategias de Entrada**:
+     - *⚡ Ruptura con Expansión*: Cierre rompe banda superior/inferior + volumen institucional + dominancia activa. Requiere las 3 capas alineadas.
+     - *🔄 Reversión a la Media*: Divergencia alcista/bajista en Dread Blitz + absorción pasiva en mechas. No requiere compresión 1H.
+   - **Gestión de Riesgo**: Stop Loss en el punto medio de la banda (Ruptura) o bajo la mecha de absorción ± 25% del ancho de banda (Reversión). Invalidación automática si el cierre cruza el midpoint de la banda en las primeras 3 velas.
+   - **Filtro NYSE Opening**: Exige multiplicador de volumen ≥ 2.5x en la ventana 09:30-09:45 EST para filtrar el ruido de apertura.
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
 - **Simulación Multitemporal VCME Sniper v3**: Realiza backtesting simulando las 3 capas, el score de confluencia técnica, y las salidas complejas (Time Stop, Emergency Exit y Chandelier Trailing).
+- **Simulación Multifractal MTF**: Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M sobre las últimas 150 velas de 5m. Cooldown de 12 velas (≥ forwardWindow) para prevenir look-ahead bias. Forward window de 12 velas (1 hora), con invalidación temprana en las primeras 3 velas si el precio cruza el midpoint. Target Profit de 1.5R.
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 
@@ -80,6 +92,18 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Confluencia (Signal 1) Mejora**: Incorporado filtro anti-extensiones VWAP/ATR (`|close - vwap| <= 2.2 * ATR`) y cuerpo decisivo (`closePosition >= 0.60`).
   - **Scoring Multicapa (Signal 2) Mejora**: Bonus por compresión de Bollinger (`bbWidthRatio < 0.05`) en Capa 3 y penalización por mecha de rechazo en Capa 5.
   - **VCME Sniper Engine v4**: Integración de acotamiento de riesgo ATR (`0.8 * ATR <= Risk <= 1.8 * ATR`), validación de mechas en calidad de vela y sincronización 1:1 con el motor de backtesting.
+- **Actualización v2026.07.28.1 — Multifractal MTF Engine (Signal 5)**:
+  - **Nuevo Motor de Señales**: Implementación completa del Motor de Alertas Multifractal (MTF) con arquitectura de 3 capas secuenciales (1D → 1H → 5M) y 4 sub-indicadores dedicados:
+    - *Revolution Volatility Band*: Compresión de volatilidad con percentil histórico P15.
+    - *Volume Composition*: Descomposición de volumen en compra/venta activa y detección de absorción pasiva.
+    - *Andian Oscillator*: Sesgo macro con análisis de fuerza bull/bear normalizado.
+    - *Dread Blitz MCD*: Oscilador de momentum normalizado por ATR con Bollinger Bands.
+  - **Dos Estrategias**: Ruptura con Expansión de Volatilidad y Reversión Excesiva a la Media con divergencia.
+  - **Backtester Dedicado**: `backtestMultifractalMTF` con cooldown de 12 velas, invalidación temprana (3 velas), y forward window de 1 hora.
+  - **Integración Completa en Alertas**: La estrategia participa en el torneo de selección del scanner en segundo plano y dispara notificaciones de escritorio.
+  - **UI Rica**: Visualización de las 3 capas con valores numéricos de Andian (Green/Red/Orange), estado de Dread Blitz, barra de composición de volumen, y texto de reasoning contextual.
+  - **Performance**: Optimización de `calculateDreadBlitz` de O(n²) a O(n) usando `calculateATRSeries`.
+  - **Fix NYSE Opening**: Corrección del filtro de apertura NYSE de `(h===13||h===14) && m<15` a la ventana exacta 13:30-13:45 UTC.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.

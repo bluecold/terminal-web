@@ -7,8 +7,8 @@ import SignalPanel from './components/SignalPanel';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal } from './utils/indicators';
-import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal } from './utils/backtester';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal } from './utils/indicators';
+import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
 
 interface AlertItem {
   id: string;
@@ -348,11 +348,14 @@ function App() {
               btMulti = backtestMultitemporal(triggerKlines, data1h, data1d, '5m', symbol, executionStyle, triggerMode);
             }
 
+            const btMF = data.length >= 30 ? backtestMultifractalMTF(data, data1h, data1d, '5m') : { profitFactor: 0, wins: 0, losses: 0 };
+
             const candidates = [
               { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
               { key: 'confluencia', label: 'Confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
               { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
               { key: 'multitemporal', label: 'VCME Sniper', pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
+              { key: 'multifractal', label: 'Multifractal MTF', pf: btMF.profitFactor, resolved: btMF.wins + btMF.losses },
             ];
 
             const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
@@ -385,7 +388,7 @@ function App() {
           } else {
             bestStrategy = cached.strategy;
             bestPF = cached.pf;
-            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : 'Standard';
+            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard';
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
@@ -414,12 +417,21 @@ function App() {
             );
             overallSignal = result.signal;
             signalConfidence = result.confidence;
+          } else if (bestStrategy === 'multifractal') {
+            const kl5m = interval === '5m' ? closedData : (data1h ? data1h.slice(0, -1) : []);
+            const result = calculateMultifractalMTFSignal(
+              kl5m,
+              data1h ? data1h.slice(0, -1) : [],
+              data1d ? data1d.slice(0, -1) : [],
+              symbol
+            );
+            overallSignal = result.signal;
           } else {
             const voting = calculateStandardVoting(closedData);
             overallSignal = voting.rawSignal;
           }
 
-          if (bestStrategy !== 'multitemporal') {
+          if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
             const closesList = closedData.map(k => k.close);
             const trend = getTrendFilter(closesList);
             if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {

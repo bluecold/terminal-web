@@ -2660,3 +2660,440 @@ export function calculateVCMESniperSignal(
     confidence
   };
 }
+
+// ============================================================================
+// MOTOR DE ALERTAS MULTIFRACTAL (MTF ENGINE) - MÓDULOS Y SEÑAL PRINCIPAL
+// ============================================================================
+
+export interface VolatilityBandItem {
+  upper: number;
+  lower: number;
+  midpoint: number;
+  width: number;
+  threshold: number;
+  isCompressed: boolean;
+}
+
+export function calculateRevolutionVolatilityBand(
+  klines: Kline[],
+  period: number = 20,
+  multiplier: number = 2,
+  lookbackN: number = 200,
+  percentile: number = 15
+): VolatilityBandItem[] {
+  if (!klines || klines.length < period) return [];
+
+  const closes = klines.map(k => k.close);
+  const sma = calculateSMA(closes, period);
+  const widths: number[] = [];
+  const rawBands: { upper: number; lower: number; midpoint: number; width: number }[] = [];
+
+  for (let i = 0; i < klines.length; i++) {
+    if (i < period - 1) {
+      widths.push(NaN);
+      rawBands.push({ upper: NaN, lower: NaN, midpoint: NaN, width: NaN });
+      continue;
+    }
+
+    const currentSma = sma[i];
+    let sumSq = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sumSq += Math.pow(closes[j] - currentSma, 2);
+    }
+    const stdDev = Math.sqrt(sumSq / period);
+    const upper = currentSma + (stdDev * multiplier);
+    const lower = currentSma - (stdDev * multiplier);
+    const width = upper - lower;
+
+    widths.push(width);
+    rawBands.push({ upper, lower, midpoint: currentSma, width });
+  }
+
+  const result: VolatilityBandItem[] = [];
+
+  for (let i = 0; i < klines.length; i++) {
+    if (i < period - 1) {
+      result.push({ upper: 0, lower: 0, midpoint: 0, width: 0, threshold: 0, isCompressed: false });
+      continue;
+    }
+
+    const currentWidth = widths[i];
+    // Gather valid previous widths up to lookbackN
+    const validPastWidths: number[] = [];
+    const startIdx = Math.max(period - 1, i - lookbackN);
+    for (let j = startIdx; j < i; j++) {
+      if (!isNaN(widths[j])) {
+        validPastWidths.push(widths[j]);
+      }
+    }
+
+    let threshold = currentWidth;
+    if (validPastWidths.length > 5) {
+      const sorted = [...validPastWidths].sort((a, b) => a - b);
+      const pIdx = Math.floor((percentile / 100) * sorted.length);
+      threshold = sorted[Math.min(pIdx, sorted.length - 1)];
+    }
+
+    const isCompressed = !isNaN(currentWidth) && currentWidth <= threshold;
+
+    result.push({
+      upper: rawBands[i].upper,
+      lower: rawBands[i].lower,
+      midpoint: rawBands[i].midpoint,
+      width: currentWidth,
+      threshold,
+      isCompressed
+    });
+  }
+
+  return result;
+}
+
+export interface VolumeCompositionItem {
+  volume: number;
+  smaVolume: number;
+  volumeMultiplier: number;
+  activeBuyPercent: number;
+  activeSellPercent: number;
+  isHighVolume: boolean;
+  isPassiveBuyAbsorption: boolean;
+  isPassiveSellAbsorption: boolean;
+}
+
+export function calculateVolumeComposition(klines: Kline[], period: number = 20): VolumeCompositionItem[] {
+  if (!klines || klines.length === 0) return [];
+
+  const volumes = klines.map(k => k.volume);
+  const smaV = calculateSMA(volumes, period);
+  const result: VolumeCompositionItem[] = [];
+
+  for (let i = 0; i < klines.length; i++) {
+    const k = klines[i];
+    const range = k.high - k.low;
+    const vol = k.volume;
+    const avgVol = isNaN(smaV[i]) ? vol : smaV[i];
+    const volumeMultiplier = avgVol > 0 ? vol / avgVol : 1;
+
+    let activeBuyRatio = 0.5;
+    let activeSellRatio = 0.5;
+
+    if (range > 0) {
+      activeBuyRatio = (k.close - k.low) / range;
+      activeSellRatio = (k.high - k.close) / range;
+    } else if (k.close > k.open) {
+      activeBuyRatio = 0.8;
+      activeSellRatio = 0.2;
+    } else if (k.close < k.open) {
+      activeBuyRatio = 0.2;
+      activeSellRatio = 0.8;
+    }
+
+    const activeBuyPercent = Number((activeBuyRatio * 100).toFixed(1));
+    const activeSellPercent = Number((activeSellRatio * 100).toFixed(1));
+
+    const lowerWick = Math.min(k.open, k.close) - k.low;
+    const upperWick = k.high - Math.max(k.open, k.close);
+
+    const isHighVolume = volumeMultiplier >= 1.5;
+    const isPassiveBuyAbsorption = vol > avgVol && range > 0 && (lowerWick / range) >= 0.35 && activeBuyPercent >= 45;
+    const isPassiveSellAbsorption = vol > avgVol && range > 0 && (upperWick / range) >= 0.35 && activeSellPercent >= 45;
+
+    result.push({
+      volume: vol,
+      smaVolume: avgVol,
+      volumeMultiplier: Number(volumeMultiplier.toFixed(2)),
+      activeBuyPercent,
+      activeSellPercent,
+      isHighVolume,
+      isPassiveBuyAbsorption,
+      isPassiveSellAbsorption
+    });
+  }
+
+  return result;
+}
+
+export interface AndianOscillatorResult {
+  green: number;
+  red: number;
+  orange: number;
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+}
+
+export function calculateAndianOscillator(klines1D: Kline[], period: number = 14): AndianOscillatorResult[] {
+  if (!klines1D || klines1D.length < period) return [];
+
+  const bullishMoves: number[] = [];
+  const bearishMoves: number[] = [];
+  const ranges: number[] = [];
+
+  for (let i = 0; i < klines1D.length; i++) {
+    const k = klines1D[i];
+    const range = Math.max(0.000001, k.high - k.low);
+    const bull = Math.max(0, k.close - k.open);
+    const bear = Math.max(0, k.open - k.close);
+
+    bullishMoves.push(bull);
+    bearishMoves.push(bear);
+    ranges.push(range);
+  }
+
+  const emaBull = calculateEMA(bullishMoves, period);
+  const emaBear = calculateEMA(bearishMoves, period);
+  const emaRange = calculateEMA(ranges, period);
+
+  const greenSeries: number[] = [];
+  const redSeries: number[] = [];
+  const rawOrange: number[] = [];
+
+  for (let i = 0; i < klines1D.length; i++) {
+    const r = Math.max(0.000001, emaRange[i] || 1);
+    const g = Number(((emaBull[i] / r) * 100).toFixed(1));
+    const rd = Number(((emaBear[i] / r) * 100).toFixed(1));
+    greenSeries.push(isNaN(g) ? 0 : g);
+    redSeries.push(isNaN(rd) ? 0 : rd);
+    rawOrange.push(isNaN(g) || isNaN(rd) ? 0 : (g + rd) / 2);
+  }
+
+  const orangeSeries = calculateEMA(rawOrange, 9);
+  const results: AndianOscillatorResult[] = [];
+
+  // Calculate 20th percentiles for submerged checks over last 50 bars
+  for (let i = 0; i < klines1D.length; i++) {
+    const g = greenSeries[i];
+    const r = redSeries[i];
+    const o = orangeSeries[i];
+
+    const pastRed = redSeries.slice(Math.max(0, i - 50), i + 1).sort((a, b) => a - b);
+    const redP20 = pastRed.length > 0 ? pastRed[Math.floor(pastRed.length * 0.2)] : 20;
+
+    const pastGreen = greenSeries.slice(Math.max(0, i - 50), i + 1).sort((a, b) => a - b);
+    const greenP20 = pastGreen.length > 0 ? pastGreen[Math.floor(pastGreen.length * 0.2)] : 20;
+
+    let bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+    if (g > o && r <= redP20) {
+      bias = 'BULLISH';
+    } else if (r > o && g <= greenP20) {
+      bias = 'BEARISH';
+    }
+
+    results.push({
+      green: g,
+      red: r,
+      orange: isNaN(o) ? 0 : Number(o.toFixed(1)),
+      bias
+    });
+  }
+
+  return results;
+}
+
+export interface DreadBlitzItem {
+  mcd: number;
+  upperBB: number;
+  lowerBB: number;
+  isOverbought: boolean;
+  isOversold: boolean;
+}
+
+export function calculateDreadBlitz(klines5M: Kline[], period: number = 20, multiplier: number = 2): DreadBlitzItem[] {
+  if (!klines5M || klines5M.length < period) return [];
+
+  const closes = klines5M.map(k => k.close);
+  const ema12 = calculateEMA(closes, 12);
+  const atrSeries = calculateATRSeries(klines5M, 14);
+
+  const mcdSeries: number[] = [];
+  for (let i = 0; i < klines5M.length; i++) {
+    const currentAtr = Math.max(0.0001, atrSeries[i] || 1);
+    const rawMcd = (closes[i] - (ema12[i] || closes[i])) / currentAtr;
+    mcdSeries.push(isNaN(rawMcd) ? 0 : rawMcd);
+  }
+
+  const smaMcd = calculateSMA(mcdSeries, period);
+  const results: DreadBlitzItem[] = [];
+
+  for (let i = 0; i < klines5M.length; i++) {
+    if (i < period - 1) {
+      results.push({ mcd: 0, upperBB: 0, lowerBB: 0, isOverbought: false, isOversold: false });
+      continue;
+    }
+
+    const currentSma = smaMcd[i];
+    let sumSq = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sumSq += Math.pow(mcdSeries[j] - currentSma, 2);
+    }
+    const stdDev = Math.sqrt(sumSq / period);
+    const upperBB = currentSma + (stdDev * multiplier);
+    const lowerBB = currentSma - (stdDev * multiplier);
+    const currentMcd = mcdSeries[i];
+
+    results.push({
+      mcd: Number(currentMcd.toFixed(3)),
+      upperBB: Number(upperBB.toFixed(3)),
+      lowerBB: Number(lowerBB.toFixed(3)),
+      isOverbought: currentMcd >= upperBB,
+      isOversold: currentMcd <= lowerBB
+    });
+  }
+
+  return results;
+}
+
+export interface MultifractalMTFSignalResult {
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
+  strategy: 'BREAKOUT_EXPANSION' | 'MEAN_REVERSION' | 'NONE';
+  stopLoss: number;
+  triggerPrice: number;
+  isCompressed1H: boolean;
+  bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  activeVolumePercent5M: number;
+  volumeMultiplier5M: number;
+  andianGreen: number;
+  andianRed: number;
+  andianOrange: number;
+  volatilityWidth1H: number;
+  dreadBlitzMCD: number;
+  isOverbought5M: boolean;
+  isOversold5M: boolean;
+  reasoning: string;
+}
+
+export function calculateMultifractalMTFSignal(
+  klines5m: Kline[],
+  klines1h: Kline[],
+  klines1d: Kline[],
+  _symbol: string = 'ASSET'
+): MultifractalMTFSignalResult {
+  if (!klines5m || klines5m.length < 20) {
+    return {
+      signal: 'NEUTRAL',
+      strategy: 'NONE',
+      stopLoss: 0,
+      triggerPrice: 0,
+      isCompressed1H: false,
+      bias1D: 'NEUTRAL',
+      activeVolumePercent5M: 0,
+      volumeMultiplier5M: 0,
+      andianGreen: 0,
+      andianRed: 0,
+      andianOrange: 0,
+      volatilityWidth1H: 0,
+      dreadBlitzMCD: 0,
+      isOverbought5M: false,
+      isOversold5M: false,
+      reasoning: 'Datos insuficientes — se requieren al menos 20 velas de 5m'
+    };
+  }
+
+  // 1. MACRO FILTER (1D - Andian)
+  const andianSeries = calculateAndianOscillator(klines1d.length >= 14 ? klines1d : klines5m);
+  const lastAndian = andianSeries.length > 0
+    ? andianSeries[andianSeries.length - 1]
+    : { green: 0, red: 0, orange: 0, bias: 'NEUTRAL' as const };
+  const bias1D = lastAndian.bias;
+
+  // 2. CONTEXT FILTER (1H - Revolution Volatility Band Squeeze)
+  const volBands1H = calculateRevolutionVolatilityBand(klines1h.length >= 20 ? klines1h : klines5m);
+  const recent1H = volBands1H.slice(-4);
+  const isCompressed1H = recent1H.some(b => b.isCompressed);
+  const current1HBand = volBands1H.length > 0 ? volBands1H[volBands1H.length - 1] : { width: 0, midpoint: 0, upper: 0, lower: 0 };
+
+  // 3. TRIGGER CONDITIONS (5M - Volume & Volatility / Dread Blitz)
+  const volBands5M = calculateRevolutionVolatilityBand(klines5m);
+  const volComp5M = calculateVolumeComposition(klines5m);
+  const dreadBlitz5M = calculateDreadBlitz(klines5m);
+
+  const currCandle = klines5m[klines5m.length - 1];
+  const currVolComp = volComp5M[volComp5M.length - 1] || { volumeMultiplier: 1, activeBuyPercent: 50, activeSellPercent: 50, isPassiveBuyAbsorption: false, isPassiveSellAbsorption: false };
+  const curr5MBand = volBands5M[volBands5M.length - 1] || { upper: currCandle.high, lower: currCandle.low, midpoint: currCandle.close };
+  const currDread = dreadBlitz5M[dreadBlitz5M.length - 1] || { isOverbought: false, isOversold: false, mcd: 0 };
+  const prevDread = dreadBlitz5M.length > 1 ? dreadBlitz5M[dreadBlitz5M.length - 2] : currDread;
+  const prevCandle = klines5m.length > 1 ? klines5m[klines5m.length - 2] : currCandle;
+
+  // Check NYSE Market Open (09:30 - 09:45 EST/EDT -> 13:30 - 13:45 UTC)
+  const candleDate = new Date(currCandle.time);
+  const hoursUTC = candleDate.getUTCHours();
+  const minsUTC = candleDate.getUTCMinutes();
+  const utcTotalMins = hoursUTC * 60 + minsUTC;
+  const isNyseOpening = utcTotalMins >= 13 * 60 + 30 && utcTotalMins < 13 * 60 + 45;
+  const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
+
+  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  let strategy: 'BREAKOUT_EXPANSION' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
+  let stopLoss = 0;
+  let reasoning = '';
+
+  // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN DE VOLATILIDAD (LONG)
+  if (
+    bias1D === 'BULLISH' &&
+    isCompressed1H &&
+    currCandle.close > curr5MBand.upper &&
+    currVolComp.volumeMultiplier >= minVolMultiplier &&
+    currVolComp.activeBuyPercent >= 65
+  ) {
+    signal = 'BUY';
+    strategy = 'BREAKOUT_EXPANSION';
+    stopLoss = curr5MBand.midpoint;
+    reasoning = `Placing SL at channel midpoint (${stopLoss.toFixed(2)}) for institutional breakout expansion hypothesis.`;
+  }
+  // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN DE VOLATILIDAD (SHORT)
+  else if (
+    bias1D === 'BEARISH' &&
+    isCompressed1H &&
+    currCandle.close < curr5MBand.lower &&
+    currVolComp.volumeMultiplier >= minVolMultiplier &&
+    currVolComp.activeSellPercent >= 65
+  ) {
+    signal = 'SELL';
+    strategy = 'BREAKOUT_EXPANSION';
+    stopLoss = curr5MBand.midpoint;
+    reasoning = `Placing SL at channel midpoint (${stopLoss.toFixed(2)}) for institutional breakdown expansion hypothesis.`;
+  }
+  // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (LONG)
+  else if (
+    currDread.isOversold &&
+    currCandle.low < prevCandle.low &&
+    currDread.mcd > prevDread.mcd && // Bullish Divergence
+    currVolComp.isPassiveBuyAbsorption
+  ) {
+    signal = 'BUY';
+    strategy = 'MEAN_REVERSION';
+    stopLoss = currCandle.low - (curr5MBand.upper - curr5MBand.lower) * 0.25;
+    reasoning = `Placing SL below absorption low (${stopLoss.toFixed(2)}) for mean reversion divergence.`;
+  }
+  // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (SHORT)
+  else if (
+    currDread.isOverbought &&
+    currCandle.high > prevCandle.high &&
+    currDread.mcd < prevDread.mcd && // Bearish Divergence
+    currVolComp.isPassiveSellAbsorption
+  ) {
+    signal = 'SELL';
+    strategy = 'MEAN_REVERSION';
+    stopLoss = currCandle.high + (curr5MBand.upper - curr5MBand.lower) * 0.25;
+    reasoning = `Placing SL above absorption high (${stopLoss.toFixed(2)}) for mean reversion divergence.`;
+  }
+
+  const activeVolPercent = signal === 'SELL' ? currVolComp.activeSellPercent : currVolComp.activeBuyPercent;
+
+  return {
+    signal,
+    strategy,
+    stopLoss: Number(stopLoss.toFixed(2)),
+    triggerPrice: currCandle.close,
+    isCompressed1H,
+    bias1D,
+    activeVolumePercent5M: activeVolPercent,
+    volumeMultiplier5M: currVolComp.volumeMultiplier,
+    andianGreen: lastAndian.green,
+    andianRed: lastAndian.red,
+    andianOrange: lastAndian.orange,
+    volatilityWidth1H: Number(current1HBand.width.toFixed(2)),
+    dreadBlitzMCD: currDread.mcd,
+    isOverbought5M: currDread.isOverbought,
+    isOversold5M: currDread.isOversold,
+    reasoning: reasoning || 'Sin señal activa — esperando alineación de compuertas MTF'
+  };
+}
