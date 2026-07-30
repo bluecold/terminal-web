@@ -18,6 +18,7 @@ interface AlertItem {
   time: string;
   pf: number;
   strategy: string;
+  entryPrice?: number; // price of the last closed candle when the alert fired
 }
 
 function App() {
@@ -320,6 +321,9 @@ function App() {
   // 2h Cooldown for notifications/logging per symbol and timeframe
   const alertCooldownsRef = useRef<Record<string, number>>({});
 
+  // Timestamp of the last completed scanner run (task #4)
+  const [lastScanTime, setLastScanTime] = useState<string | null>(null);
+
   // Reset caches on timeframe change to prevent false crossover notifications
   useEffect(() => {
     lastSignalsRef.current = {};
@@ -497,7 +501,9 @@ function App() {
               signal: overallSignal,
               time: timeString,
               pf: bestPF,
-              strategy: strategyLabel
+              strategy: strategyLabel,
+              // task #2: capture the last closed candle price at the moment the alert fires
+              entryPrice: closedData.length > 0 ? closedData[closedData.length - 1].close : undefined
             };
 
             setAlertsLog(prev => {
@@ -511,6 +517,10 @@ function App() {
         } catch (e) {
           console.error(`Error scanning background signal for ${symbol}`, e);
         }
+      }
+      // task #3: update last scan timestamp after every full pass
+      if (isMounted) {
+        setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
       }
     };
 
@@ -593,7 +603,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.30.2
+            v2026.07.30.3
           </span>
         </div>
       </header>
@@ -618,7 +628,15 @@ function App() {
           
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>HISTORIAL DE ALERTAS</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span>HISTORIAL DE ALERTAS</span>
+                {/* task #3: last scanner run timestamp */}
+                {lastScanTime && notificationsEnabled && (
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: '400' }}>
+                    Última revisión: {lastScanTime}
+                  </span>
+                )}
+              </div>
               {alertsLog.length > 0 && (
                 <button
                   onClick={() => {
@@ -736,6 +754,16 @@ function App() {
                           {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {alert.pf.toFixed(1)}</span>
                         </span>
                       </div>
+                      {/* task #2: entry price */}
+                      {alert.entryPrice !== undefined && (
+                        <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          Entrada: <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>
+                            ${alert.entryPrice >= 1000
+                              ? alert.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                              : alert.entryPrice.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 })

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { fetchKlines } from '../services/api';
+import { fetchTickerSummary } from '../services/api';
 import { X } from 'lucide-react';
 
 interface WatchlistProps {
@@ -11,7 +11,6 @@ interface WatchlistProps {
 
 interface AssetData {
   symbol: string;
-  name: string;
   price: string;
   change: string;
 }
@@ -29,47 +28,65 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
 
     const fetchPrices = async () => {
       const sortedSymbols = [...symbols].sort((a, b) => a.localeCompare(b));
-      const updatedAssets: AssetData[] = sortedSymbols.map(sym => {
-        // Maintain existing data if we have it to prevent flickering
+
+      // Seed with existing data immediately to avoid blank flicker
+      const seeded: AssetData[] = sortedSymbols.map(sym => {
         const existing = assetsRef.current.find(a => a.symbol === sym);
-        return existing || { symbol: sym, name: sym, price: '...', change: '...' };
+        return existing || { symbol: sym, price: '...', change: '...' };
       });
+      if (isMounted) setAssets([...seeded]);
 
-      // Quick update to show new symbols immediately
-      if (isMounted) setAssets([...updatedAssets]);
-
-      const fetchPromises = updatedAssets.map(async (asset, idx) => {
-        try {
-          const klines = await fetchKlines(asset.symbol, '1d');
-          if (klines.length >= 2) {
-            const latest = klines[klines.length - 1];
-            const prev = klines[klines.length - 2];
-            const currentPrice = latest.close;
-            const changePercent = ((currentPrice - prev.close) / prev.close) * 100;
-            
-            updatedAssets[idx] = {
-              ...asset,
-              price: currentPrice >= 1000 ? currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : currentPrice.toFixed(2),
-              change: `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`
-            };
-            if (isMounted) setAssets([...updatedAssets]);
+      // Fetch all symbols in parallel using the lightweight ticker endpoint
+      await Promise.all(
+        sortedSymbols.map(async (sym, idx) => {
+          try {
+            // For crypto use the Binance klines fallback (fetchTickerSummary is Yahoo-only)
+            if (sym.endsWith('USDT') || sym.endsWith('BTC')) {
+              const { fetchKlines } = await import('../services/api');
+              const klines = await fetchKlines(sym, '1d');
+              if (!isMounted) return;
+              if (klines.length >= 2) {
+                const latest = klines[klines.length - 1];
+                const prev   = klines[klines.length - 2];
+                const pct    = ((latest.close - prev.close) / prev.close) * 100;
+                seeded[idx] = {
+                  symbol: sym,
+                  price: latest.close >= 1000
+                    ? latest.close.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : latest.close.toFixed(2),
+                  change: `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+                };
+              }
+            } else {
+              // Stocks/ETFs/Futures: use the lightweight summary endpoint
+              const summary = await fetchTickerSummary(sym, sym);
+              if (!isMounted) return;
+              if (summary) {
+                seeded[idx] = {
+                  symbol: sym,
+                  price: summary.price >= 1000
+                    ? summary.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : summary.price.toFixed(2),
+                  change: `${summary.changePercent >= 0 ? '+' : ''}${summary.changePercent.toFixed(2)}%`
+                };
+              }
+            }
+            if (isMounted) setAssets([...seeded]);
+          } catch (e) {
+            console.error('Error fetching watchlist data for', sym, e);
           }
-        } catch (e) {
-          console.error('Error fetching watchlist data for', asset.symbol, e);
-        }
-      });
-
-      await Promise.all(fetchPromises);
+        })
+      );
     };
 
     fetchPrices();
-    const interval = setInterval(fetchPrices, 60000);
+    const intervalId = setInterval(fetchPrices, 60000);
 
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      clearInterval(intervalId);
     };
-  }, [symbols]); // Run when symbols array changes
+  }, [symbols]);
 
   return (
     <div style={{ padding: '12px 0', overflowY: 'auto' }}>
@@ -118,7 +135,6 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
                 fontSize: '0.9rem',
                 letterSpacing: '0.5px'
               }}>{asset.symbol}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{asset.name}</div>
             </div>
             <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '10px' }}>
               <div>
