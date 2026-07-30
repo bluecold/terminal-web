@@ -1248,6 +1248,13 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
       if (trend === 'DOWN' && finalSig === 'BUY') finalSig = 'NEUTRAL';
     }
 
+    // Sync fix: closePosition filter added to match live calculateStandardVoting
+    if (finalSig !== 'NEUTRAL') {
+      const cp = closePosition(klines[i]);
+      if (finalSig === 'BUY'  && cp < 0.55) finalSig = 'NEUTRAL';
+      if (finalSig === 'SELL' && cp > 0.45) finalSig = 'NEUTRAL';
+    }
+
     signals[i] = finalSig;
   }
 
@@ -1264,6 +1271,8 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
   const ema9 = calculateEMA(closes, 9);
   const ema20 = calculateEMA(closes, 20);
   const vwap = calculateVWAPSeries(klines, interval);
+  // Sync fix: ATR series needed for anti-chasing filter (mirrors live calculateExperimentalSignal)
+  const atrSeries = calculateATRSeries(klines, 14);
 
   const volSMA = new Array(length).fill(0);
   let sumVol = 0;
@@ -1288,13 +1297,21 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
     const e20 = ema20[i];
     const vw = vwap[i];
     const vAvg = volSMA[i];
+    const atr = atrSeries[i];
+
+    // Sync fix: anti-chasing and closePosition filters added to match live signal
+    const cp = closePosition(curr);
+    const distVwapAtr = atr > 0 ? Math.abs(curr.close - vw) / atr : 0;
+    const isNotOverextended = distVwapAtr <= 2.2;
 
     const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > e9;
     const bullish_candle = hammer || engulf === 1 || strongBullish;
     const bearish_candle = engulf === -1;
 
-    const is_buy = curr.close > vw && e9 > e20 && curr.volume > vAvg && bullish_candle && bRatio >= 0.4;
-    const is_sell = curr.close < vw && e9 < e20 && curr.volume > vAvg && (bearish_candle || curr.close < e20) && bRatio >= 0.4;
+    const is_buy  = curr.close > vw && e9 > e20 && curr.volume > vAvg
+                    && bullish_candle && bRatio >= 0.4 && isNotOverextended && cp >= 0.60;
+    const is_sell = curr.close < vw && e9 < e20 && curr.volume > vAvg
+                    && (bearish_candle || curr.close < e20) && bRatio >= 0.4 && isNotOverextended && cp <= 0.40;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     if (is_buy) signal = 'BUY';
@@ -1394,9 +1411,13 @@ export function computeScoringSignalsSeries(
     if      (rsi < cfg.rsiOversold)   s2 += 1;
     else if (rsi > cfg.rsiOverbought) s2 -= 1;
     else if (rsi > 50) {
+      // Sync fix: >= 0 matches live (slope flat = no momentum decay above 50, still bullish)
       if (rsiSlopeVal >= 0)           s2 += 1;
     } else {
-      if (rsiSlopeVal <= 0)           s2 -= 1;
+      // Sync fix: changed <= 0 to < 0 to match live signal.
+      // In the live version, slope=0 (flat) when RSI < 50 does NOT apply -1.
+      // Only a clearly falling slope (< 0) is bearish.
+      if (rsiSlopeVal < 0)            s2 -= 1;
     }
 
     let s3 = 0;
