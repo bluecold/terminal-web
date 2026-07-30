@@ -2012,7 +2012,9 @@ export function calculateVCMESniperSignal(
 
   if (!klines5m || klines5m.length < 30) return fallback;
   if (!klines1h || klines1h.length < 60) return fallback;
-  if (!klines1d || klines1d.length < 210) return fallback;
+  // Bug #3 fix: EMA 200 needs 200 candles to be valid. 210 was unnecessarily
+  // restrictive and caused the function to return NEUTRAL for many assets.
+  if (!klines1d || klines1d.length < 200) return fallback;
 
   const curr5m = klines5m[klines5m.length - 1];
   const prev5m = klines5m[klines5m.length - 2];
@@ -2131,11 +2133,14 @@ export function calculateVCMESniperSignal(
     return closes1h[hIdx] > vwapSeries1h[hIdx] || ema20_1h[hIdx] > ema50_1h[hIdx];
   };
 
+  // Bug #2 fix: changed `break` to `continue` on invalidation so that a single
+  // invalidated 1H candle does not prevent checking the previous 2 hours.
+  // A setup armed 2 hours ago remains valid if only the latest candle is neutral.
   let setupArmedLong = false;
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedLong(hIdx)) break;
+    if (isInvalidatedLong(hIdx)) continue; // skip this candle, check older ones
     if (isSetupLongCandle(hIdx)) {
       setupArmedLong = true;
       break;
@@ -2146,7 +2151,7 @@ export function calculateVCMESniperSignal(
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedShort(hIdx)) break;
+    if (isInvalidatedShort(hIdx)) continue; // skip this candle, check older ones
     if (isSetupShortCandle(hIdx)) {
       setupArmedShort = true;
       break;
@@ -2342,7 +2347,11 @@ export function calculateVCMESniperSignal(
                              (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 2.0 &&
                              (prev5m.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[lastIdx - 1];
 
-    condBreakoutLong = squeezePrev && breakoutLongPrev && curr5m.low > orb.high;
+    // Bug #1 fix: changed curr5m.low > orb.high to curr5m.close > orb.high.
+    // Requiring the candle LOW to be above the ORB is nearly impossible in practice
+    // since breakout candles almost always have a wick touching the ORB level.
+    // The standard confirmation is that the CLOSE is above the ORB.
+    condBreakoutLong = squeezePrev && breakoutLongPrev && curr5m.close > orb.high;
 
     const breakoutShortPrev = prevOrb.isActive &&
                               prev5m.close < prevOrb.low - 0.10 * atrSeries5m[lastIdx - 1] &&
@@ -2350,7 +2359,8 @@ export function calculateVCMESniperSignal(
                               (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 2.0 &&
                               (bbSeries5m[bbIdx - 1].lower - prev5m.close) <= 1.0 * atrSeries5m[lastIdx - 1];
 
-    condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.high < orb.low;
+    // Bug #1 fix (symmetric): changed curr5m.high < orb.low to curr5m.close < orb.low.
+    condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.close < orb.low;
   }
 
   // C. MEAN REVERSION (Solo en Bias Neutral con Divergencia)
@@ -2988,17 +2998,31 @@ export function calculateMultifractalMTFSignal(
   }
 
   // 1. MACRO FILTER (1D - Andian)
-  const andianSeries = calculateAndianOscillator(klines1d.length >= 14 ? klines1d : klines5m);
-  const lastAndian = andianSeries.length > 0
-    ? andianSeries[andianSeries.length - 1]
-    : { green: 0, red: 0, orange: 0, bias: 'NEUTRAL' as const };
-  const bias1D = lastAndian.bias;
+  // Bug #5 fix: if klines1d is insufficient, return NEUTRAL bias instead of
+  // falling back to klines5m. 5m candles do not represent daily bull/bear strength.
+  let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+  let lastAndian: ReturnType<typeof calculateAndianOscillator>[number] = { green: 0, red: 0, orange: 0, bias: 'NEUTRAL' };
+  if (klines1d.length >= 14) {
+    const andianSeries = calculateAndianOscillator(klines1d);
+    if (andianSeries.length > 0) {
+      lastAndian = andianSeries[andianSeries.length - 1];
+      bias1D = lastAndian.bias;
+    }
+  }
 
   // 2. CONTEXT FILTER (1H - Revolution Volatility Band Squeeze)
-  const volBands1H = calculateRevolutionVolatilityBand(klines1h.length >= 20 ? klines1h : klines5m);
-  const recent1H = volBands1H.slice(-4);
-  const isCompressed1H = recent1H.some(b => b.isCompressed);
-  const current1HBand = volBands1H.length > 0 ? volBands1H[volBands1H.length - 1] : { width: 0, midpoint: 0, upper: 0, lower: 0 };
+  // Bug #6 fix: if klines1h is insufficient, isCompressed1H = false (not a valid
+  // squeeze reading). Without Layer 2, only Mean Reversion strategy can fire.
+  let isCompressed1H = false;
+  let current1HBand = { width: 0, midpoint: 0, upper: 0, lower: 0 };
+  if (klines1h.length >= 20) {
+    const volBands1H = calculateRevolutionVolatilityBand(klines1h);
+    const recent1H = volBands1H.slice(-4);
+    isCompressed1H = recent1H.some(b => b.isCompressed);
+    if (volBands1H.length > 0) {
+      current1HBand = volBands1H[volBands1H.length - 1];
+    }
+  }
 
   // 3. TRIGGER CONDITIONS (5M - Volume & Volatility / Dread Blitz)
   const volBands5M = calculateRevolutionVolatilityBand(klines5m);

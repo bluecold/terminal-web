@@ -246,7 +246,9 @@ export function backtestMultitemporal(
 
   if (!klines5m || klines5m.length < evalWindow + 30) return fallbackResult;
   if (!klines1h || klines1h.length < 60) return fallbackResult;
-  if (!klines1d || klines1d.length < 210) return fallbackResult;
+  // Bug #3 fix: EMA 200 needs 200 candles minimum. 210 was unnecessarily
+  // restrictive and caused the backtester to return insufficient for many assets.
+  if (!klines1d || klines1d.length < 200) return fallbackResult;
 
   // ── Pre-calculate all series O(n) ─────────────────────────────────────
   // 1D series
@@ -353,7 +355,7 @@ export function backtestMultitemporal(
         break;
       }
     }
-    if (idx1d < 205) { neutrals++; continue; }
+    if (idx1d < 27) { neutrals++; continue; } // ADX(14) needs ~28 bars to converge
 
     const lastEma200_1d = ema200_1d[idx1d];
     const lastEma50_1d = ema50_1d[idx1d];
@@ -428,10 +430,12 @@ export function backtestMultitemporal(
     };
 
     let setupArmedLong = false;
+    // Bug #2 fix: changed `break` to `continue` on invalidation so that a single
+    // invalidated 1H candle does not prevent checking the previous 2 hours.
     for (let offset = 0; offset < 3; offset++) {
       const hIdx = idx1h - offset;
       if (hIdx < 1) break;
-      if (isInvalidatedLong(hIdx)) break;
+      if (isInvalidatedLong(hIdx)) continue; // skip this candle, check older ones
       if (isSetupLongCandle(hIdx)) {
         setupArmedLong = true;
         break;
@@ -442,7 +446,7 @@ export function backtestMultitemporal(
     for (let offset = 0; offset < 3; offset++) {
       const hIdx = idx1h - offset;
       if (hIdx < 1) break;
-      if (isInvalidatedShort(hIdx)) break;
+      if (isInvalidatedShort(hIdx)) continue; // skip this candle, check older ones
       if (isSetupShortCandle(hIdx)) {
         setupArmedShort = true;
         break;
@@ -644,7 +648,9 @@ export function backtestMultitemporal(
                                (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
                                (prev.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[i - 1];
 
-      condBreakoutLong = squeezePrev && breakoutLongPrev && curr.low > orb.high;
+      // Bug #1 fix: changed curr.low > orb.high to curr.close > orb.high.
+      // Requiring the candle LOW to be above the ORB is nearly impossible in practice.
+      condBreakoutLong = squeezePrev && breakoutLongPrev && curr.close > orb.high;
 
       const breakoutShortPrev = prevOrb.isActive &&
                                 prev.close < prevOrb.low - 0.10 * atrSeries5m[i - 1] &&
@@ -652,7 +658,8 @@ export function backtestMultitemporal(
                                 (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
                                 (bbSeries5m[bbIdx - 1].lower - prev.close) <= 1.0 * atrSeries5m[i - 1];
 
-      condBreakoutShort = squeezePrev && breakoutShortPrev && curr.high < orb.low;
+      // Bug #1 fix (symmetric): changed curr.high < orb.low to curr.close < orb.low.
+      condBreakoutShort = squeezePrev && breakoutShortPrev && curr.close < orb.low;
     }
 
     // C. Mean Reversion Trigger
@@ -1517,11 +1524,14 @@ export function backtestMultifractalMTF(
 
   if (!klines5m || klines5m.length < evalWindow + 20) return fallbackResult;
 
-  const k1h = klines1h && klines1h.length >= 20 ? klines1h : klines5m;
-  const k1d = klines1d && klines1d.length >= 14 ? klines1d : klines5m;
+  // Bug #4 fix: removed incorrect klines5m fallback for k1h and k1d.
+  // If 1H or 1D data is insufficient, we still run but with degraded Layer 1/2
+  // (isCompressed1H = false, bias1D = NEUTRAL), consistent with the live signal.
+  const hasValid1H = klines1h && klines1h.length >= 20;
+  const hasValid1D = klines1d && klines1d.length >= 14;
 
-  const volBands1H = calculateRevolutionVolatilityBand(k1h);
-  const andian1D = calculateAndianOscillator(k1d);
+  const volBands1H = hasValid1H ? calculateRevolutionVolatilityBand(klines1h) : [];
+  const andian1D = hasValid1D ? calculateAndianOscillator(klines1d) : [];
 
   const volBands5M = calculateRevolutionVolatilityBand(klines5m);
   const volComp5M = calculateVolumeComposition(klines5m);
@@ -1548,18 +1558,46 @@ export function backtestMultifractalMTF(
     const curr = klines5m[i];
     const prev = klines5m[i - 1];
 
-    const idx1h = Math.min(
-      Math.floor((i / klines5m.length) * volBands1H.length),
-      volBands1H.length - 1
-    );
-    const recent1H = volBands1H.slice(Math.max(0, idx1h - 3), idx1h + 1);
-    const isCompressed1H = recent1H.some(b => b.isCompressed);
+    // Bug #4 fix: use temporal search to find the correct 1H and 1D indices
+    // instead of the incorrect proportional mapping (i / n5m) * n1h.
+    // This mirrors the approach used in backtestMultitemporal.
 
-    const idx1d = Math.min(
-      Math.floor((i / klines5m.length) * andian1D.length),
-      andian1D.length - 1
-    );
-    const bias1D = andian1D[idx1d] ? andian1D[idx1d].bias : 'NEUTRAL';
+    // Find latest closed 1H band whose end time <= current 5m candle time
+    let isCompressed1H = false;
+    if (hasValid1H && volBands1H.length > 0) {
+      let idx1h = -1;
+      for (let h = klines1h.length - 1; h >= 0; h--) {
+        if (klines1h[h].time + 3600 <= curr.time) {
+          idx1h = h;
+          break;
+        }
+      }
+      if (idx1h >= 0) {
+        // Check last 4 closed 1H bands for compression
+        const startH = Math.max(0, idx1h - 3);
+        for (let h = startH; h <= idx1h; h++) {
+          if (volBands1H[h] && volBands1H[h].isCompressed) {
+            isCompressed1H = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Find latest closed 1D Andian reading whose end time <= current 5m candle time
+    let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+    if (hasValid1D && andian1D.length > 0) {
+      let idx1d = -1;
+      for (let d = klines1d.length - 1; d >= 0; d--) {
+        if (klines1d[d].time + 86400 <= curr.time) {
+          idx1d = d;
+          break;
+        }
+      }
+      if (idx1d >= 0 && andian1D[idx1d]) {
+        bias1D = andian1D[idx1d].bias;
+      }
+    }
 
     const band5M = volBands5M[i];
     const volComp = volComp5M[i];
