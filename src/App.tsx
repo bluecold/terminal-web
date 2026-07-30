@@ -88,26 +88,34 @@ function App() {
   const computeOverallSignal = (data: Kline[], tf: string, allData?: Record<string, Kline[]>) => {
     if (data.length < 35) return 'WAITING...';
 
-    const btStd = backtestStandard(data, tf);
+    const btStd  = backtestStandard(data, tf);
     const btConf = backtestConfluencia(data, tf);
     const btScore = backtestScoring(data, tf);
-    
+
     let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+    let btMF    = { profitFactor: 0, wins: 0, losses: 0 };
+
     if (allData) {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []);
       const kl1h = allData['1h'] || [];
       const kl1d = allData['1d'] || [];
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
-      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 210) {
+      // Fix #2: lowered klines1d guard from 210 to 200 (matches backtestMultitemporal)
+      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 200) {
         btMulti = backtestMultitemporal(triggerKlines, kl1h, kl1d, '5m', currentAsset, executionStyle, triggerMode);
+      }
+      // Fix #1: include Multifractal MTF in the confluence matrix tournament
+      if (kl5m.length >= 30) {
+        btMF = backtestMultifractalMTF(kl5m, kl1h, kl1d, '5m', currentAsset);
       }
     }
 
     const candidates = [
-      { key: 'standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
-      { key: 'confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
-      { key: 'scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
-      { key: 'multitemporal',pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
+      { key: 'standard',       pf: btStd.profitFactor,   resolved: btStd.wins + btStd.losses },
+      { key: 'confluencia',    pf: btConf.profitFactor,  resolved: btConf.wins + btConf.losses },
+      { key: 'scoring',        pf: btScore.profitFactor,  resolved: btScore.wins + btScore.losses },
+      { key: 'multitemporal',  pf: btMulti.profitFactor,  resolved: btMulti.wins + btMulti.losses },
+      { key: 'multifractal',   pf: btMF.profitFactor,     resolved: btMF.wins + btMF.losses },
     ];
 
     const minResolved = tf === '5m' ? 5 : tf === '1h' ? 4 : 3;
@@ -137,12 +145,18 @@ function App() {
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
       const result = calculateVCMESniperSignal(triggerKlines, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode);
       signal = result.signal;
+    } else if (bestStrategy === 'multifractal' && allData) {
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
+      const kl1h = allData['1h'] || [];
+      const kl1d = allData['1d'] || [];
+      const result = calculateMultifractalMTFSignal(kl5m, kl1h, kl1d, currentAsset);
+      signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
       signal = voting.rawSignal;
     }
 
-    if (bestStrategy !== 'multitemporal') {
+    if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
       const closes = data.map(k => k.close);
       const trend = getTrendFilter(closes);
       if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
@@ -226,13 +240,18 @@ function App() {
         const data = await fetchKlines(currentAsset, interval);
         if (isMounted) {
           setKlines(data);
-          setAllKlines(prev => ({ ...prev, [interval]: data }));
-          if (data.length >= 35) {
-            const closedData = data.slice(0, -1);
-            const updatedAllKlines = { ...allKlines, [interval]: data };
-            const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
-            setConfluenceSignals(prev => ({ ...prev, [interval]: signal }));
-          }
+          // Fix #5: use the functional form of setAllKlines so that `prev` is always
+          // the current state, not the stale closure value captured when the effect ran.
+          // This prevents computing the confluence signal with outdated 1h/1d klines.
+          setAllKlines(prev => {
+            const updatedAllKlines = { ...prev, [interval]: data };
+            if (data.length >= 35) {
+              const closedData = data.slice(0, -1);
+              const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
+              setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
+            }
+            return updatedAllKlines;
+          });
         }
       } catch (e) {
         console.error('Error auto-updating active chart data', e);
@@ -243,7 +262,9 @@ function App() {
       isMounted = false;
       clearInterval(pollInterval);
     };
-  }, [currentAsset, interval, allKlines]);
+  // Fix #5: removed allKlines from deps — no longer needed in the closure since
+  // we read the latest state via the functional setAllKlines updater.
+  }, [currentAsset, interval]);
 
 
 
@@ -537,9 +558,6 @@ function App() {
                   setCurrentAsset(searchVal);
                 }
               }}
-              onBlur={() => {
-                setCurrentAsset(searchVal);
-              }}
               style={{ paddingLeft: '28px' }}
             />
             <button 
@@ -575,7 +593,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.30.1
+            v2026.07.30.2
           </span>
         </div>
       </header>

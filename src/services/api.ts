@@ -10,6 +10,11 @@ export interface Kline {
 export async function fetchBinanceKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   try {
     const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`);
+    // Fix #4: check for HTTP errors before parsing (e.g. 429 rate limit, 400 invalid symbol)
+    if (!response.ok) {
+      console.error(`Binance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
+      return [];
+    }
     const data = await response.json() as Array<Array<string | number>>;
     
     return data.map((item) => ({
@@ -32,9 +37,16 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
     let range = '3mo';  // 1h default: ~2000 hourly candles, we use 300
     if (interval === '1d') range = '2y';  // ~500 daily candles
     if (interval === '1wk') range = '5y';
-    if (interval === '5m') range = '5d';  // ~1344 5m candles max from Yahoo
+    // Fix #3: changed 5d -> 60d so RVOL seasonal avg (calculateTimeOfDayVolumeAvg) has
+    // enough history (20 days of same-time-slot samples). Yahoo supports 60d for 5m.
+    if (interval === '5m') range = '60d';
     
     const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+    // Fix #4: check for HTTP errors before parsing (e.g. 404 unknown symbol, 429 rate limit)
+    if (!response.ok) {
+      console.error(`Yahoo Finance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
+      return [];
+    }
     const data = await response.json();
     
     const result = data.chart?.result?.[0];
