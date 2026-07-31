@@ -11,21 +11,11 @@ import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
-
-interface AlertItem {
-  id: string;
-  symbol: string;
-  interval: string;
-  signal: string;
-  time: string;
-  pf: number;
-  strategy: string;
-  confidence?: ConfidenceLevel;
-  entryPrice?: number; // price of the last closed candle when the alert fired
-}
+import { calculateAlertLevels, updateAlertsOutcome, calculateSessionStats, type AuditAlertItem } from './utils/alertTracker';
+import type { AlertOverlay } from './components/Chart';
 
 function App() {
-  const [alertsLog, setAlertsLog] = useState<AlertItem[]>(() => {
+  const [alertsLog, setAlertsLog] = useState<AuditAlertItem[]>(() => {
     const saved = localStorage.getItem('terminal_alerts_log');
     if (saved) {
       try {
@@ -37,6 +27,7 @@ function App() {
     }
     return [];
   });
+  const [selectedAlertOverlay, setSelectedAlertOverlay] = useState<AlertOverlay | null>(null);
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
@@ -168,6 +159,8 @@ function App() {
     return signal;
   };
 
+  const sessionStats = useMemo(() => calculateSessionStats(alertsLog), [alertsLog]);
+
   // 1. Effect to load all timeframe data and earnings date on asset change
   useEffect(() => {
     let isMounted = true;
@@ -204,6 +197,9 @@ function App() {
         setKlines(fetchedKlines[interval]);
       }
       setLoading(false);
+
+      // Update outcome for any open alerts using newly loaded klines
+      setAlertsLog(prev => updateAlertsOutcome(prev, fetchedKlines));
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -349,6 +345,7 @@ function App() {
       scannerRunningRef.current = true;
       try {
       const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset]));
+      const scannedKlinesMap: Record<string, Kline[]> = {};
 
       for (let batchStart = 0; batchStart < symbolsToScan.length; batchStart += maxConcurrentSymbolScans) {
         const batch = symbolsToScan.slice(batchStart, batchStart + maxConcurrentSymbolScans);
@@ -369,6 +366,7 @@ function App() {
 
           if (!isMounted) return;
           if (data.length < 35) return;
+          scannedKlinesMap[symbol] = data;
 
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
@@ -508,8 +506,11 @@ function App() {
               tag: `${symbol}-${signalInterval}`,
             });
 
+            const entryPrice = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0;
+            const levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval);
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-            const newAlert: AlertItem = {
+
+            const newAlert: AuditAlertItem = {
               id: `${symbol}-${signalInterval}-${Date.now()}`,
               symbol,
               interval: signalInterval,
@@ -518,12 +519,18 @@ function App() {
               pf: bestPF,
               strategy: strategyLabel,
               confidence: bestConfidence,
-              // task #2: capture the last closed candle price at the moment the alert fires
-              entryPrice: signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : undefined
+              entryPrice,
+              stopLoss: levels.stopLoss,
+              takeProfit1: levels.takeProfit1,
+              takeProfit2: levels.takeProfit2,
+              status: 'OPEN',
+              realizedR: 0,
+              pnlPercent: 0,
+              timestamp: now,
             };
 
             setAlertsLog(prev => {
-              const updated = [newAlert, ...prev].slice(0, 20);
+              const updated = updateAlertsOutcome([newAlert, ...prev], scannedKlinesMap).slice(0, 20);
               localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
               return updated;
             });
@@ -535,9 +542,15 @@ function App() {
         }
         }));
       }
-      // task #3: update last scan timestamp after every full pass
+
+      // task #3: update last scan timestamp and alert outcomes after every full pass
       if (isMounted) {
         setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+        setAlertsLog(prev => {
+          const updated = updateAlertsOutcome(prev, scannedKlinesMap);
+          localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
+          return updated;
+        });
       }
       } finally {
         scannerRunningRef.current = false;
@@ -640,7 +653,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.31.3
+            v2026.07.31.4
           </span>
         </div>
       </header>
@@ -716,6 +729,42 @@ function App() {
               gap: '8px', 
               minHeight: 0 
             }}>
+              {/* Session Performance Executive Summary */}
+              {alertsLog.length > 0 && (
+                <div style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--border-radius-sm)',
+                  padding: '6px 10px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '0.65rem'
+                }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>HOY</span>
+                    <span style={{ color: 'var(--accent-green)', fontWeight: '700' }}>{sessionStats.wins} TP ✅</span>
+                    <span style={{ color: 'var(--accent-red)', fontWeight: '700' }}>{sessionStats.losses} SL ❌</span>
+                    {sessionStats.openCount > 0 && (
+                      <span style={{ color: 'var(--accent-blue)', fontWeight: '700' }}>{sessionStats.openCount} ⏳</span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontFamily: 'var(--font-mono)' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>WR <strong style={{ color: '#fff' }}>{sessionStats.winRate}%</strong></span>
+                    <span style={{
+                      color: sessionStats.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                      fontWeight: '800',
+                      backgroundColor: sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
+                      border: `1px solid ${sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
+                      padding: '1px 5px',
+                      borderRadius: '4px'
+                    }}>
+                      {sessionStats.totalR >= 0 ? `+${sessionStats.totalR}R` : `${sessionStats.totalR}R`}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {alertsLog.length === 0 ? (
                 <div style={{ 
                   fontSize: '0.75rem', 
@@ -732,6 +781,32 @@ function App() {
                   const signalColor = isBuy ? 'var(--accent-green)' : 'var(--accent-red)';
                   const signalBg = isBuy ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
                   const isStrong = alert.signal.includes('STRONG');
+
+                  let statusLabel = 'EN VIVO';
+                  let statusBg = 'rgba(59, 130, 246, 0.15)';
+                  let statusColor = 'var(--accent-blue)';
+
+                  if (alert.status === 'TP2_HIT') {
+                    statusLabel = 'TP2 (+2.5R) ✅';
+                    statusBg = 'rgba(16, 185, 129, 0.2)';
+                    statusColor = 'var(--accent-green)';
+                  } else if (alert.status === 'TP1_HIT') {
+                    statusLabel = 'TP1 (+1.5R) ✅';
+                    statusBg = 'rgba(16, 185, 129, 0.15)';
+                    statusColor = 'var(--accent-green)';
+                  } else if (alert.status === 'SL_HIT') {
+                    statusLabel = 'SL (-1.0R) ❌';
+                    statusBg = 'rgba(244, 63, 94, 0.18)';
+                    statusColor = 'var(--accent-red)';
+                  } else if (alert.status === 'EXPIRED') {
+                    statusLabel = `EXP (${alert.realizedR >= 0 ? '+' : ''}${alert.realizedR}R)`;
+                    statusBg = 'rgba(255, 255, 255, 0.06)';
+                    statusColor = 'var(--text-muted)';
+                  } else {
+                    const pnlText = alert.pnlPercent !== undefined ? `${alert.pnlPercent >= 0 ? '+' : ''}${alert.pnlPercent.toFixed(1)}%` : '0.0%';
+                    statusLabel = `⏳ ${pnlText}`;
+                  }
+
                   const borderGlow = isStrong 
                     ? `1px solid ${isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`
                     : '1px solid var(--border-color)';
@@ -742,6 +817,15 @@ function App() {
                       onClick={() => {
                         setCurrentAsset(alert.symbol);
                         setTimeInterval(alert.interval);
+                        if (alert.entryPrice && alert.stopLoss && alert.takeProfit1) {
+                          setSelectedAlertOverlay({
+                            entryPrice: alert.entryPrice,
+                            stopLoss: alert.stopLoss,
+                            takeProfit1: alert.takeProfit1,
+                            takeProfit2: alert.takeProfit2,
+                            signal: alert.signal,
+                          });
+                        }
                       }}
                       style={{
                         backgroundColor: 'rgba(255, 255, 255, 0.01)',
@@ -765,16 +849,30 @@ function App() {
                           ? (isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)')
                           : 'var(--border-color)';
                       }}
-                      title={`Click para abrir gráfico de ${alert.symbol} en ${alert.interval.toUpperCase()}`}
+                      title={`Click para abrir gráfico con líneas Entry/SL/TP de ${alert.symbol} (${alert.interval.toUpperCase()})`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-primary)' }}>
                           {alert.symbol} <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '500' }}>({alert.interval.toUpperCase()})</span>
                         </span>
-                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                          {alert.time}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            fontSize: '0.58rem',
+                            fontWeight: '800',
+                            color: statusColor,
+                            backgroundColor: statusBg,
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            fontFamily: 'var(--font-mono)'
+                          }}>
+                            {statusLabel}
+                          </span>
+                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                            {alert.time}
+                          </span>
+                        </div>
                       </div>
+
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.65rem' }}>
                         <span style={{ 
                           color: signalColor, 
@@ -791,14 +889,22 @@ function App() {
                           {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {alert.pf.toFixed(1)}</span>
                         </span>
                       </div>
-                      {/* task #2: entry price */}
-                      {alert.entryPrice !== undefined && (
-                        <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                          Entrada: <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>
-                            ${alert.entryPrice >= 1000
-                              ? alert.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                              : alert.entryPrice.toFixed(2)}
-                          </span>
+                      
+                      {/* Entry, SL and TP Targets */}
+                      {alert.entryPrice > 0 && (
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          fontSize: '0.6rem',
+                          color: 'var(--text-muted)',
+                          fontFamily: 'var(--font-mono)',
+                          borderTop: '1px dashed rgba(255, 255, 255, 0.06)',
+                          paddingTop: '3px',
+                          marginTop: '2px'
+                        }}>
+                          <span>In: <strong style={{ color: '#fff' }}>${alert.entryPrice >= 1000 ? alert.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.entryPrice.toFixed(2)}</strong></span>
+                          <span>SL: <span style={{ color: 'var(--accent-red)' }}>${alert.stopLoss >= 1000 ? alert.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.stopLoss.toFixed(2)}</span></span>
+                          <span>TP: <span style={{ color: 'var(--accent-green)' }}>${alert.takeProfit1 >= 1000 ? alert.takeProfit1.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.takeProfit1.toFixed(2)}</span></span>
                         </div>
                       )}
                     </div>
@@ -836,10 +942,13 @@ function App() {
                 BB
               </button>
               <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', marginRight: '8px' }}></div>
-              {['1d', '1h', '5m'].map(t => (
-                <button 
+              {['5m', '1h', '1d'].map((t) => (
+                <button
                   key={t}
-                  onClick={() => setTimeInterval(t)}
+                  onClick={() => {
+                    setSelectedAlertOverlay(null);
+                    setTimeInterval(t);
+                  }}
                   style={{
                     backgroundColor: interval === t ? 'var(--accent-blue)' : 'var(--bg-panel)',
                     color: interval === t ? '#fff' : 'var(--text-secondary)',
@@ -857,7 +966,7 @@ function App() {
             </div>
           </div>
           <div className="chart-container">
-            {klines.length > 0 && <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} />}
+            {klines.length > 0 && <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />}
           </div>
         </main>
 

@@ -131,11 +131,15 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **UI de Confianza**: Integración de badges dinámicos en el panel general (`✅ Alta Confianza`, `⚠️ Muestra Limitada`, `🛡️ Sin Ventaja Estadística`) y actualización de distintivo `LÍDER` / `LÍDER ⚠️` por tarjeta.
   - **Alertas Inteligentes**: Notificaciones del scanner incluyen etiqueta `[Muestra Limitada]` cuando aplica y se silencian si la confianza es `NONE`.
 
+- **Actualización v2026.07.31.4 — Live Forward Test, Auditabilidad y Overlays en Gráfico**:
+  - **Motor de Tracking en Vivo (`alertTracker.ts`)**: Módulo liviano que calcula Stop Loss y Take Profits (TP1/TP2) para cada alerta emitida y evalúa las velas posteriores en segundo plano.
+  - **Tracking de Resultados Automático**: Clasifica en tiempo real cada alerta en `TP1_HIT` (+1.5R), `TP2_HIT` (+2.5R), `SL_HIT` (-1.0R), `EXPIRED` o `OPEN` (con PnL flotante %).
+  - **Barra de Métricas de Sesión**: Panel superior en el historial de alertas que resume en vivo el WinRate % de hoy y los R netos acumulados.
+  - **Superposición en el Gráfico (`Chart.tsx`)**: Al hacer clic en cualquier tarjeta del historial de alertas, dibuja dinámicamente sobre el gráfico de TradingView las líneas horizontales de Entrada (Azul), Stop Loss (Rojo), TP1 (Verde) y TP2 (Esmeralda).
+
 ## Cuestiones Pendientes y Futuras Mejoras
 
-- **Contrato de alerta auditable (prioridad alta)**: Persistir timestamp de vela cerrada, entrada, SL, TP1/TP2/TP3, R:R, capas aprobadas/rechazadas, versión/configuración, métricas de muestra y expiración/invalidez.
 - **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria.
-- **Historial de resultado de alertas**: Incorporar estados `no ejecutada`, `abierta`, `TP`, `SL` y `expirada`, junto con marcas de entrada/SL/TP en el gráfico.
 - **Costes y validación robusta**: Añadir comisiones, spread y slippage configurables; luego ejecutar walk-forward/out-of-sample y medir drawdown, Sharpe/Sortino y resultados por activo, dirección y régimen.
 - **Optimización de datos**: Usar endpoints de ticker para precios de watchlist, caché por `símbolo + timeframe + cierre de vela` y, si el perfilado lo justifica, mover backtests pesados a un Web Worker.
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia (ej. Telegram Bot).

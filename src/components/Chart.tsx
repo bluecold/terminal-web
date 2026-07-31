@@ -1,21 +1,31 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { createChart, ColorType, LineStyle } from 'lightweight-charts';
-import type { IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi, IPriceLine, Time } from 'lightweight-charts';
 import type { Kline } from '../services/api';
 import { calculateBollingerBandsSeries } from '../utils/indicators';
 import type { BollingerBandsSeriesResult } from '../utils/indicators';
+
+export interface AlertOverlay {
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  signal: string;
+}
 
 interface ChartProps {
   data: Kline[];
   showBB?: boolean;
   symbol: string;
   interval: string;
+  activeAlertOverlay?: AlertOverlay | null;
 }
 
-export default function Chart({ data, showBB = false, symbol, interval }: ChartProps) {
+export default function Chart({ data, showBB = false, symbol, interval, activeAlertOverlay }: ChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const upperSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const middleSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -333,6 +343,76 @@ export default function Chart({ data, showBB = false, symbol, interval }: ChartP
       return () => clearTimeout(timer);
     }
   }, [data, showBB, symbol, updateLegendValues]);
+
+  // 4. Render Active Alert Overlay Price Lines (Entry, SL, TP1, TP2)
+  useEffect(() => {
+    const series = candlestickSeriesRef.current;
+    if (!series) return;
+
+    // Clear existing price lines
+    priceLinesRef.current.forEach(line => {
+      try {
+        series.removePriceLine(line);
+      } catch {
+        // Line might already be removed
+      }
+    });
+    priceLinesRef.current = [];
+
+    if (!activeAlertOverlay) return;
+
+    const { entryPrice, stopLoss, takeProfit1, takeProfit2, signal } = activeAlertOverlay;
+    const isBuy = signal.includes('BUY');
+
+    const entryLine = series.createPriceLine({
+      price: entryPrice,
+      color: '#3b82f6',
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      axisLabelVisible: true,
+      title: `ENTRADA (${isBuy ? 'COMPRA' : 'VENTA'})`,
+    });
+
+    const slLine = series.createPriceLine({
+      price: stopLoss,
+      color: '#f43f5e',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: `SL (-1.0R)`,
+    });
+
+    const tp1Line = series.createPriceLine({
+      price: takeProfit1,
+      color: '#10b981',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: `TP1 (+1.5R)`,
+    });
+
+    const tp2Line = series.createPriceLine({
+      price: takeProfit2,
+      color: '#059669',
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: `TP2 (+2.5R)`,
+    });
+
+    priceLinesRef.current = [entryLine, slLine, tp1Line, tp2Line];
+
+    return () => {
+      priceLinesRef.current.forEach(line => {
+        try {
+          series.removePriceLine(line);
+        } catch {
+          // Line might already be removed
+        }
+      });
+      priceLinesRef.current = [];
+    };
+  }, [activeAlertOverlay, data, symbol, interval]);
 
   return (
     <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}>
