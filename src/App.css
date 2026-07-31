@@ -13,7 +13,6 @@
   padding: 0 20px;
   height: 56px;
   background-color: var(--bg-panel);
-  backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border-color);
   z-index: 100;
 }
@@ -124,7 +123,6 @@
 .sidebar-left {
   width: 260px;
   background-color: var(--bg-panel);
-  backdrop-filter: blur(20px);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
@@ -153,7 +151,6 @@
 .sidebar-right {
   width: 340px;
   background-color: var(--bg-panel);
-  backdrop-filter: blur(20px);
   border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
@@ -409,6 +406,8 @@
   gap: 40px;
   animation: scroll-marquee 45s linear infinite;
   will-change: transform;
+  transform: translate3d(0, 0, 0);
+  contain: layout paint;
 }
 
 .ticker-scroll:hover {
