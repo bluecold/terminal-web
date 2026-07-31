@@ -331,6 +331,11 @@ function App() {
   // Timestamp of the last completed scanner run (task #4)
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
 
+  // Avoid overlapping scans when a full watchlist pass takes longer than the
+  // scheduler interval, and keep network concurrency below provider limits.
+  const scannerRunningRef = useRef(false);
+  const maxConcurrentSymbolScans = 4;
+
   // Reset caches on timeframe change to prevent false crossover notifications
   useEffect(() => {
     lastSignalsRef.current = {};
@@ -345,20 +350,31 @@ function App() {
       const enabled = localStorage.getItem('terminal_notifications_enabled') === 'true';
       if (!enabled) return;
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      if (scannerRunningRef.current) return;
 
+      scannerRunningRef.current = true;
+      try {
       const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset]));
 
-      for (const symbol of symbolsToScan) {
+      for (let batchStart = 0; batchStart < symbolsToScan.length; batchStart += maxConcurrentSymbolScans) {
+        const batch = symbolsToScan.slice(batchStart, batchStart + maxConcurrentSymbolScans);
+        await Promise.all(batch.map(async (symbol) => {
         try {
-          // Fetch current interval + 1h + 1d in parallel
-          const [data, data1h, data1d] = await Promise.all([
-            fetchKlines(symbol, interval),
-            fetchKlines(symbol, '1h'),
-            fetchKlines(symbol, '1d')
-          ]);
+          // MTF engines always require their native 5m, 1h and 1d inputs.
+          // The active chart timeframe is fetched too when it is distinct.
+          const requestedTimeframes = Array.from(new Set([interval, '5m', '1h', '1d']));
+          const responses = await Promise.all(requestedTimeframes.map(async (timeframe) => [
+            timeframe,
+            await fetchKlines(symbol, timeframe)
+          ] as const));
+          const dataByTimeframe = Object.fromEntries(responses) as Record<string, Kline[]>;
+          const data = dataByTimeframe[interval] || [];
+          const data5m = dataByTimeframe['5m'] || [];
+          const data1h = dataByTimeframe['1h'] || [];
+          const data1d = dataByTimeframe['1d'] || [];
 
           if (!isMounted) return;
-          if (data.length < 35) continue;
+          if (data.length < 35) return;
 
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
@@ -370,6 +386,7 @@ function App() {
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
             const closedData = data.slice(0, -1);
+            const closed5m = data5m.slice(0, -1);
             const closed1h = data1h.slice(0, -1);
             const closed1d = data1d.slice(0, -1);
             const btStd  = backtestStandard(closedData, interval);
@@ -377,13 +394,12 @@ function App() {
             const btScore = backtestScoring(closedData, interval);
 
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-            if (closedData.length >= 30 && closed1h.length >= 60 && closed1d.length >= 200) {
-              const kl5m = interval === '5m' ? closedData : closed1h;
-              const triggerKlines = executionStyle === 'swing' ? closed1h : kl5m;
+            if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 200) {
+              const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = closedData.length >= 30 ? backtestMultifractalMTF(closedData, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0 };
+            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0 };
 
             const candidates = [
               { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
@@ -430,6 +446,15 @@ function App() {
           let overallSignal: string;
           let signalConfidence = '';
           const closedData = data.slice(0, -1);
+          const closed5m = data5m.slice(0, -1);
+          const closed1h = data1h.slice(0, -1);
+          const closed1d = data1d.slice(0, -1);
+          const signalInterval = bestStrategy === 'multifractal'
+            ? '5m'
+            : bestStrategy === 'multitemporal'
+              ? (executionStyle === 'swing' ? '1h' : '5m')
+              : interval;
+          let signalKlines = closedData;
 
           if (bestStrategy === 'confluencia') {
             const result = calculateExperimentalSignal(closedData, interval);
@@ -438,12 +463,11 @@ function App() {
             const result = calculateScoringSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'multitemporal') {
-            const kl5m = interval === '5m' ? closedData : (data1h ? data1h.slice(0, -1) : []);
-            const triggerKlines = executionStyle === 'swing' ? (data1h ? data1h.slice(0, -1) : []) : kl5m;
+            const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
             const result = calculateVCMESniperSignal(
               triggerKlines,
-              data1h.slice(0, -1),
-              data1d.slice(0, -1),
+              closed1h,
+              closed1d,
               symbol,
               btMulti.winRate,
               btMulti.profitFactor,
@@ -452,15 +476,16 @@ function App() {
             );
             overallSignal = result.signal;
             signalConfidence = result.confidence;
+            signalKlines = triggerKlines;
           } else if (bestStrategy === 'multifractal') {
-            const kl5m = interval === '5m' ? closedData : (data1h ? data1h.slice(0, -1) : []);
             const result = calculateMultifractalMTFSignal(
-              kl5m,
-              data1h ? data1h.slice(0, -1) : [],
-              data1d ? data1d.slice(0, -1) : [],
+              closed5m,
+              closed1h,
+              closed1d,
               symbol
             );
             overallSignal = result.signal;
+            signalKlines = closed5m;
           } else {
             const voting = calculateStandardVoting(closedData);
             overallSignal = voting.rawSignal;
@@ -477,7 +502,8 @@ function App() {
           }
 
           // ── Check transition & handle Cooldown ──────────────────────────
-          const prevSignal = lastSignalsRef.current[symbol];
+          const signalKey = `${symbol}-${signalInterval}`;
+          const prevSignal = lastSignalsRef.current[signalKey];
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
 
           // Fix 1: Cold Start — on first scan, fire alert immediately if signal is actionable
@@ -485,35 +511,35 @@ function App() {
           const isTransition = prevSignal !== undefined && prevSignal !== overallSignal;
 
           if (isActionableSignal && (isFirstScan || isTransition)) {
-            const lastAlertTime = alertCooldownsRef.current[`${symbol}-${interval}`] || 0;
+            const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
             const cooldownMs = 2 * 60 * 60 * 1000; // 2 hours
             
             if (now - lastAlertTime < cooldownMs) {
               // Skip alert but keep track of transition
-              lastSignalsRef.current[symbol] = overallSignal;
-              continue;
+              lastSignalsRef.current[signalKey] = overallSignal;
+              return;
             }
 
             // Set alert cooldown timestamp
-            alertCooldownsRef.current[`${symbol}-${interval}`] = now;
+            alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
             const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-            new Notification(`🚨 Señal en ${symbol} (${interval.toUpperCase()})${confidenceString}`, {
+            new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceString}`, {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
-              tag: `${symbol}-${interval}`,
+              tag: `${symbol}-${signalInterval}`,
             });
 
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
             const newAlert: AlertItem = {
-              id: `${symbol}-${interval}-${Date.now()}`,
+              id: `${symbol}-${signalInterval}-${Date.now()}`,
               symbol,
-              interval,
+              interval: signalInterval,
               signal: overallSignal,
               time: timeString,
               pf: bestPF,
               strategy: strategyLabel,
               // task #2: capture the last closed candle price at the moment the alert fires
-              entryPrice: closedData.length > 0 ? closedData[closedData.length - 1].close : undefined
+              entryPrice: signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : undefined
             };
 
             setAlertsLog(prev => {
@@ -523,14 +549,18 @@ function App() {
             });
           }
 
-          lastSignalsRef.current[symbol] = overallSignal;
+          lastSignalsRef.current[signalKey] = overallSignal;
         } catch (e) {
           console.error(`Error scanning background signal for ${symbol}`, e);
         }
+        }));
       }
       // task #3: update last scan timestamp after every full pass
       if (isMounted) {
         setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+      }
+      } finally {
+        scannerRunningRef.current = false;
       }
     };
 
@@ -630,7 +660,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.31.1
+            v2026.07.31.2
           </span>
         </div>
       </header>
