@@ -131,11 +131,13 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **UI de Confianza**: Integración de badges dinámicos en el panel general (`✅ Alta Confianza`, `⚠️ Muestra Limitada`, `🛡️ Sin Ventaja Estadística`) y actualización de distintivo `LÍDER` / `LÍDER ⚠️` por tarjeta.
   - **Alertas Inteligentes**: Notificaciones del scanner incluyen etiqueta `[Muestra Limitada]` cuando aplica y se silencian si la confianza es `NONE`.
 
-- **Actualización v2026.07.31.4 — Live Forward Test, Auditabilidad y Overlays en Gráfico**:
+- **Actualización v2026.07.31.4 — Live Forward Test, Auditabilidad, Overlays en Gráfico, GPU Perf & Resiliencia**:
   - **Motor de Tracking en Vivo (`alertTracker.ts`)**: Módulo liviano que calcula Stop Loss y Take Profits (TP1/TP2) para cada alerta emitida y evalúa las velas posteriores en segundo plano.
   - **Tracking de Resultados Automático**: Clasifica en tiempo real cada alerta en `TP1_HIT` (+1.5R), `TP2_HIT` (+2.5R), `SL_HIT` (-1.0R), `EXPIRED` o `OPEN` (con PnL flotante %).
   - **Barra de Métricas de Sesión**: Panel superior en el historial de alertas que resume en vivo el WinRate % de hoy y los R netos acumulados.
   - **Superposición en el Gráfico (`Chart.tsx`)**: Al hacer clic en cualquier tarjeta del historial de alertas, dibuja dinámicamente sobre el gráfico de TradingView las líneas horizontales de Entrada (Azul), Stop Loss (Rojo), TP1 (Verde) y TP2 (Esmeralda).
+  - **Optimización de GPU (<5% consumo)**: Eliminados los filtros de desenfoque de capa (`backdrop-filter: blur()`) que causaban repintados Gaussianos continuos a 60-144 FPS al interactuar con la marquesina en movimiento. La marquesina utiliza aislamiento de capas (`contain: layout paint; transform: translate3d`).
+  - **Resiliencia & ErrorBoundary**: Envoltorio global `ErrorBoundary` en `main.tsx` que captura errores de renderizado causados por datos obsoletos en `localStorage` y ofrece un botón rápido de restauración de caché.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 
