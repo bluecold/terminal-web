@@ -122,15 +122,23 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Contrato MTF del scanner**: El scanner descarga siempre 5m, 1h y 1d (y el timeframe activo si fuera distinto). Multifractal recibe 5m → 1h → 1d; VCME usa 5m en Intradía y 1h en Swing.
 - **Escalabilidad watchlist**: El scanner dispone de un lock contra ejecuciones solapadas y procesa hasta 4 símbolos en paralelo. Las alertas se identifican por `símbolo + timeframe real de ejecución`, incluyendo deduplicación y precio de entrada.
 
+- **Actualización v2026.07.31.3 — Motor de Selección por Ventaja Estadística (QVE Engine) con Confianza Progresiva**:
+  - **Módulo Centralizado (`tournament.ts`)**: Creada función pura `evaluateStrategyTournament` que unifica el ranking de estrategias en `App.tsx` (confluencia y scanner) y `SignalPanel.tsx`.
+  - **Confianza Progresiva**:
+    - Muestra mínima adaptativa: 8 trades en 5m, 5 trades en 1h, 4 trades en 1d.
+    - Score compuesto multivariable: `(PF × 0.45 + Expectancy × 0.35 + WinRate × 0.20) × Penalización Sigmoide de Muestra`.
+    - Tres niveles de confianza: `HIGH` (supera muestra ideal + PF ≥ 1.25), `LIMITED` (muestra pequeña pero PF ≥ 1.0), `NONE` (mercado sin ventaja, PF < 1.0).
+  - **UI de Confianza**: Integración de badges dinámicos en el panel general (`✅ Alta Confianza`, `⚠️ Muestra Limitada`, `🛡️ Sin Ventaja Estadística`) y actualización de distintivo `LÍDER` / `LÍDER ⚠️` por tarjeta.
+  - **Alertas Inteligentes**: Notificaciones del scanner incluyen etiqueta `[Muestra Limitada]` cuando aplica y se silencian si la confianza es `NONE`.
+
 ## Cuestiones Pendientes y Futuras Mejoras
 
-- **Calidad estadística del torneo (prioridad alta)**: Exigir 20–30 trades resueltos, expectancy positiva, tasa de resolución, drawdown máximo y una salida explícita `SIN VENTAJA ESTADÍSTICA`; no elegir sólo por PF con 3–5 resultados.
 - **Contrato de alerta auditable (prioridad alta)**: Persistir timestamp de vela cerrada, entrada, SL, TP1/TP2/TP3, R:R, capas aprobadas/rechazadas, versión/configuración, métricas de muestra y expiración/invalidez.
 - **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria.
 - **Historial de resultado de alertas**: Incorporar estados `no ejecutada`, `abierta`, `TP`, `SL` y `expirada`, junto con marcas de entrada/SL/TP en el gráfico.
 - **Costes y validación robusta**: Añadir comisiones, spread y slippage configurables; luego ejecutar walk-forward/out-of-sample y medir drawdown, Sharpe/Sortino y resultados por activo, dirección y régimen.
 - **Optimización de datos**: Usar endpoints de ticker para precios de watchlist, caché por `símbolo + timeframe + cierre de vela` y, si el perfilado lo justifica, mover backtests pesados a un Web Worker.
-- **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
+- **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia (ej. Telegram Bot).
 - **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.

@@ -167,7 +167,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia · v2026.07.31.2
+              Motor de señales técnicas multiestrategia · v2026.07.31.3
             </div>
           </div>
           <button

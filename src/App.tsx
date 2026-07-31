@@ -10,6 +10,7 @@ import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
+import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 
 interface AlertItem {
   id: string;
@@ -19,6 +20,7 @@ interface AlertItem {
   time: string;
   pf: number;
   strategy: string;
+  confidence?: ConfidenceLevel;
   entryPrice?: number; // price of the last closed candle when the alert fired
 }
 
@@ -99,42 +101,34 @@ function App() {
     const btScore = backtestScoring(data, tf);
 
     let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-    let btMF    = { profitFactor: 0, wins: 0, losses: 0 };
+    let btMF    = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0 };
 
     if (allData) {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
       const kl1h = (allData['1h'] || []).slice(0, -1);
       const kl1d = (allData['1d'] || []).slice(0, -1);
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
-      // Fix #2: lowered klines1d guard from 210 to 200 (matches backtestMultitemporal)
       if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 200) {
         btMulti = backtestMultitemporal(triggerKlines, kl1h, kl1d, '5m', currentAsset, executionStyle, triggerMode);
       }
-      // Fix #1: include Multifractal MTF in the confluence matrix tournament
       if (kl5m.length >= 30) {
         btMF = backtestMultifractalMTF(kl5m, kl1h, kl1d, '5m', currentAsset);
       }
     }
 
-    const candidates = [
-      { key: 'standard',       pf: btStd.profitFactor,   resolved: btStd.wins + btStd.losses },
-      { key: 'confluencia',    pf: btConf.profitFactor,  resolved: btConf.wins + btConf.losses },
-      { key: 'scoring',        pf: btScore.profitFactor,  resolved: btScore.wins + btScore.losses },
-      { key: 'multitemporal',  pf: btMulti.profitFactor,  resolved: btMulti.wins + btMulti.losses },
-      { key: 'multifractal',   pf: btMF.profitFactor,     resolved: btMF.wins + btMF.losses },
+    const candidates: StrategyCandidate[] = [
+      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.wins + btStd.losses },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.wins + btConf.losses },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.wins + btScore.losses },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.wins + btMulti.losses },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.wins + btMF.losses },
     ];
 
-    const minResolved = tf === '5m' ? 5 : tf === '1h' ? 4 : 3;
-    const viable = candidates
-      .filter(s => s.resolved >= minResolved)
-      .sort((a, b) => b.pf - a.pf);
+    const tournament = evaluateStrategyTournament(candidates, tf);
+    const bestStrategy = tournament.bestStrategy;
 
-    let bestStrategy = 'standard';
-    if (viable.length > 0) {
-      bestStrategy = viable[0].key;
-    } else {
-      const sortedAll = [...candidates].sort((a, b) => b.pf - a.pf);
-      bestStrategy = sortedAll[0].key;
+    if (bestStrategy === 'NONE') {
+      return 'NEUTRAL';
     }
 
     let signal: string;
@@ -323,7 +317,7 @@ function App() {
   const lastSignalsRef = useRef<Record<string, string>>({});
 
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; timestamp: number }>>({});
+  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
 
   // 2h Cooldown for notifications/logging per symbol and timeframe
   const alertCooldownsRef = useRef<Record<string, number>>({});
@@ -379,9 +373,10 @@ function App() {
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
           const cached = bestStrategyRef.current[symbol];
-          let bestStrategy = 'none';
+          let bestStrategy: StrategyCandidate['key'] | 'NONE' = 'NONE';
           let strategyLabel = '';
           let bestPF = 0;
+          let bestConfidence: ConfidenceLevel = 'NONE';
           let btMulti = { profitFactor: 1.0, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, totalSignals: 0 };
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
@@ -399,47 +394,28 @@ function App() {
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0 };
+            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0 };
 
-            const candidates = [
-              { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
-              { key: 'confluencia', label: 'Confluencia', pf: btConf.profitFactor, resolved: btConf.wins + btConf.losses },
-              { key: 'scoring',     label: 'Scoring',     pf: btScore.profitFactor, resolved: btScore.wins + btScore.losses },
-              { key: 'multitemporal', label: 'VCME Sniper', pf: btMulti.profitFactor, resolved: btMulti.wins + btMulti.losses },
-              { key: 'multifractal', label: 'Multifractal MTF', pf: btMF.profitFactor, resolved: btMF.wins + btMF.losses },
+            const candidates: StrategyCandidate[] = [
+              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.wins + btStd.losses },
+              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.wins + btConf.losses },
+              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.wins + btScore.losses },
+              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.wins + btMulti.losses },
+              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.wins + btMF.losses },
             ];
 
-            const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
-            const viable = candidates
-              .filter(s => s.resolved >= minResolved && s.pf >= 1.3)
-              .sort((a, b) => b.pf - a.pf);
+            const tournament = evaluateStrategyTournament(candidates, interval);
+            bestStrategy = tournament.bestStrategy;
+            strategyLabel = tournament.strategyLabel;
+            bestPF = tournament.profitFactor;
+            bestConfidence = tournament.confidence;
 
-            if (viable.length > 0) {
-              bestStrategy = viable[0].key;
-              strategyLabel = viable[0].label;
-              bestPF = viable[0].pf;
-            } else {
-              // Fix 3: Fallback — use best available strategy instead of 'none'
-              const fallback = [...candidates]
-                .filter(s => s.resolved >= Math.max(minResolved - 1, 2))
-                .sort((a, b) => b.pf - a.pf);
-              if (fallback.length > 0 && fallback[0].pf >= 1.0) {
-                bestStrategy = fallback[0].key;
-                strategyLabel = fallback[0].label;
-                bestPF = fallback[0].pf;
-              } else {
-                // Ultimate fallback: Standard Voting (always available)
-                bestStrategy = 'standard';
-                strategyLabel = 'Standard';
-                bestPF = btStd.profitFactor;
-              }
-            }
-
-            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, timestamp: now };
+            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, confidence: bestConfidence, strategyLabel, timestamp: now };
           } else {
-            bestStrategy = cached.strategy;
+            bestStrategy = cached.strategy as StrategyCandidate['key'] | 'NONE';
             bestPF = cached.pf;
-            strategyLabel = bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard';
+            bestConfidence = cached.confidence || 'HIGH';
+            strategyLabel = cached.strategyLabel || (bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard');
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
@@ -456,7 +432,9 @@ function App() {
               : interval;
           let signalKlines = closedData;
 
-          if (bestStrategy === 'confluencia') {
+          if (bestStrategy === 'NONE') {
+            overallSignal = 'NEUTRAL';
+          } else if (bestStrategy === 'confluencia') {
             const result = calculateExperimentalSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'scoring') {
@@ -491,7 +469,7 @@ function App() {
             overallSignal = voting.rawSignal;
           }
 
-          if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
+          if (bestStrategy !== 'NONE' && bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
             const closesList = closedData.map(k => k.close);
             const trend = getTrendFilter(closesList);
             if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
@@ -523,8 +501,9 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
+            const confidenceTag = bestConfidence === 'LIMITED' ? ' ⚠️ [Muestra Limitada]' : '';
             const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-            new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceString}`, {
+            new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
               tag: `${symbol}-${signalInterval}`,
             });
@@ -538,6 +517,7 @@ function App() {
               time: timeString,
               pf: bestPF,
               strategy: strategyLabel,
+              confidence: bestConfidence,
               // task #2: capture the last closed candle price at the moment the alert fires
               entryPrice: signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : undefined
             };
@@ -660,7 +640,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.31.2
+            v2026.07.31.3
           </span>
         </div>
       </header>

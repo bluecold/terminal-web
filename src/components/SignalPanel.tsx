@@ -8,6 +8,7 @@ import {
   backtestMultifractalMTF,
   getTrendFilter
 } from '../utils/backtester';
+import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
@@ -61,7 +62,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.07.31.2';
+    const APP_VERSION = 'v2026.07.31.3';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -303,37 +304,33 @@ export default function SignalPanel({
   }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol]);
 
   // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
-  const bestStrategy = useMemo(() => {
-    if (!btStandard || !btConfluencia || !btScoring) return 'standard';
-    const candidates = [
-      { key: 'standard',     pf: btStandard.profitFactor,  resolved: btStandard.wins + btStandard.losses },
-      { key: 'confluencia',  pf: btConfluencia.profitFactor, resolved: btConfluencia.wins + btConfluencia.losses },
-      { key: 'scoring',      pf: btScoring.profitFactor,     resolved: btScoring.wins + btScoring.losses },
-      { key: 'multitemporal',pf: btMultitemporal ? btMultitemporal.profitFactor : 0, resolved: btMultitemporal ? btMultitemporal.wins + btMultitemporal.losses : 0 },
-      { key: 'multifractal', pf: btMultifractal ? btMultifractal.profitFactor : 0, resolved: btMultifractal ? btMultifractal.wins + btMultifractal.losses : 0 },
+  const tournamentResult = useMemo(() => {
+    if (!btStandard || !btConfluencia || !btScoring) {
+      return { bestStrategy: 'standard' as const, strategyLabel: 'Estándar', confidence: 'HIGH' as ConfidenceLevel, compositeScore: 0, profitFactor: 0, reasoning: '' };
+    }
+    const candidates: StrategyCandidate[] = [
+      { key: 'standard',     label: 'Estándar',        profitFactor: btStandard.profitFactor,  expectancy: btStandard.expectancy,  winRate: btStandard.winRate,  resolved: btStandard.wins + btStandard.losses },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConfluencia.profitFactor, expectancy: btConfluencia.expectancy, winRate: btConfluencia.winRate, resolved: btConfluencia.wins + btConfluencia.losses },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScoring.profitFactor,expectancy: btScoring.expectancy,winRate: btScoring.winRate,resolved: btScoring.wins + btScoring.losses },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMultitemporal ? btMultitemporal.profitFactor : 0, expectancy: btMultitemporal ? btMultitemporal.expectancy : 0, winRate: btMultitemporal ? btMultitemporal.winRate : 0, resolved: btMultitemporal ? btMultitemporal.wins + btMultitemporal.losses : 0 },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMultifractal ? btMultifractal.profitFactor : 0,   expectancy: btMultifractal ? btMultifractal.expectancy : 0,   winRate: btMultifractal ? btMultifractal.winRate : 0,   resolved: btMultifractal ? btMultifractal.wins + btMultifractal.losses : 0 },
     ];
-    
-    const minResolved = interval === '5m' ? 5 : interval === '1h' ? 4 : 3;
-    const viable = candidates
-      .filter(s => s.resolved >= minResolved && s.pf >= 1.3)
-      .sort((a, b) => b.pf - a.pf);
-    if (viable.length > 0) return viable[0].key;
-
-    const fallbackViable = candidates.filter(s => s.resolved >= minResolved).sort((a, b) => b.pf - a.pf);
-    if (fallbackViable.length > 0) return fallbackViable[0].key;
-    return [...candidates].sort((a, b) => b.pf - a.pf)[0].key;
+    return evaluateStrategyTournament(candidates, interval);
   }, [btStandard, btConfluencia, btScoring, btMultitemporal, btMultifractal, interval]);
+
+  const bestStrategy = tournamentResult.bestStrategy;
 
   // Synchronize expanded strategy with the best strategy when it changes
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: expandedStrategy tracks the auto-selected best strategy */
   useEffect(() => {
-    if (bestStrategy) {
+    if (bestStrategy && bestStrategy !== 'NONE') {
       setExpandedStrategy(bestStrategy);
     }
   }, [bestStrategy]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const rawOverallSignal = useMemo(() => {
+    if (bestStrategy === 'NONE') return 'NEUTRAL';
     if (bestStrategy === 'confluencia') return exp.signal;
     if (bestStrategy === 'scoring') return score.signal;
     if (bestStrategy === 'multitemporal') return multi.signal;
@@ -514,6 +511,24 @@ export default function SignalPanel({
         }}>
           {closes.length === 0 ? 'WAITING...' : overallSignal}
         </div>
+        {closes.length > 0 && tournamentResult.reasoning && (
+          <div style={{
+            marginTop: '8px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '3px 10px',
+            borderRadius: '12px',
+            fontSize: '0.62rem',
+            fontWeight: '700',
+            background: tournamentResult.confidence === 'HIGH' ? 'rgba(34, 197, 94, 0.12)' : tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+            border: `1px solid ${tournamentResult.confidence === 'HIGH' ? 'rgba(34, 197, 94, 0.3)' : tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
+            color: tournamentResult.confidence === 'HIGH' ? 'var(--accent-green)' : tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--text-muted)'
+          }}>
+            <span>{tournamentResult.confidence === 'HIGH' ? '✅ Confianza Alta' : tournamentResult.confidence === 'LIMITED' ? '⚠️ Muestra Limitada' : '🛡️ Sin Ventaja Estadística'}</span>
+            <span style={{ opacity: 0.85, fontWeight: '500' }}>· {tournamentResult.reasoning}</span>
+          </div>
+        )}
         {isFiltered && (
           <div style={{ 
             color: 'var(--accent-blue)', 
@@ -652,15 +667,15 @@ export default function SignalPanel({
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(RSI+MACD+BB)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: 'var(--accent-blue-bg)', 
-                        color: 'var(--accent-blue)', 
+                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        LÍDER
+                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -768,15 +783,15 @@ export default function SignalPanel({
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(EMA+VWAP+Velas)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: 'var(--accent-blue-bg)', 
-                        color: 'var(--accent-blue)', 
+                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        LÍDER
+                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -890,15 +905,15 @@ export default function SignalPanel({
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(5 Capas)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: 'var(--accent-blue-bg)', 
-                        color: 'var(--accent-blue)', 
+                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        LÍDER
+                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -1110,6 +1125,19 @@ export default function SignalPanel({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>VCME Sniper</span>
+                    {isRecommended && (
+                      <span style={{ 
+                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        fontSize: '0.55rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        fontWeight: '800', 
+                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                      }}>
+                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <span style={{ 
@@ -1362,15 +1390,15 @@ export default function SignalPanel({
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(1D+1H+5M)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: 'var(--accent-blue-bg)', 
-                        color: 'var(--accent-blue)', 
+                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        LÍDER
+                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
