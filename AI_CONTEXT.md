@@ -9,7 +9,9 @@ La aplicación separa claramente las responsabilidades:
 - **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos.
 - **`src/utils/backtester.ts`**: Lógica de simulación histórica para evaluar el rendimiento ("éxito") de los indicadores en ventanas de tiempo pasadas.
 - **`src/components/`**: Componentes de React para la UI (como `SignalPanel`, `Watchlist`, etc.).
-- **`src/App.tsx`**: Contenedor principal que maneja el estado global## Indicadores Técnicos Implementados y Corregidos
+- **`src/App.tsx`**: Contenedor principal que maneja el estado global.
+
+## Indicadores Técnicos Implementados y Corregidos
 Recientemente se han realizado optimizaciones críticas en la matemática y lógica de los indicadores para operar de manera realista:
 1. **RSI (Relative Strength Index)**: Utiliza suavizado RMA (Welles Wilder's Smoothing) en lugar de un simple promedio (SMA) para preservar el contexto histórico de la volatilidad. Incluye detección de **Pendiente (RSI Slope)** para filtrar señales en contra del momentum inmediato.
 2. **VWAP (Volume Weighted Average Price)**: Implementado para un entorno intradiario. Se reinicia en cada sesión diaria a las 00:00 UTC para criptomonedas, y a las 9:30 AM EST (apertura de NYSE) para acciones estadounidenses.
@@ -103,7 +105,10 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Integración Completa en Alertas**: La estrategia participa en el torneo de selección del scanner en segundo plano y dispara notificaciones de escritorio.
   - **UI Rica**: Visualización de las 3 capas con valores numéricos de Andian (Green/Red/Orange), estado de Dread Blitz, barra de composición de volumen, y texto de reasoning contextual.
   - **Performance**: Optimización de `calculateDreadBlitz` de O(n²) a O(n) usando `calculateATRSeries`.
-  - **Fix NYSE Opening**: Corrección del filtro de apertura NYSE de `(h===13||h===14) && m<15` a la ventana exacta 13:30-13:45 UTC.
+  - **Actualización v2026.07.31 — Auditoría de Código y Verificación Zero-Error Build**:
+  - **Limpieza de Errores TypeScript & ESLint**: Corrección de componente huérfano `SectionTitle` en `HelpModal.tsx`, eliminación de variables sin uso en cláusulas `catch` y parámetros no usados.
+  - **Cumplimiento React 19**: Reestructuración y refactorización de hooks `useEffect` con patrones de invocación asíncrona segura en `MarketTicker.tsx`, `App.tsx` y `SignalPanel.tsx` eliminando advertencias de re-renders en cascada (`set-state-in-effect`).
+  - **Verificación Automática**: Configuración y paso limpio de `tsc -b` y `eslint .` con 0 errores y 0 warnings.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 - **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia.
