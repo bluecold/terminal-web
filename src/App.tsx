@@ -799,11 +799,13 @@ function App() {
                     statusBg = 'rgba(244, 63, 94, 0.18)';
                     statusColor = 'var(--accent-red)';
                   } else if (alert.status === 'EXPIRED') {
-                    statusLabel = `EXP (${alert.realizedR >= 0 ? '+' : ''}${alert.realizedR}R)`;
+                    const rVal = alert.realizedR || 0;
+                    statusLabel = `EXP (${rVal >= 0 ? '+' : ''}${rVal}R)`;
                     statusBg = 'rgba(255, 255, 255, 0.06)';
                     statusColor = 'var(--text-muted)';
                   } else {
-                    const pnlText = alert.pnlPercent !== undefined ? `${alert.pnlPercent >= 0 ? '+' : ''}${alert.pnlPercent.toFixed(1)}%` : '0.0%';
+                    const pnl = alert.pnlPercent ?? 0;
+                    const pnlText = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%`;
                     statusLabel = `⏳ ${pnlText}`;
                   }
 
@@ -815,15 +817,16 @@ function App() {
                     <div 
                       key={alert.id}
                       onClick={() => {
+                        if (!alert.symbol) return;
                         setCurrentAsset(alert.symbol);
-                        setTimeInterval(alert.interval);
+                        setTimeInterval(alert.interval || '5m');
                         if (alert.entryPrice && alert.stopLoss && alert.takeProfit1) {
                           setSelectedAlertOverlay({
                             entryPrice: alert.entryPrice,
                             stopLoss: alert.stopLoss,
                             takeProfit1: alert.takeProfit1,
-                            takeProfit2: alert.takeProfit2,
-                            signal: alert.signal,
+                            takeProfit2: alert.takeProfit2 || alert.takeProfit1,
+                            signal: alert.signal || 'BUY',
                           });
                         }
                       }}
@@ -849,11 +852,11 @@ function App() {
                           ? (isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)')
                           : 'var(--border-color)';
                       }}
-                      title={`Click para abrir gráfico con líneas Entry/SL/TP de ${alert.symbol} (${alert.interval.toUpperCase()})`}
+                      title={`Click para abrir gráfico con líneas Entry/SL/TP de ${alert.symbol} (${(alert.interval || '').toUpperCase()})`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-                          {alert.symbol} <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '500' }}>({alert.interval.toUpperCase()})</span>
+                          {alert.symbol} <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '500' }}>({(alert.interval || '').toUpperCase()})</span>
                         </span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <span style={{
@@ -886,7 +889,7 @@ function App() {
                           {alert.signal}
                         </span>
                         <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>
-                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {alert.pf.toFixed(1)}</span>
+                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {(alert.pf || 0).toFixed(1)}</span>
                         </span>
                       </div>
                       
