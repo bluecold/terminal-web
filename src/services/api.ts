@@ -9,7 +9,9 @@ export interface Kline {
 
 export async function fetchBinanceKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   try {
-    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`);
+    // VCME day-trading needs a complete 48-hour forward window plus an
+    // evaluation sample. Binance permits up to 1000 candles per request.
+    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000`);
     // Fix #4: check for HTTP errors before parsing (e.g. 429 rate limit, 400 invalid symbol)
     if (!response.ok) {
       console.error(`Binance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
@@ -319,4 +321,3 @@ export async function fetchCryptoFearAndGreed(): Promise<CryptoExtraInfo | null>
     return null;
   }
 }
-

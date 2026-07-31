@@ -61,7 +61,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.07.30.3';
+    const APP_VERSION = 'v2026.07.31.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -266,21 +266,21 @@ export default function SignalPanel({
   const { rawSignal } = voting;
 
   // ── Backtest results (heavy computation, memoized) ──────────────────────
-  const btStandard    = useMemo(() => klines.length > 20 ? backtestStandard(klines, interval)    : null, [klines, interval]);
-  const btConfluencia = useMemo(() => klines.length > 20 ? backtestConfluencia(klines, interval) : null, [klines, interval]);
-  const btScoring     = useMemo(() => klines.length > 20 ? backtestScoring(klines, interval, weights) : null, [klines, interval, weights]);
+  const btStandard    = useMemo(() => closedKlines.length > 20 ? backtestStandard(closedKlines, interval)    : null, [closedKlines, interval]);
+  const btConfluencia = useMemo(() => closedKlines.length > 20 ? backtestConfluencia(closedKlines, interval) : null, [closedKlines, interval]);
+  const btScoring     = useMemo(() => closedKlines.length > 20 ? backtestScoring(closedKlines, interval, weights) : null, [closedKlines, interval, weights]);
   const btMultitemporal = useMemo(() => {
-    const triggerKlines = executionStyle === 'swing' ? klines1h : klines5m;
-    return triggerKlines.length >= 30 && klines1h.length >= 60 && klines1d.length >= 210
-      ? backtestMultitemporal(triggerKlines, klines1h, klines1d, '5m', symbol, executionStyle, triggerMode)
+    const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
+    return triggerKlines.length >= 30 && closedKlines1h.length >= 60 && closedKlines1d.length >= 200
+      ? backtestMultitemporal(triggerKlines, closedKlines1h, closedKlines1d, '5m', symbol, executionStyle, triggerMode)
       : null;
-  }, [klines5m, klines1h, klines1d, symbol, executionStyle, triggerMode]);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, executionStyle, triggerMode]);
 
   const btMultifractal = useMemo(() => {
-    return klines5m.length >= 30
-      ? backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', symbol)
+    return closedKlines5m.length >= 30
+      ? backtestMultifractalMTF(closedKlines5m, closedKlines1h, closedKlines1d, '5m', symbol)
       : null;
-  }, [klines5m, klines1h, klines1d, symbol]);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol]);
 
   const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
   const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);

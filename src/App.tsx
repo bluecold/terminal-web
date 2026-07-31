@@ -102,9 +102,9 @@ function App() {
     let btMF    = { profitFactor: 0, wins: 0, losses: 0 };
 
     if (allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
-      const kl1h = allData['1h'] || [];
-      const kl1d = allData['1d'] || [];
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
+      const kl1h = (allData['1h'] || []).slice(0, -1);
+      const kl1d = (allData['1d'] || []).slice(0, -1);
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
       // Fix #2: lowered klines1d guard from 210 to 200 (matches backtestMultitemporal)
       if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 200) {
@@ -145,16 +145,16 @@ function App() {
       const result = calculateScoringSignal(data, tf);
       signal = result.signal;
     } else if (bestStrategy === 'multitemporal' && allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
-      const kl1h = allData['1h'] || [];
-      const kl1d = allData['1d'] || [];
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
+      const kl1h = (allData['1h'] || []).slice(0, -1);
+      const kl1d = (allData['1d'] || []).slice(0, -1);
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
       const result = calculateVCMESniperSignal(triggerKlines, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode);
       signal = result.signal;
     } else if (bestStrategy === 'multifractal' && allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []);
-      const kl1h = allData['1h'] || [];
-      const kl1d = allData['1d'] || [];
+      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
+      const kl1h = (allData['1h'] || []).slice(0, -1);
+      const kl1d = (allData['1d'] || []).slice(0, -1);
       const result = calculateMultifractalMTFSignal(kl5m, kl1h, kl1d, currentAsset);
       signal = result.signal;
     } else {
@@ -369,18 +369,21 @@ function App() {
           let btMulti = { profitFactor: 1.0, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, totalSignals: 0 };
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
-            const btStd  = backtestStandard(data, interval);
-            const btConf = backtestConfluencia(data, interval);
-            const btScore = backtestScoring(data, interval);
+            const closedData = data.slice(0, -1);
+            const closed1h = data1h.slice(0, -1);
+            const closed1d = data1d.slice(0, -1);
+            const btStd  = backtestStandard(closedData, interval);
+            const btConf = backtestConfluencia(closedData, interval);
+            const btScore = backtestScoring(closedData, interval);
 
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-            if (data.length >= 30 && data1h.length >= 60 && data1d.length >= 210) {
-              const kl5m = interval === '5m' ? data : data1h; // Use 5m data if available
-              const triggerKlines = executionStyle === 'swing' ? data1h : kl5m;
-              btMulti = backtestMultitemporal(triggerKlines, data1h, data1d, '5m', symbol, executionStyle, triggerMode);
+            if (closedData.length >= 30 && closed1h.length >= 60 && closed1d.length >= 200) {
+              const kl5m = interval === '5m' ? closedData : closed1h;
+              const triggerKlines = executionStyle === 'swing' ? closed1h : kl5m;
+              btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = data.length >= 30 ? backtestMultifractalMTF(data, data1h, data1d, '5m') : { profitFactor: 0, wins: 0, losses: 0 };
+            const btMF = closedData.length >= 30 ? backtestMultifractalMTF(closedData, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0 };
 
             const candidates = [
               { key: 'standard',    label: 'Standard',    pf: btStd.profitFactor,  resolved: btStd.wins + btStd.losses },
@@ -439,8 +442,8 @@ function App() {
             const triggerKlines = executionStyle === 'swing' ? (data1h ? data1h.slice(0, -1) : []) : kl5m;
             const result = calculateVCMESniperSignal(
               triggerKlines,
-              data1h || await fetchKlines(symbol, '1h'),
-              data1d || await fetchKlines(symbol, '1d'),
+              data1h.slice(0, -1),
+              data1d.slice(0, -1),
               symbol,
               btMulti.winRate,
               btMulti.profitFactor,
@@ -627,7 +630,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.30.3
+            v2026.07.31.1
           </span>
         </div>
       </header>

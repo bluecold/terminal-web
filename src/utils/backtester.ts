@@ -1,7 +1,6 @@
 import type { Kline } from '../services/api';
 import {
   calculateEMA,
-  calculateATR,
   calculateRSISeries,
   calculateSupertrendSeries,
   calculateBollingerBandsSeries,
@@ -29,7 +28,8 @@ import {
   calculateRevolutionVolatilityBand,
   calculateVolumeComposition,
   calculateAndianOscillator,
-  calculateDreadBlitz
+  calculateDreadBlitz,
+  isNyseOpeningWindow
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -112,15 +112,10 @@ function getParams(interval: string): BacktestParams {
 // Computes threshold as a percentage of the close, scaled by ATR.
 // This makes the backtest fair for both low-vol stocks (KO) and high-vol crypto (SOL).
 
-function getAdaptiveThreshold(klines: Kline[], atrMultiplier: number, fallback: number): number {
-  if (klines.length < 15) return fallback;
+function getAdaptiveThreshold(atr: number, close: number, atrMultiplier: number, fallback: number): number {
+  if (!Number.isFinite(atr) || atr <= 0 || close <= 0) return fallback;
 
-  const atr = calculateATR(klines, 14);
-  const lastClose = klines[klines.length - 1].close;
-
-  if (atr <= 0 || lastClose <= 0) return fallback;
-
-  const atrPct = atr / lastClose;
+  const atrPct = atr / close;
   const threshold = atrPct * atrMultiplier;
 
   // Clamp to sane bounds: 0.2% minimum, 8% maximum
@@ -244,7 +239,9 @@ export function backtestMultitemporal(
     insufficient: true
   };
 
-  if (!klines5m || klines5m.length < evalWindow + 30) return fallbackResult;
+  // Every evaluated trade needs its complete forward horizon. This is especially
+  // important for the 48-hour day-trading profile.
+  if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
   if (!klines1h || klines1h.length < 60) return fallbackResult;
   // Bug #3 fix: EMA 200 needs 200 candles minimum. 210 was unnecessarily
   // restrictive and caused the backtester to return insufficient for many assets.
@@ -300,29 +297,23 @@ export function backtestMultitemporal(
     atrSma1hArr[idx] = atr1hSum / 50;
   }
 
-  const latestEvalIdx = klines5m.length - 1;
+  const latestEvalIdx = klines5m.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
 
   // B3 fix: Pre-compute Support/Resistance with a rolling window of 100 candles
   // to avoid O(n²) klines5m.slice(0, i+1) inside the main loop.
   // We compute S/R at regular intervals (every 12 candles = ~1 hour for 5m) and cache.
-  const srCacheInterval = 12;
+  const srCacheInterval = 1;
   const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
-  for (let idx = oldestEvalIdx; idx <= klines5m.length - 1; idx += srCacheInterval) {
+  const firstSrCacheIdx = Math.floor(oldestEvalIdx / srCacheInterval) * srCacheInterval;
+  for (let idx = firstSrCacheIdx; idx <= latestEvalIdx; idx += srCacheInterval) {
     const windowStart = Math.max(0, idx - 100);
     const windowSlice = klines5m.slice(windowStart, idx + 1);
     const sr = calculateSupportResistance(windowSlice, klines5m[idx].close);
     srCache.set(idx, { nearestSupport: sr.nearestSupport, nearestResistance: sr.nearestResistance });
   }
-  // Helper: get nearest cached S/R for any index
   const getCachedSR = (idx: number) => {
-    // Find the closest cached index at or before idx
-    const cacheIdx = Math.floor(idx / srCacheInterval) * srCacheInterval;
-    const cached = srCache.get(cacheIdx);
-    if (cached) return cached;
-    // Fallback: check the previous cache slot
-    const prevCacheIdx = cacheIdx - srCacheInterval;
-    return srCache.get(prevCacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
+    return srCache.get(idx) || { nearestSupport: 0, nearestResistance: 0 };
   };
 
   let totalSignals = 0;
@@ -823,35 +814,12 @@ export function backtestMultitemporal(
       if (k.high > highestHigh) highestHigh = k.high;
       if (k.low < lowestLow) lowestLow = k.low;
 
-      // Time Stop: 12 candles
-      if (!tp1Hit && (f - i) >= 12) {
-        const currentPnl = signal === 'BUY' ? (k.close - entry) : (entry - k.close);
-        if (currentPnl < 0.5 * risk) {
-          pnlPct = (currentPnl / entry) * 100;
-          tradeOutcome = 'timeout';
-          exitIdx = f;
-          break;
-        }
-      }
-
-      // Emergency Exit
+      // Stop execution takes precedence over close-based exits. With OHLC data
+      // this is the conservative assumption when both are possible in one bar.
       const isLongEmergency = k.close < vwapSeries5m[f] && k.close < ema21_5m[f];
       const isShortEmergency = k.close > vwapSeries5m[f] && k.close > ema21_5m[f];
 
       if (signal === 'BUY') {
-        if (isLongEmergency) {
-          const tp1P = tp1Hit ? 0.50 * ((tp1 - entry) / entry * 100) : 0;
-          const tp2P = tp2Hit ? 0.25 * ((tp2 - entry) / entry * 100) : 0;
-          let leftWeight = 1.0;
-          if (tp1Hit) leftWeight -= 0.50;
-          if (tp2Hit) leftWeight -= 0.25;
-          const remainingP = leftWeight * ((k.close - entry) / entry * 100);
-          pnlPct = tp1P + tp2P + remainingP;
-          tradeOutcome = 'timeout';
-          exitIdx = f;
-          break;
-        }
-
         // SL check
         if (k.low <= activeSL) {
           if (tp2Hit) {
@@ -868,6 +836,27 @@ export function backtestMultitemporal(
             pnlPct = -risk / entry * 100;
             tradeOutcome = 'loss';
           }
+          exitIdx = f;
+          break;
+        }
+
+        // Time Stop: 12 candles
+        if (!tp1Hit && (f - i) >= 12) {
+          const currentPnl = k.close - entry;
+          if (currentPnl < 0.5 * risk) {
+            pnlPct = (currentPnl / entry) * 100;
+            tradeOutcome = 'timeout';
+            exitIdx = f;
+            break;
+          }
+        }
+
+        if (isLongEmergency) {
+          const tp1P = tp1Hit ? 0.50 * ((tp1 - entry) / entry * 100) : 0;
+          const tp2P = tp2Hit ? 0.25 * ((tp2 - entry) / entry * 100) : 0;
+          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
+          pnlPct = tp1P + tp2P + leftWeight * ((k.close - entry) / entry * 100);
+          tradeOutcome = 'timeout';
           exitIdx = f;
           break;
         }
@@ -908,19 +897,6 @@ export function backtestMultitemporal(
         }
       } else {
         // SHORT
-        if (isShortEmergency) {
-          const tp1P = tp1Hit ? 0.50 * ((entry - tp1) / entry * 100) : 0;
-          const tp2P = tp2Hit ? 0.25 * ((entry - tp2) / entry * 100) : 0;
-          let leftWeight = 1.0;
-          if (tp1Hit) leftWeight -= 0.50;
-          if (tp2Hit) leftWeight -= 0.25;
-          const remainingP = leftWeight * ((entry - k.close) / entry * 100);
-          pnlPct = tp1P + tp2P + remainingP;
-          tradeOutcome = 'timeout';
-          exitIdx = f;
-          break;
-        }
-
         if (k.high >= activeSL) {
           if (tp2Hit) {
             const tp1P = 0.50 * ((entry - tp1) / entry * 100);
@@ -936,6 +912,26 @@ export function backtestMultitemporal(
             pnlPct = -risk / entry * 100;
             tradeOutcome = 'loss';
           }
+          exitIdx = f;
+          break;
+        }
+
+        if (!tp1Hit && (f - i) >= 12) {
+          const currentPnl = entry - k.close;
+          if (currentPnl < 0.5 * risk) {
+            pnlPct = (currentPnl / entry) * 100;
+            tradeOutcome = 'timeout';
+            exitIdx = f;
+            break;
+          }
+        }
+
+        if (isShortEmergency) {
+          const tp1P = tp1Hit ? 0.50 * ((entry - tp1) / entry * 100) : 0;
+          const tp2P = tp2Hit ? 0.25 * ((entry - tp2) / entry * 100) : 0;
+          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
+          pnlPct = tp1P + tp2P + leftWeight * ((entry - k.close) / entry * 100);
+          tradeOutcome = 'timeout';
           exitIdx = f;
           break;
         }
@@ -1049,7 +1045,11 @@ function runBacktestGenericOptimized(
   const params = getParams(interval);
   const { evalWindow, forwardWindow, forwardLabel, targetMultiplier } = params;
 
-  const threshold = getAdaptiveThreshold(klines, params.atrMultiplier, params.fallbackThreshold);
+  // Use the ATR available at each entry. Applying today's ATR to historical trades
+  // leaks future volatility into the result.
+  const atrSeries = calculateATRSeries(klines, 14);
+  const latestAtr = atrSeries[atrSeries.length - 1];
+  const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, params.atrMultiplier, params.fallbackThreshold);
   const targetThreshold = threshold * targetMultiplier;
 
   const minCandles = evalWindow + forwardWindow;
@@ -1101,8 +1101,16 @@ function runBacktestGenericOptimized(
       continue;
     }
 
+    const entryThreshold = getAdaptiveThreshold(
+      atrSeries[i],
+      klines[i].close,
+      params.atrMultiplier,
+      params.fallbackThreshold
+    );
+    const entryTargetThreshold = entryThreshold * targetMultiplier;
+
     totalSignals++;
-    const outcome = evaluateOutcome(klines, i, signal, forwardWindow, threshold, targetThreshold);
+    const outcome = evaluateOutcome(klines, i, signal, forwardWindow, entryThreshold, entryTargetThreshold);
 
     if (outcome.result === 'win') {
       wins++;
@@ -1371,10 +1379,11 @@ export function computeScoringSignalsSeries(
     obvEMAArr = calculateEMA(obvArr, 10);
   }
 
-  // Pre-calculate Support/Resistance cache to optimize backtest performance O(n)
-  const srCacheInterval = 12;
+  // Cache at aligned checkpoints. Queries use the most recent checkpoint at or
+  // before the evaluated candle, so no future price data enters the S/R layer.
+  const srCacheInterval = 1;
   const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
-  for (let idx = 59; idx < length; idx += srCacheInterval) {
+  for (let idx = 0; idx < length; idx += srCacheInterval) {
     const windowStart = Math.max(0, idx - 100);
     const windowSlice = klines.slice(windowStart, idx + 1);
     const sr = calculateSupportResistance(windowSlice, klines[idx].close);
@@ -1382,10 +1391,7 @@ export function computeScoringSignalsSeries(
   }
   const getCachedSR = (idx: number) => {
     const cacheIdx = Math.floor(idx / srCacheInterval) * srCacheInterval;
-    const cached = srCache.get(cacheIdx);
-    if (cached) return cached;
-    const prevCacheIdx = cacheIdx - srCacheInterval;
-    return srCache.get(prevCacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
+    return srCache.get(cacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
   };
 
   for (let i = 59; i < length; i++) {
@@ -1543,7 +1549,7 @@ export function backtestMultifractalMTF(
     insufficient: true
   };
 
-  if (!klines5m || klines5m.length < evalWindow + 20) return fallbackResult;
+  if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
 
   // Bug #4 fix: removed incorrect klines5m fallback for k1h and k1d.
   // If 1H or 1D data is insufficient, we still run but with degraded Layer 1/2
@@ -1567,7 +1573,7 @@ export function backtestMultifractalMTF(
   let totalLossPct = 0;
   let lastSignalIdx = -cooldownPeriod - 1;
 
-  const latestEvalIdx = klines5m.length - 1;
+  const latestEvalIdx = klines5m.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
@@ -1630,9 +1636,7 @@ export function backtestMultifractalMTF(
       continue;
     }
 
-    const candleDate = new Date(curr.time);
-    const utcTotalMins = candleDate.getUTCHours() * 60 + candleDate.getUTCMinutes();
-    const isNyseOpening = utcTotalMins >= 13 * 60 + 30 && utcTotalMins < 13 * 60 + 45;
+    const isNyseOpening = isNyseOpeningWindow(curr.time, _symbol);
     const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
@@ -1689,25 +1693,25 @@ export function backtestMultifractalMTF(
       }
 
       if (signal === 'BUY') {
-        if (fCandle.high >= takeProfitPrice) {
-          outcome = 'WIN';
-          totalGainPct += Math.abs((takeProfitPrice - entryPrice) / entryPrice);
-          break;
-        }
         if (fCandle.low <= stopLossPrice) {
           outcome = 'LOSS';
           totalLossPct += Math.abs((stopLossPrice - entryPrice) / entryPrice);
           break;
         }
-      } else {
-        if (fCandle.low <= takeProfitPrice) {
+        if (fCandle.high >= takeProfitPrice) {
           outcome = 'WIN';
-          totalGainPct += Math.abs((entryPrice - takeProfitPrice) / entryPrice);
+          totalGainPct += Math.abs((takeProfitPrice - entryPrice) / entryPrice);
           break;
         }
+      } else {
         if (fCandle.high >= stopLossPrice) {
           outcome = 'LOSS';
           totalLossPct += Math.abs((entryPrice - stopLossPrice) / entryPrice);
+          break;
+        }
+        if (fCandle.low <= takeProfitPrice) {
+          outcome = 'WIN';
+          totalGainPct += Math.abs((entryPrice - takeProfitPrice) / entryPrice);
           break;
         }
       }
@@ -1742,5 +1746,3 @@ export function backtestMultifractalMTF(
     insufficient: totalSignals === 0
   };
 }
-
-

@@ -1851,6 +1851,28 @@ const nycFormatter = new Intl.DateTimeFormat('en-US', {
   day: '2-digit'
 });
 
+const nycTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+
+/** True only for US equities during the first 15 minutes of the NYSE session.
+ * Kline timestamps are Unix seconds, not JavaScript milliseconds. */
+export function isNyseOpeningWindow(timeSeconds: number, symbol?: string): boolean {
+  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
+  if (isCrypto) return false;
+
+  const parts = nycTimeFormatter.formatToParts(new Date(timeSeconds * 1000));
+  const hour = Number(parts.find(part => part.type === 'hour')?.value);
+  const minute = Number(parts.find(part => part.type === 'minute')?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
+
+  const minutesSinceMidnight = hour * 60 + minute;
+  return minutesSinceMidnight >= 9 * 60 + 30 && minutesSinceMidnight < 9 * 60 + 45;
+}
+
 export function getSessionId(kline: Kline, interval: string, symbol?: string): string {
   const date = new Date(kline.time * 1000);
   if (interval === '5m' || interval === '1h') {
@@ -3036,12 +3058,8 @@ export function calculateMultifractalMTFSignal(
   const prevDread = dreadBlitz5M.length > 1 ? dreadBlitz5M[dreadBlitz5M.length - 2] : currDread;
   const prevCandle = klines5m.length > 1 ? klines5m[klines5m.length - 2] : currCandle;
 
-  // Check NYSE Market Open (09:30 - 09:45 EST/EDT -> 13:30 - 13:45 UTC)
-  const candleDate = new Date(currCandle.time);
-  const hoursUTC = candleDate.getUTCHours();
-  const minsUTC = candleDate.getUTCMinutes();
-  const utcTotalMins = hoursUTC * 60 + minsUTC;
-  const isNyseOpening = utcTotalMins >= 13 * 60 + 30 && utcTotalMins < 13 * 60 + 45;
+  // The formatter handles EST/EDT automatically and timestamps are Unix seconds.
+  const isNyseOpening = isNyseOpeningWindow(currCandle.time, _symbol);
   const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
