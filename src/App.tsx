@@ -6,6 +6,7 @@ import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
+import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
@@ -39,9 +40,12 @@ function App() {
   });
   const [searchVal, setSearchVal] = useState(currentAsset);
   
+  // Sync search input when currentAsset changes from external sources (e.g. watchlist click)
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional sync of controlled input */
   useEffect(() => {
     setSearchVal(currentAsset);
   }, [currentAsset]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const [interval, setTimeInterval] = useState(() => {
     return localStorage.getItem('terminal_time_interval') || '1h';
@@ -65,6 +69,7 @@ function App() {
   });
   const [klines, setKlines] = useState<Kline[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   const [executionStyle, setExecutionStyle] = useState<'dayTrading' | 'swing'>(() => {
     return (localStorage.getItem('terminal_execution_style') as 'dayTrading' | 'swing') || 'dayTrading';
@@ -223,14 +228,17 @@ function App() {
     return () => {
       isMounted = false;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is stable (reads state via closures), adding it would cause infinite loops
   }, [currentAsset]);
 
   // 2. Effect to change active timeframe from memory (no network request!)
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: klines is also updated by polling, cannot be derived with useMemo */
   useEffect(() => {
     if (allKlines[interval] && allKlines[interval].length > 0) {
       setKlines(allKlines[interval]);
     }
   }, [interval, allKlines]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // 3. Effect for real-time polling updates only on the active asset + interval
   useEffect(() => {
@@ -263,8 +271,7 @@ function App() {
       isMounted = false;
       clearInterval(pollInterval);
     };
-  // Fix #5: removed allKlines from deps — no longer needed in the closure since
-  // we read the latest state via the functional setAllKlines updater.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
   }, [currentAsset, interval]);
 
 
@@ -554,7 +561,24 @@ function App() {
       {/* Top Navigation Bar */}
       <header className="top-bar">
         <div className="top-bar-left">
-          <div className="logo">TERMINAL LITE</div>
+          <button
+            onClick={() => setShowHelp(true)}
+            title="Abrir guía de la aplicación"
+            style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <div className="logo">TERMINAL LITE</div>
+            <span style={{
+              fontSize: '0.6rem', fontWeight: '700', color: 'var(--accent-blue)',
+              background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)',
+              borderRadius: '50%', width: '16px', height: '16px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: 0.7, transition: 'opacity 0.2s',
+              lineHeight: 1,
+            }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '0.7'; }}
+            >?</span>
+          </button>
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
             <Search size={16} color="var(--text-secondary)" style={{ position: 'absolute', left: '8px' }} />
             <input 
@@ -845,6 +869,9 @@ function App() {
           />
         </aside>
       </div>
+
+      {/* ── Help Modal ─────────────────────────────── */}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

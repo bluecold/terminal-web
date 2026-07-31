@@ -17,47 +17,49 @@ export default function MarketTicker() {
   const [data, setData] = useState<TickerSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const loadData = async () => {
-    try {
-      const results = await Promise.all(
-        TICKERS_TO_FETCH.map(t => fetchTickerSummary(t.symbol, t.name))
-      );
-      const validResults = results.filter((r): r is TickerSummary => r !== null);
-      if (validResults.length > 0) {
-        setData(validResults);
-      }
-    } catch (e) {
-      console.error('Error fetching ticker summaries', e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const [isPageVisible, setIsPageVisible] = useState(() => !document.hidden);
 
   useEffect(() => {
+    let isMounted = true;
+
+    const loadData = async () => {
+      try {
+        const results = await Promise.all(
+          TICKERS_TO_FETCH.map(t => fetchTickerSummary(t.symbol, t.name))
+        );
+        const validResults = results.filter((r): r is TickerSummary => r !== null);
+        if (isMounted && validResults.length > 0) {
+          setData(validResults);
+        }
+      } catch (e) {
+        console.error('Error fetching ticker summaries', e);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
     const handleVisibilityChange = () => {
       const visible = !document.hidden;
       setIsPageVisible(visible);
       if (visible) {
-        loadData(); // Immediately refresh data when tab is re-focused
+        loadData();
       }
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
-
-  useEffect(() => {
     loadData();
     const interval = setInterval(() => {
       if (!document.hidden) {
         loadData();
       }
-    }, 60000); // Polling every 60 seconds only when tab is visible
-    return () => clearInterval(interval);
+    }, 60000);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   if (loading && data.length === 0) {

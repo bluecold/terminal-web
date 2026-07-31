@@ -59,6 +59,7 @@ export default function SignalPanel({
   const [accountDrawdown, setAccountDrawdown] = useState(0); // in percent
   const [sameSectorPositions, setSameSectorPositions] = useState(0); // open correlated trades
 
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
     const APP_VERSION = 'v2026.07.30.3';
     const cachedVersion = localStorage.getItem('terminal_app_version');
@@ -145,6 +146,7 @@ export default function SignalPanel({
       isMounted = false;
     };
   }, [symbol]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Navigation & Accordion States ──────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'strategies' | 'calculator' | 'market'>('strategies');
@@ -323,11 +325,13 @@ export default function SignalPanel({
   }, [btStandard, btConfluencia, btScoring, btMultitemporal, btMultifractal, interval]);
 
   // Synchronize expanded strategy with the best strategy when it changes
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: expandedStrategy tracks the auto-selected best strategy */
   useEffect(() => {
     if (bestStrategy) {
       setExpandedStrategy(bestStrategy);
     }
   }, [bestStrategy]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const rawOverallSignal = useMemo(() => {
     if (bestStrategy === 'confluencia') return exp.signal;

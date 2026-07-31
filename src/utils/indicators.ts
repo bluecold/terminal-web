@@ -343,7 +343,7 @@ export function calculateVWAP(klines: Kline[], interval: string = '1h', symbol?:
         // NYSE session: daily reset based on America/New_York local date
         try {
           sessionId = nycFormatter.format(date); // Format: MM/DD/YYYY
-        } catch (e) {
+        } catch {
           // Fallback to UTC
           sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
         }
@@ -675,7 +675,7 @@ export function calculateScoringSignal(
   const w5 = s5 * weights.candle;
   const w6 = s6 * structureWeight;
 
-  let totalScore = w1 + w2 + w3 + w4 + w5 + w6;
+  const totalScore = w1 + w2 + w3 + w4 + w5 + w6;
 
   // Calcular score máximo teórico para determinar el umbral (50% del máximo)
   const maxTrend = cfg.emaMajor ? 2 : 1;
@@ -1304,7 +1304,7 @@ export function calculateVWAPSeries(klines: Kline[], interval: string = '1h', sy
       } else {
         try {
           sessionId = nycFormatter.format(date);
-        } catch (e) {
+        } catch {
           sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
         }
       }
@@ -1860,7 +1860,7 @@ export function getSessionId(kline: Kline, interval: string, symbol?: string): s
     } else {
       try {
         return nycFormatter.format(date);
-      } catch (e) {
+      } catch {
         return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
       }
     }
