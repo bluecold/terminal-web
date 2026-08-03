@@ -137,7 +137,10 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Barra de Métricas de Sesión**: Panel superior en el historial de alertas que resume en vivo el WinRate % de hoy y los R netos acumulados.
   - **Superposición en el Gráfico (`Chart.tsx`)**: Al hacer clic en cualquier tarjeta del historial de alertas, dibuja dinámicamente sobre el gráfico de TradingView las líneas horizontales de Entrada (Azul), Stop Loss (Rojo), TP1 (Verde) y TP2 (Esmeralda).
   - **Optimización de GPU (<5% consumo)**: Eliminados los filtros de desenfoque de capa (`backdrop-filter: blur()`) que causaban repintados Gaussianos continuos a 60-144 FPS al interactuar con la marquesina en movimiento. La marquesina utiliza aislamiento de capas (`contain: layout paint; transform: translate3d`).
-  - **Resiliencia & ErrorBoundary**: Envoltorio global `ErrorBoundary` en `main.tsx` que captura errores de renderizado causados por datos obsoletos en `localStorage` y ofrece un botón rápido de restauración de caché.
+  - **Actualización v2026.08.03.1 — Calibración del Scanner Intradía y Swing (Eliminación del Bloqueo de Alertas)**:
+  - **Calibración del Torneo (`tournament.ts`)**: Se ajustaron los umbrales de muestra mínima y Profit Factor (`resolved >= 1`, `PF >= 0.95`). Se eliminó el silenciamiento total (`NEUTRAL`) cuando la confianza es `NONE`, permitiendo que el trader reciba la mejor señal disponible con una etiqueta transparente (`🛡️ Sin Ventaja` / `⚠️ Muestra Limitada`).
+  - **Cooldown Adaptativo por Timeframe (`App.tsx`)**: Se reemplazó el cooldown rígido de 2 horas por tiempos acordes a cada perfil operativo: `15 minutos` en 5m (Day Trading), `1 hora` en 1H (Swing) y `12 horas` en 1D (Posición).
+  - **Muestra Extendida (`backtester.ts`)**: Se extendió la ventana de evaluación de 5m de 150 velas (12.5h) a `288 velas` (24h completas de mercado), mejorando la representatividad estadística para operaciones del mismo día.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 

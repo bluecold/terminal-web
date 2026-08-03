@@ -79,16 +79,16 @@ function getParams(interval: string): BacktestParams {
   switch (interval) {
     case '5m':
       return {
-        evalWindow: 150,
+        evalWindow: 288,               // 24 hours of 5m data
         forwardWindow: 6,
         forwardLabel: '6 velas (30 min)',
-        fallbackThreshold: 0.010,
-        atrMultiplier: 1.5,
+        fallbackThreshold: 0.008,
+        atrMultiplier: 1.2,
         targetMultiplier: 1.5,
       };
     case '1d':
       return {
-        evalWindow: 60,
+        evalWindow: 60,                // 60 days
         forwardWindow: 3,
         forwardLabel: '3 velas (3 días)',
         fallbackThreshold: 0.015,
@@ -98,7 +98,7 @@ function getParams(interval: string): BacktestParams {
     case '1h':
     default:
       return {
-        evalWindow: 100,
+        evalWindow: 168,               // 7 days of 1h data
         forwardWindow: 4,
         forwardLabel: '4 velas (4 hs)',
         fallbackThreshold: 0.012,

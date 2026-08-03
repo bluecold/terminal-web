@@ -488,7 +488,11 @@ function App() {
 
           if (isActionableSignal && (isFirstScan || isTransition)) {
             const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
-            const cooldownMs = 2 * 60 * 60 * 1000; // 2 hours
+            const cooldownMs = signalInterval === '5m'
+              ? 15 * 60 * 1000        // 15 min for 5m intraday day trading
+              : signalInterval === '1h'
+                ? 60 * 60 * 1000      // 1 hour for 1h swing trading
+                : 12 * 60 * 60 * 1000; // 12 hours for 1d position trading
             
             if (now - lastAlertTime < cooldownMs) {
               // Skip alert but keep track of transition
@@ -499,7 +503,11 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
-            const confidenceTag = bestConfidence === 'LIMITED' ? ' ⚠️ [Muestra Limitada]' : '';
+            const confidenceTag = bestConfidence === 'LIMITED'
+              ? ' ⚠️ [Muestra Limitada]'
+              : bestConfidence === 'NONE'
+                ? ' 🛡️ [Sin Ventaja]'
+                : '';
             const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
             new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
               body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
@@ -653,7 +661,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.07.31.4
+            v2026.08.03.1
           </span>
         </div>
       </header>

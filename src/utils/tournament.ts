@@ -19,12 +19,12 @@ export interface TournamentResult {
 }
 
 /**
- * Evaluates candidates using a progressive confidence model:
- * - Requires a minimum number of resolved trades per timeframe for HIGH confidence
+ * Evaluates candidates using a balanced progressive confidence model:
+ * - Requires minimum resolved trades per timeframe for HIGH confidence
  * - Applies a sigmoid penalty curve based on sample size
  * - Computes a composite score: (PF * 0.45 + Expectancy * 0.35 + WinRate * 0.20) * sampleConfidence
- * - Falls back to LIMITED confidence if minimum sample isn't met but PF >= 1.0
- * - Yields NONE only when no strategy is profitable (PF >= 1.0 with >= 3 trades)
+ * - Falls back to LIMITED confidence if minimum sample isn't met but PF >= 0.95
+ * - Yields the best relative strategy even when confidence is NONE so intraday signals aren't silenced
  */
 export function evaluateStrategyTournament(
   candidates: StrategyCandidate[],
@@ -32,8 +32,8 @@ export function evaluateStrategyTournament(
 ): TournamentResult {
   if (candidates.length === 0) {
     return {
-      bestStrategy: 'NONE',
-      strategyLabel: 'Sin Estrategia',
+      bestStrategy: 'standard',
+      strategyLabel: 'Standard',
       confidence: 'NONE',
       compositeScore: 0,
       profitFactor: 0,
@@ -42,21 +42,19 @@ export function evaluateStrategyTournament(
   }
 
   // Target minimum resolved trades for HIGH confidence
-  const minHighResolved = timeframe === '5m' ? 8 : timeframe === '1h' ? 5 : 4;
+  const minHighResolved = timeframe === '5m' ? 5 : timeframe === '1h' ? 4 : 3;
   const idealMin = Math.round(minHighResolved * 1.5);
 
   // Helper to calculate composite score with sigmoid sample penalty
   const calcScore = (c: StrategyCandidate): number => {
-    // Sigmoid curve centered at idealMin
     const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
-    // Base performance score
     const baseScore = c.profitFactor * 0.45 + Math.max(0, c.expectancy) * 0.35 + c.winRate * 0.20;
     return baseScore * sampleConfidence;
   };
 
-  // 1. Check for HIGH confidence candidates (meets minHighResolved and PF >= 1.25)
+  // 1. Check for HIGH confidence candidates (meets minHighResolved and PF >= 1.15)
   const highCandidates = candidates
-    .filter(c => c.resolved >= minHighResolved && c.profitFactor >= 1.25)
+    .filter(c => c.resolved >= minHighResolved && c.profitFactor >= 1.15)
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
 
@@ -72,9 +70,9 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (meets at least 3 resolved trades and PF >= 1.0)
+  // 2. Check for LIMITED confidence candidates (meets at least 1 resolved trade and PF >= 0.95)
   const limitedCandidates = candidates
-    .filter(c => c.resolved >= 3 && c.profitFactor >= 1.0)
+    .filter(c => c.resolved >= 1 && c.profitFactor >= 0.95)
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
 
@@ -90,17 +88,20 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 3. Fallback: If no candidate has PF >= 1.0 with >= 3 trades, market has no statistical edge
-  // Sort all candidates by PF to know the best among negative ones for logging
-  const sortedAll = [...candidates].sort((a, b) => b.profitFactor - a.profitFactor);
-  const bestNeg = sortedAll[0];
+  // 3. Fallback: Select best relative strategy so signals are not silently swallowed
+  const sortedAll = [...candidates].sort((a, b) => {
+    const scoreA = (a.profitFactor * 0.5) + (a.winRate * 0.5);
+    const scoreB = (b.profitFactor * 0.5) + (b.winRate * 0.5);
+    return scoreB - scoreA;
+  });
+  const fallback = sortedAll[0] || candidates[0];
 
   return {
-    bestStrategy: 'NONE',
-    strategyLabel: 'Sin Ventaja',
+    bestStrategy: fallback.key,
+    strategyLabel: fallback.label,
     confidence: 'NONE',
     compositeScore: 0,
-    profitFactor: bestNeg ? bestNeg.profitFactor : 0,
-    reasoning: `Sin ventaja estadística en ${timeframe.toUpperCase()} (Mejor PF: ${bestNeg ? bestNeg.profitFactor.toFixed(2) : '0.00'})`,
+    profitFactor: fallback.profitFactor,
+    reasoning: `${fallback.label} (PF ${fallback.profitFactor.toFixed(2)})`,
   };
 }
