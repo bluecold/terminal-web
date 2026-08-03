@@ -431,8 +431,8 @@ export function calculateExperimentalSignal(klines: Kline[], interval: string = 
   const cp = closePosition(curr);
   const isNotOverextended = distVwapAtr <= 2.2;
 
-  const is_buy = curr.close > vwap && ema9 > ema20 && curr.volume > volAvg && bullish_candle && bRatio >= 0.4 && isNotOverextended && cp >= 0.60;
-  const is_sell = curr.close < vwap && ema9 < ema20 && curr.volume > volAvg && (bearish_candle || curr.close < ema20) && bRatio >= 0.4 && isNotOverextended && cp <= 0.40;
+  const is_buy = curr.close > vwap && ema9 > ema20 && curr.volume >= volAvg * 0.8 && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
+  const is_sell = curr.close < vwap && ema9 < ema20 && curr.volume >= volAvg * 0.8 && (bearish_candle || curr.close < ema20) && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
 
   // EMA Crossover detection
   const emaCrossover = detectEmaCrossover(closes, 9, 20, 5);
@@ -1225,10 +1225,10 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
   const avgVol = recentVols.reduce((a, b) => a + b, 0) / Math.max(1, recentVols.length);
   const rvol = avgVol > 0 ? lastVol / avgVol : 0;
 
-  const rvolThreshold = rawSignal.includes('BUY') ? 1.2 : 0.8;
-  // Weak consensus (margin < 2 votes) requires stronger volume confirmation
+  const rvolThreshold = rawSignal.includes('BUY') ? 0.9 : 0.6;
+  // Weak consensus (margin < 2 votes) requires slightly higher volume confirmation
   const voteMargin = Math.abs(buyVotes - sellVotes);
-  const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.5) : rvolThreshold;
+  const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.1) : rvolThreshold;
 
   if (rawSignal !== 'NEUTRAL' && rvol < effectiveRvolThreshold) {
     rawSignal = 'NEUTRAL';
@@ -1236,9 +1236,9 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
 
   // Candle anatomy check (closePosition)
   const cp = closePosition(lastCandle);
-  if (rawSignal.includes('BUY') && cp < 0.55) {
+  if (rawSignal.includes('BUY') && cp < 0.45) {
     rawSignal = 'NEUTRAL';
-  } else if (rawSignal.includes('SELL') && cp > 0.45) {
+  } else if (rawSignal.includes('SELL') && cp > 0.55) {
     rawSignal = 'NEUTRAL';
   }
 

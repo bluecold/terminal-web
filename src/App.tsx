@@ -337,9 +337,6 @@ function App() {
     let isMounted = true;
 
     const checkAllSignals = async () => {
-      const enabled = localStorage.getItem('terminal_notifications_enabled') === 'true';
-      if (!enabled) return;
-      if (!('Notification' in window) || Notification.permission !== 'granted') return;
       if (scannerRunningRef.current) return;
 
       scannerRunningRef.current = true;
@@ -503,16 +500,21 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
-            const confidenceTag = bestConfidence === 'LIMITED'
-              ? ' ⚠️ [Muestra Limitada]'
-              : bestConfidence === 'NONE'
-                ? ' 🛡️ [Sin Ventaja]'
-                : '';
-            const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-            new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
-              body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
-              tag: `${symbol}-${signalInterval}`,
-            });
+            const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
+              && ('Notification' in window) && Notification.permission === 'granted';
+
+            if (desktopNotificationsEnabled) {
+              const confidenceTag = bestConfidence === 'LIMITED'
+                ? ' ⚠️ [Muestra Limitada]'
+                : bestConfidence === 'NONE'
+                  ? ' 🛡️ [Sin Ventaja]'
+                  : '';
+              const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
+              new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
+                body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
+                tag: `${symbol}-${signalInterval}`,
+              });
+            }
 
             const entryPrice = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0;
             const levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval);
@@ -661,7 +663,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.03.2
+            v2026.08.03.3
           </span>
         </div>
       </header>

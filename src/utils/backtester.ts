@@ -243,14 +243,13 @@ export function backtestMultitemporal(
   // important for the 48-hour day-trading profile.
   if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
   if (!klines1h || klines1h.length < 60) return fallbackResult;
-  // Bug #3 fix: EMA 200 needs 200 candles minimum. 210 was unnecessarily
-  // restrictive and caused the backtester to return insufficient for many assets.
-  if (!klines1d || klines1d.length < 200) return fallbackResult;
+  if (!klines1d || klines1d.length < 30) return fallbackResult;
 
   // ── Pre-calculate all series O(n) ─────────────────────────────────────
   // 1D series
   const closes1d = klines1d.map(k => k.close);
-  const ema200_1d = calculateEMA(closes1d, 200);
+  const emaPeriod1d = Math.min(200, Math.max(20, closes1d.length));
+  const ema200_1d = calculateEMA(closes1d, emaPeriod1d);
   const ema50_1d = calculateEMA(closes1d, 50);
   const adxData1d = calculateADXSeries(klines1d, 14);
 
