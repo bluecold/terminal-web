@@ -2414,16 +2414,16 @@ export function calculateVCMESniperSignal(
   })();
 
   const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m && // no chasing
-                      candleBodyRatio(curr5m) >= 0.4 && // no doji
-                      closePosition(curr5m) >= 0.60 &&
-                      upperWickRatio(curr5m) <= 0.25 &&
+                      candleBodyRatio(curr5m) >= 0.3 && // no doji
+                      closePosition(curr5m) >= 0.50 &&
+                      upperWickRatio(curr5m) <= 0.35 &&
                       minutesSinceOpen >= 15 && // avoid opening chaos
                       volCurr5m / volAvg5m < 8.0; // avoid news spike
 
   const qualityShort = (vwap5m - curr5m.close) <= 2.0 * atr5m &&
-                       candleBodyRatio(curr5m) >= 0.4 &&
-                       closePosition(curr5m) <= 0.40 &&
-                       lowerWickRatio(curr5m) <= 0.25 &&
+                       candleBodyRatio(curr5m) >= 0.3 &&
+                       closePosition(curr5m) <= 0.50 &&
+                       lowerWickRatio(curr5m) <= 0.35 &&
                        minutesSinceOpen >= 15 &&
                        volCurr5m / volAvg5m < 8.0;
 

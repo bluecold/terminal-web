@@ -313,7 +313,7 @@ function App() {
   const lastSignalsRef = useRef<Record<string, string>>({});
 
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
+  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; winRate?: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
 
   // 2h Cooldown for notifications/logging per symbol and timeframe
   const alertCooldownsRef = useRef<Record<string, number>>({});
@@ -405,12 +405,16 @@ function App() {
             bestPF = tournament.profitFactor;
             bestConfidence = tournament.confidence;
 
-            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, confidence: bestConfidence, strategyLabel, timestamp: now };
+            const bestCandidate = candidates.find(c => c.key === bestStrategy);
+            const bestWinRate = bestCandidate ? bestCandidate.winRate : btMulti.winRate;
+
+            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, winRate: bestWinRate, confidence: bestConfidence, strategyLabel, timestamp: now };
           } else {
             bestStrategy = cached.strategy as StrategyCandidate['key'] | 'NONE';
             bestPF = cached.pf;
             bestConfidence = cached.confidence || 'HIGH';
             strategyLabel = cached.strategyLabel || (bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard');
+            btMulti = { profitFactor: cached.pf, wins: 0, losses: 0, winRate: cached.winRate || 0.50, expectancy: 0, totalSignals: 0 };
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
@@ -663,7 +667,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.05.1
+            v2026.08.05.2
           </span>
         </div>
       </header>
