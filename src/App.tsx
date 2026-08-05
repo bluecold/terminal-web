@@ -99,7 +99,7 @@ function App() {
       const kl1h = (allData['1h'] || []).slice(0, -1);
       const kl1d = (allData['1d'] || []).slice(0, -1);
       const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
-      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 200) {
+      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 30) {
         btMulti = backtestMultitemporal(triggerKlines, kl1h, kl1d, '5m', currentAsset, executionStyle, triggerMode);
       }
       if (kl5m.length >= 30) {
@@ -384,7 +384,7 @@ function App() {
             const btScore = backtestScoring(closedData, interval);
 
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-            if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 200) {
+            if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
               const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
@@ -663,7 +663,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.03.3
+            v2026.08.05.1
           </span>
         </div>
       </header>

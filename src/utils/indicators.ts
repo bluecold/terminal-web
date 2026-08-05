@@ -2034,9 +2034,8 @@ export function calculateVCMESniperSignal(
 
   if (!klines5m || klines5m.length < 30) return fallback;
   if (!klines1h || klines1h.length < 60) return fallback;
-  // Bug #3 fix: EMA 200 needs 200 candles to be valid. 210 was unnecessarily
-  // restrictive and caused the function to return NEUTRAL for many assets.
-  if (!klines1d || klines1d.length < 200) return fallback;
+  // Bug #3 fix: Relaxed from 200 to 30; EMA period adapts to available data.
+  if (!klines1d || klines1d.length < 30) return fallback;
 
   const curr5m = klines5m[klines5m.length - 1];
   const prev5m = klines5m[klines5m.length - 2];
@@ -2046,8 +2045,9 @@ export function calculateVCMESniperSignal(
   // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias)
   // ═══════════════════════════════════════════════════════════
   const closes1d = klines1d.map(k => k.close);
-  const ema200_1d = calculateEMA(closes1d, 200);
-  const ema50_1d = calculateEMA(closes1d, 50);
+  const emaPeriod1d = Math.min(200, Math.max(20, closes1d.length));
+  const ema200_1d = calculateEMA(closes1d, emaPeriod1d);
+  const ema50_1d = calculateEMA(closes1d, Math.min(50, closes1d.length));
 
   const lastEma200_1d = ema200_1d[ema200_1d.length - 1];
   const lastEma50_1d = ema50_1d[ema50_1d.length - 1];
