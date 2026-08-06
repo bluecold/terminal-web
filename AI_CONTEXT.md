@@ -140,6 +140,13 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Actualización v2026.08.05.2 — Persistencia de Métricas de Caché & Calibración de Calidad VCME Sniper**:
   - **Caché Completo del Torneo (`App.tsx`)**: Se guardan la tasa de acierto (`winRate`) y el factor de beneficio (`profitFactor`) dentro de `bestStrategyRef` para que durante los 5 minutos del caché la función de señal use los datos verdaderos del backtest en vez de valores por defecto.
   - **Optimización de Calidad VCME Sniper (`indicators.ts`)**: Se ajustaron los filtros de calidad en velas de 5m (`closePosition >= 0.50`, `upperWickRatio <= 0.35`, `candleBodyRatio >= 0.30`) evitando descarta señales válidas por pequeñas mechas de retest.
+  - **Actualización v2026.08.06.1 — Especificación Algorítmica VCME v2.0 (Institutional Quant Engine)**:
+  - **Motor Algorítmico Cuantitativo Spec v2.0 (`indicators.ts`)**: Implementación rigurosa de la especificación VCME v2.0 con filtros previos de liquidez, pendiente de EMA200 1H (`ema200_slope_1H`) y régimen direccional de mercado.
+  - **Asimetría Estructural LONG vs SHORT**: Reglas diferenciadas para compras ($RVOL \ge 1.5$, $1.5 \times ATR_{5m}$ SL) y ventas en corto ($RVOL \ge 1.8$, $1.8 \times ATR_{5m}$ SL) para prevenir barridos de liquidez y short squeezes.
+  - **Score de Confianza Continuo [0.0 - 1.0]**: Función matemática continua ponderada (volumen, tendencia macro, momentum 1H, distancia a media y VWAP); supresión automática por debajo del $65\%$ ($0.65$).
+  - **Trailing Stop Avanzado con Chandelier Exit (22, 3.0)**: Salida dinámica por $EMA21_{1H}$ y *Chandelier Exit* de 1H en el objetivo secundario ($TP2$).
+  - **Clasificación DAY vs SWING con Time-Stop**: Clasificación basada en $ADX_{1H} > 30$; trades tipo `DAY` incluyen time-stop de 40 min en ausencia de momentum, trades tipo `SWING` ejecutan trailing de 1H.
+  - **Sincronización Total Backtest & Alertas (`backtester.ts`, `App.tsx`)**: Alineación completa del simulador `backtestMultitemporal` y el generador de alertas en segundo plano con las nuevas reglas VCME v2.0.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 

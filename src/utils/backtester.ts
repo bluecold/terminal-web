@@ -299,22 +299,6 @@ export function backtestMultitemporal(
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
 
-  // B3 fix: Pre-compute Support/Resistance with a rolling window of 100 candles
-  // to avoid O(n²) klines5m.slice(0, i+1) inside the main loop.
-  // We compute S/R at regular intervals (every 12 candles = ~1 hour for 5m) and cache.
-  const srCacheInterval = 1;
-  const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
-  const firstSrCacheIdx = Math.floor(oldestEvalIdx / srCacheInterval) * srCacheInterval;
-  for (let idx = firstSrCacheIdx; idx <= latestEvalIdx; idx += srCacheInterval) {
-    const windowStart = Math.max(0, idx - 100);
-    const windowSlice = klines5m.slice(windowStart, idx + 1);
-    const sr = calculateSupportResistance(windowSlice, klines5m[idx].close);
-    srCache.set(idx, { nearestSupport: sr.nearestSupport, nearestResistance: sr.nearestResistance });
-  }
-  const getCachedSR = (idx: number) => {
-    return srCache.get(idx) || { nearestSupport: 0, nearestResistance: 0 };
-  };
-
   let totalSignals = 0;
   let wins = 0;
   let losses = 0;
@@ -375,11 +359,9 @@ export function backtestMultitemporal(
     }
     if (idx1h < 50) { neutrals++; continue; }
 
-    const close1h = closes1h[idx1h];
     const rsiVal1h = rsiSeries1h[idx1h];
     const atrVal1h = atrSeries1h[idx1h];
     const vwapVal1h = vwapSeries1h[idx1h];
-    const atrSma1h = atrSma1hArr[idx1h] || 1;
     const macdHist1h = macdData1h.histogram[idx1h];
     const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
 
@@ -467,48 +449,6 @@ export function backtestMultitemporal(
     const p20BBWidth = last100Widths.length > 0 ? last100Widths[Math.floor(last100Widths.length * 0.2)] : 0;
     const last20Widths = bbWidth5m.slice(Math.max(0, bbIdx - 20), bbIdx + 1);
     const squeezePrev = last20Widths.some(w => w < p20BBWidth);
-
-    // ── CONFLUENCE SCORING ───────────────────────────────────────────────
-    const getConfluenceScore = (dir: 'LONG' | 'SHORT') => {
-      let pt = 0;
-      const isLong = dir === 'LONG';
-      
-      const activeBias = isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA';
-      if (activeBias) pt += 2;
-
-      if (lastAdx1d > 25) pt += 1;
-
-      if (volCurr5m / volAvg5m >= 2.0) pt += 2;
-
-      const activeVwap1h = isLong ? close1h > vwapVal1h : close1h < vwapVal1h;
-      if (activeVwap1h) pt += 1;
-
-      const activeMacd1h = isLong ? (macdHist1h > 0 && macdHist1h > macdHistPrev1h) : (macdHist1h < 0 && macdHist1h < macdHistPrev1h);
-      if (activeMacd1h) pt += 1;
-
-      if (squeezePrev) pt += 1;
-
-      const srLevel = getCachedSR(i);
-      const distSupport = srLevel.nearestSupport > 0 ? (curr.close - srLevel.nearestSupport) / curr.close : Infinity;
-      const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr.close) / curr.close : Infinity;
-      const nearLevel = isLong ? distSupport < 0.005 : distResist < 0.005;
-      
-      let donchianHigh = -Infinity;
-      let donchianLow = Infinity;
-      const donStart = Math.max(0, idx1d - 20);
-      for (let d = donStart; d <= idx1d; d++) {
-        if (klines1d[d].high > donchianHigh) donchianHigh = klines1d[d].high;
-        if (klines1d[d].low < donchianLow) donchianLow = klines1d[d].low;
-      }
-      const nearDonchian = isLong ? Math.abs(curr.close - donchianLow) / curr.close < 0.01 : Math.abs(curr.close - donchianHigh) / curr.close < 0.01;
-      
-      if (nearLevel || nearDonchian) pt += 1;
-
-      return pt;
-    };
-
-    const scoreLong = getConfluenceScore('LONG');
-    const scoreShort = getConfluenceScore('SHORT');
 
     // ── TRIGGERS ─────────────────────────────────────────────────────────
     
@@ -665,7 +605,7 @@ export function backtestMultitemporal(
                         checkBearishDivergence(klines5m, rsiSeries5m, i, 10) &&
                         curr.close < curr.open;
 
-    // ── QUALITY FILTERS ──────────────────────────────────────────────────
+    // ── QUALITY FILTERS & VCME v2.0 CONFIDENCE SCORE ─────────────────────
     const minutesSinceOpen = (() => {
       const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
       if (isCrypto) return 60;
@@ -678,19 +618,24 @@ export function backtestMultitemporal(
       return (i - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
     })();
 
+    const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
+    const candleRange = curr.high - curr.low;
+    const strengthCandleLong = candleRange > 0 ? (curr.close > curr.open) && ((curr.close - curr.low) > 0.60 * candleRange) : false;
+    const strengthCandleShort = candleRange > 0 ? (curr.close < curr.open) && ((curr.high - curr.close) > 0.60 * candleRange) : false;
+
     const qualityLong = (curr.close - vwap5m) <= 2.0 * atr5m &&
-                        candleBodyRatio(curr) >= 0.4 &&
-                        closePosition(curr) >= 0.60 &&
-                        upperWickRatio(curr) <= 0.25 &&
-                        minutesSinceOpen >= 15 &&
-                        volCurr5m / volAvg5m < 8.0;
+                        candleBodyRatio(curr) >= 0.3 &&
+                        strengthCandleLong &&
+                        upperWickRatio(curr) <= 0.35 &&
+                        minutesSinceOpen >= 5 &&
+                        rvol < 8.0;
 
     const qualityShort = (vwap5m - curr.close) <= 2.0 * atr5m &&
-                         candleBodyRatio(curr) >= 0.4 &&
-                         closePosition(curr) <= 0.40 &&
-                         lowerWickRatio(curr) <= 0.25 &&
-                         minutesSinceOpen >= 15 &&
-                         volCurr5m / volAvg5m < 8.0;
+                         candleBodyRatio(curr) >= 0.3 &&
+                         strengthCandleShort &&
+                         lowerWickRatio(curr) <= 0.35 &&
+                         minutesSinceOpen >= 5 &&
+                         rvol < 8.0;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     const triggerLong = (setupArmedLong && (condPullbackLong || condBreakoutLong)) && qualityLong;
@@ -705,22 +650,15 @@ export function backtestMultitemporal(
       signal = 'SELL';
     }
 
-    const baseScore = signal === 'BUY' ? scoreLong : (signal === 'SELL' ? scoreShort : Math.max(scoreLong, scoreShort));
-    const finalScorePercent = Math.round((baseScore / 9) * 100);
+    // VCME v2.0 Continuous Confidence Score (0.0 to 1.0)
+    const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
+    const macroScore = 0.25 * (signal === 'BUY' ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
+    const macdScore = 0.20 * (signal === 'BUY' ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
+    const distScore = 0.15 * Math.min(Math.abs(curr.close - ema21Val) / (atr5m || 1), 1.0);
+    const vwapScore = 0.10 * (signal === 'BUY' ? (curr.close > vwap5m ? 1 : 0) : (curr.close < vwap5m ? 1 : 0));
+    const confidenceScore = Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
 
-    let requiredThreshold = 44; // score >= 4
-    if (atrVal1h > 1.2 * atrSma1h) requiredThreshold = 33; // score >= 3
-    else if (atrVal1h < 0.8 * atrSma1h) requiredThreshold = 55; // score >= 5
-
-    // Grade Confidence
-    let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
-    if (finalScorePercent >= 70) {
-      confidence = 'ALTA';
-    } else if (finalScorePercent >= requiredThreshold) {
-      confidence = 'MODERADA';
-    }
-
-    if (signal !== 'NEUTRAL' && confidence === 'DESCARTAR') {
+    if (signal !== 'NEUTRAL' && confidenceScore < 0.65) {
       signal = 'NEUTRAL';
     }
 
@@ -729,12 +667,20 @@ export function backtestMultitemporal(
       continue;
     }
 
-    // ── RISK & POSITION CONFIG ───────────────────────────────────────────
+    // Trade Type classification (DAY vs SWING)
+    let tradeType: 'DAY' | 'SWING' = 'DAY';
+    if (lastAdx1d > 30) {
+      if ((signal === 'BUY' && macdHist1h > macdHistPrev1h) ||
+          (signal === 'SELL' && macdHist1h < macdHistPrev1h)) {
+        tradeType = 'SWING';
+      }
+    }
+
+    // ── RISK & POSITION CONFIG (VCME v2.0 Asymmetric SL) ──────────────────
     const entry = curr.close;
     let stopLoss = 0;
     
-    // Swing style SL lookback is 5 bars, Day Trading is 10 bars
-    const lookbackS = Math.max(0, i - (style === 'swing' ? 5 : 10));
+    const lookbackS = Math.max(0, i - (tradeType === 'SWING' ? 5 : 10));
     let swingLow = Infinity;
     let swingHigh = -Infinity;
     for (let s = lookbackS; s < i; s++) {
@@ -742,15 +688,15 @@ export function backtestMultitemporal(
       if (klines5m[s].high > swingHigh) swingHigh = klines5m[s].high;
     }
 
-    const atrMult = style === 'swing' ? 1.0 : 1.5;
-    const tp1Mult = style === 'swing' ? 2.0 : 1.5;
-    const tp2Mult = style === 'swing' ? 4.0 : 2.5;
-    const tp3Mult = style === 'swing' ? 5.0 : 3.5;
+    const atrMultLong = 1.5;
+    const atrMultShort = 1.8;
+    const tp1Mult = 2.0;
+    const tp2Mult = 3.5;
+    const tp3Mult = 5.0;
 
     if (signal === 'BUY') {
-      const slATR = entry - atrMult * atr5m;
-      const slStruct = swingLow - 0.25 * atr5m;
-      
+      const slATR = entry - atrMultLong * atr5m;
+      const slStruct = swingLow > 0 ? (swingLow - 0.20 * atr5m) : slATR;
       stopLoss = Math.min(slATR, slStruct);
       let risk = entry - stopLoss;
       const minRisk = 0.8 * atr5m;
@@ -762,15 +708,14 @@ export function backtestMultitemporal(
       }
 
       const riskPercent = risk / entry;
-      const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
+      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
       }
     } else {
-      const slATR = entry + atrMult * atr5m;
-      const slStruct = swingHigh + 0.25 * atr5m;
-      
+      const slATR = entry + atrMultShort * atr5m;
+      const slStruct = swingHigh > 0 ? (swingHigh + 0.20 * atr5m) : slATR;
       stopLoss = Math.max(slATR, slStruct);
       let risk = stopLoss - entry;
       const minRisk = 0.8 * atr5m;
@@ -782,7 +727,7 @@ export function backtestMultitemporal(
       }
 
       const riskPercent = risk / entry;
-      const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
+      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         neutrals++;
         continue;
@@ -813,8 +758,6 @@ export function backtestMultitemporal(
       if (k.high > highestHigh) highestHigh = k.high;
       if (k.low < lowestLow) lowestLow = k.low;
 
-      // Stop execution takes precedence over close-based exits. With OHLC data
-      // this is the conservative assumption when both are possible in one bar.
       const isLongEmergency = k.close < vwapSeries5m[f] && k.close < ema21_5m[f];
       const isShortEmergency = k.close > vwapSeries5m[f] && k.close > ema21_5m[f];
 
@@ -839,8 +782,8 @@ export function backtestMultitemporal(
           break;
         }
 
-        // Time Stop: 12 candles
-        if (!tp1Hit && (f - i) >= 12) {
+        // Time Stop for DAY trades: 8 candles (40 min)
+        if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
           const currentPnl = k.close - entry;
           if (currentPnl < 0.5 * risk) {
             pnlPct = (currentPnl / entry) * 100;

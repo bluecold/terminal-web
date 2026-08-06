@@ -1803,18 +1803,23 @@ export function candleClosePosition(k: Kline): number {
 }
 
 // ==========================================
-// VCME SNIPER ENGINE — 3-Layer Multi-Temporal Signal
+// VCME SNIPER ENGINE — 3-Layer Multi-Temporal Signal (v2.0)
 // Replaces the old calculateMultitemporalSignal (Filtro Maestro)
 // ==========================================
 
 export interface VCMESniperResult {
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
   mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'REVERSAL' | 'NONE';
+  tradeType: 'DAY' | 'SWING';
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
   takeProfit3: number;
   riskRewardRatio: number;
+  chandelierExit: number;
+  positionSizeUnits: number;
+  riskAmount: number;
+  confidenceScore: number;
   // Context for UI display
   bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL';
   adx1H: number;
@@ -1842,6 +1847,38 @@ export interface VCMESniperResult {
   atrPercent: number;
   avgDailyRange: number;
   confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR';
+  // Payload Snapshot for alerts and trailing persistence
+  snapshot?: {
+    atr_5m: number;
+    atr_1H: number;
+    ema21_1H: number;
+    vwap_5m: number;
+    rvol: number;
+  };
+}
+
+export function calculateChandelierExit(klines1h: Kline[], period: number = 22, multiplier: number = 3.0): { long: number[]; short: number[] } {
+  const length = klines1h ? klines1h.length : 0;
+  const longExit: number[] = new Array(length).fill(NaN);
+  const shortExit: number[] = new Array(length).fill(NaN);
+  if (!klines1h || length < period) return { long: longExit, short: shortExit };
+
+  const atrSeries = calculateATRSeries(klines1h, period);
+
+  for (let i = period - 1; i < length; i++) {
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (klines1h[j].high > highestHigh) highestHigh = klines1h[j].high;
+      if (klines1h[j].low < lowestLow) lowestLow = klines1h[j].low;
+    }
+    const atr = atrSeries[i];
+    if (!isNaN(atr)) {
+      longExit[i] = highestHigh - multiplier * atr;
+      shortExit[i] = lowestLow + multiplier * atr;
+    }
+  }
+  return { long: longExit, short: shortExit };
 }
 
 const nycFormatter = new Intl.DateTimeFormat('en-US', {
@@ -2013,14 +2050,15 @@ export function calculateVCMESniperSignal(
   klines1h: Kline[],
   klines1d: Kline[],
   symbol?: string,
-  recentWinRate?: number,
-  recentProfitFactor?: number,
+  _recentWinRate?: number,
+  _recentProfitFactor?: number,
   style: 'dayTrading' | 'swing' = 'dayTrading',
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): VCMESniperResult {
   const fallback: VCMESniperResult = {
-    signal: 'NEUTRAL', mode: 'NONE',
+    signal: 'NEUTRAL', mode: 'NONE', tradeType: 'DAY',
     stopLoss: 0, takeProfit1: 0, takeProfit2: 0, takeProfit3: 0, riskRewardRatio: 0,
+    chandelierExit: 0, positionSizeUnits: 0, riskAmount: 100, confidenceScore: 0,
     bias1D: 'NEUTRAL', adx1H: 0, momentum1H: 'NEUTRAL',
     triggerDetail: 'Datos insuficientes',
     rsi1H: 50, macdHistDirection: 'PLANO',
@@ -2034,7 +2072,6 @@ export function calculateVCMESniperSignal(
 
   if (!klines5m || klines5m.length < 30) return fallback;
   if (!klines1h || klines1h.length < 60) return fallback;
-  // Bug #3 fix: Relaxed from 200 to 30; EMA period adapts to available data.
   if (!klines1d || klines1d.length < 30) return fallback;
 
   const curr5m = klines5m[klines5m.length - 1];
@@ -2042,7 +2079,7 @@ export function calculateVCMESniperSignal(
   const lastIdx = klines5m.length - 1;
 
   // ═══════════════════════════════════════════════════════════
-  // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias)
+  // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias - VCME v2.0)
   // ═══════════════════════════════════════════════════════════
   const closes1d = klines1d.map(k => k.close);
   const emaPeriod1d = Math.min(200, Math.max(20, closes1d.length));
@@ -2067,7 +2104,6 @@ export function calculateVCMESniperSignal(
   const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
 
   let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  // bias_long = (close_1d > ema200_1d and ema50_1d > ema200_1d and adx_1d > 20 and plus_di_1d > minus_di_1d)
   const bias_long = lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
   const bias_short = lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
 
@@ -2075,9 +2111,10 @@ export function calculateVCMESniperSignal(
   else if (bias_short) bias1D = 'BAJISTA';
 
   // ═══════════════════════════════════════════════════════════
-  // 2. FILTROS Y SETUP DE 1H (Stateless State Machine)
+  // 2. FILTROS Y SETUP DE 1H (VCME v2.0 Context & Regime)
   // ═══════════════════════════════════════════════════════════
   const closes1h = klines1h.map(k => k.close);
+  const ema200_1h = calculateEMA(closes1h, Math.min(200, closes1h.length));
   const ema50_1h = calculateEMA(closes1h, 50);
   const ema20_1h = calculateEMA(closes1h, 20);
   const rsiSeries1h = calculateRSISeries(closes1h, 14);
@@ -2085,6 +2122,7 @@ export function calculateVCMESniperSignal(
   const macdData1h = calculateMACDSeries(closes1h);
   const atrSeries1h = calculateATRSeries(klines1h, 14);
   const vwapSeries1h = calculateVWAPSeries(klines1h, '1h', symbol);
+  const chandelierData = calculateChandelierExit(klines1h, 22, 3.0);
 
   // Find latest closed 1H candle before current trigger timeframe candle
   let idx1h = -1;
@@ -2101,13 +2139,21 @@ export function calculateVCMESniperSignal(
   }
 
   const close1h = closes1h[idx1h];
+  const ema200Val1h = ema200_1h[idx1h];
   const ema50Val1h = ema50_1h[idx1h];
+  const ema20Val1h = ema20_1h[idx1h];
   const rsiVal1h = rsiSeries1h[idx1h];
   const adxVal1h = adxSeries1h.adx[idx1h];
   const atrVal1h = atrSeries1h[idx1h];
   const vwapVal1h = vwapSeries1h[idx1h];
   const macdHist1h = macdData1h.histogram[idx1h];
   const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
+
+  // EMA200 1H Slope calculation (VCME v2.0 Sec 3.3)
+  const ema200Prev5_1h = idx1h >= 5 ? ema200_1h[idx1h - 5] : ema200Val1h;
+  const ema200Slope1h = ema200Prev5_1h > 0 ? (ema200Val1h - ema200Prev5_1h) / ema200Prev5_1h : 0;
+  const regimeOkLong = adxVal1h > 20 && ema200Slope1h > 0.0005;
+  const regimeOkShort = adxVal1h > 20 && ema200Slope1h < -0.0005;
 
   // Volatility average for regime
   const atrSma1hArr = new Array(klines1h.length).fill(0);
@@ -2155,37 +2201,36 @@ export function calculateVCMESniperSignal(
     return closes1h[hIdx] > vwapSeries1h[hIdx] || ema20_1h[hIdx] > ema50_1h[hIdx];
   };
 
-  // Bug #2 fix: changed `break` to `continue` on invalidation so that a single
-  // invalidated 1H candle does not prevent checking the previous 2 hours.
-  // A setup armed 2 hours ago remains valid if only the latest candle is neutral.
   let setupArmedLong = false;
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedLong(hIdx)) continue; // skip this candle, check older ones
+    if (isInvalidatedLong(hIdx)) continue;
     if (isSetupLongCandle(hIdx)) {
       setupArmedLong = true;
       break;
     }
   }
+  setupArmedLong = setupArmedLong && regimeOkLong;
 
   let setupArmedShort = false;
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedShort(hIdx)) continue; // skip this candle, check older ones
+    if (isInvalidatedShort(hIdx)) continue;
     if (isSetupShortCandle(hIdx)) {
       setupArmedShort = true;
       break;
     }
   }
+  setupArmedShort = setupArmedShort && regimeOkShort;
 
   let momentum1H: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
   if (setupArmedLong) momentum1H = 'ALCISTA';
   else if (setupArmedShort) momentum1H = 'BAJISTA';
 
   // ═══════════════════════════════════════════════════════════
-  // 3. INDICADORES DE GATILLO (5m o 1H para Swing) Y PREPARACIÓN
+  // 3. INDICADORES DE GATILLO (5m) Y PREPARACIÓN
   // ═══════════════════════════════════════════════════════════
   const closes5m = klines5m.map(k => k.close);
   const bbSeries5m = calculateBollingerBandsSeries(klines5m, 20, 2);
@@ -2195,7 +2240,6 @@ export function calculateVCMESniperSignal(
   const rsiSeries5m = calculateRSISeries(closes5m, 14);
   const atrSeries5m = calculateATRSeries(klines5m, 14);
 
-  // Volume SMA 20 for trigger timeframe
   const vol5m = klines5m.map(k => k.volume);
   const volSma5m: number[] = new Array(klines5m.length).fill(0);
   let volSum5m = 0;
@@ -2215,21 +2259,19 @@ export function calculateVCMESniperSignal(
   const atr5m = atrSeries5m[lastIdx];
   const volCurr5m = vol5m[lastIdx];
   
-  // RVOL Estacional/Horario
   const volAvg5m = calculateTimeOfDayVolumeAvg(klines5m, lastIdx, 20);
+  const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
 
   if (!bb || isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
     return { ...fallback, bias1D, momentum1H, triggerDetail: 'Indicadores de gatillo no calculables' };
   }
 
-  // Bollinger Band Width squeeze (20th percentile)
   const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
   const last100Widths = bbWidth5m.slice(-100).filter(v => !isNaN(v)).sort((a, b) => a - b);
   const p20BBWidth = last100Widths.length > 0 ? last100Widths[Math.floor(last100Widths.length * 0.2)] : 0;
   const last20Widths = bbWidth5m.slice(-20);
   const squeezePrev = last20Widths.some(w => w < p20BBWidth);
 
-  // MACD Histogram Direction for display
   let macdHistDir: 'CRECIENTE' | 'DECRECIENTE' | 'PLANO' = 'PLANO';
   if (!isNaN(macdHist1h) && !isNaN(macdHistPrev1h)) {
     if (macdHist1h > macdHistPrev1h) macdHistDir = 'CRECIENTE';
@@ -2237,10 +2279,9 @@ export function calculateVCMESniperSignal(
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 4. ESTRATEGIAS DE DISPARO Y GATILLO
+  // 4. ESTRATEGIAS DE DISPARO Y GATILLO (Asimétrico LONG vs SHORT)
   // ═══════════════════════════════════════════════════════════
   
-  // Helper to check for a breakout at any historical index (used for retest validation)
   const checkBreakoutAtIdx = (idx: number, dir: 'LONG' | 'SHORT') => {
     if (idx < 20 || idx >= klines5m.length) return false;
     const k = klines5m[idx];
@@ -2249,26 +2290,26 @@ export function calculateVCMESniperSignal(
     const prevB = bbSeries5m[idx - 20];
     const rsi = rsiSeries5m[idx];
     const vw = vwapSeries5m[idx];
-    const rvol = k.volume / (volSma5m[idx] || 1);
+    const rvolLocal = k.volume / (volSma5m[idx] || 1);
 
     if (!b || !prevB || isNaN(rsi) || isNaN(vw)) return false;
 
     if (dir === 'LONG') {
       const gateVWAP = k.close > vw;
       const gateBreakout = k.close > b.upper && prevK.close <= prevB.upper;
-      const gateVol = rvol >= 1.5;
+      const gateVol = rvolLocal >= 1.5;
       const gateRSI = rsi > 50 && rsi < 75;
       return gateVWAP && gateBreakout && gateVol && gateRSI;
     } else {
       const gateVWAP = k.close < vw;
       const gateBreakout = k.close < b.lower && prevK.close >= prevB.lower;
-      const gateVol = rvol >= 1.5;
+      const gateVol = rvolLocal >= 1.8; // VCME v2.0 Asymmetry: 1.8x for SHORT
       const gateRSI = rsi < 50 && rsi > 25;
       return gateVWAP && gateBreakout && gateVol && gateRSI;
     }
   };
 
-  // A. PULLBACK GATILLO (Solo en modo agresivo)
+  // A. PULLBACK GATILLO (Agresivo)
   const hasPullbackLong = (idx: number) => {
     if (idx < 10) return false;
     const low = klines5m[idx].low;
@@ -2300,7 +2341,7 @@ export function calculateVCMESniperSignal(
                            (hasPullbackLong(lastIdx) || hasPullbackLong(lastIdx - 1) || hasPullbackLong(lastIdx - 2)) &&
                            curr5m.close > maxPrevHigh3 &&
                            curr5m.close > curr5m.open &&
-                           volCurr5m / volAvg5m >= 1.5 &&
+                           rvol >= 1.5 &&
                            curr5m.close > vwap5m;
 
   const minPrevLow3 = Math.min(klines5m[lastIdx - 1].low, klines5m[lastIdx - 2].low, klines5m[lastIdx - 3].low);
@@ -2308,15 +2349,14 @@ export function calculateVCMESniperSignal(
                             (hasPullbackShort(lastIdx) || hasPullbackShort(lastIdx - 1) || hasPullbackShort(lastIdx - 2)) &&
                             curr5m.close < minPrevLow3 &&
                             curr5m.close < curr5m.open &&
-                            volCurr5m / volAvg5m >= 1.5 &&
+                            rvol >= 1.8 && // VCME v2.0 Asymmetry: 1.8x volume for SHORT
                             curr5m.close < vwap5m;
 
-  // B. BREAKOUT GATILLO (Agresivo = Ruptura Directa / Conservador = Espera Retest de la Banda Rota)
+  // B. BREAKOUT GATILLO
   let condBreakoutLong = false;
   let condBreakoutShort = false;
 
   if (triggerMode === 'conservador') {
-    // Buscar si hubo ruptura en las últimas 5 velas
     let recentBreakoutIdx = -1;
     for (let offset = 1; offset <= 5; offset++) {
       const idx = lastIdx - offset;
@@ -2330,11 +2370,8 @@ export function calculateVCMESniperSignal(
       const breakoutBB = bbSeries5m[recentBreakoutIdx - 19];
       if (breakoutBB) {
         const level = breakoutBB.upper;
-        // Retest: low de la vela toca/está cerca del nivel roto y cierra sobre él
         const retestSostenido = curr5m.low >= level * 0.998 && curr5m.close > level;
-        if (retestSostenido) {
-          condBreakoutLong = true;
-        }
+        if (retestSostenido) condBreakoutLong = true;
       }
     }
 
@@ -2351,41 +2388,32 @@ export function calculateVCMESniperSignal(
       const breakdownBB = bbSeries5m[recentBreakdownIdx - 19];
       if (breakdownBB) {
         const level = breakdownBB.lower;
-        // Retest: high de la vela toca/está cerca del nivel roto y cierra bajo él
         const retestSostenido = curr5m.high <= level * 1.002 && curr5m.close < level;
-        if (retestSostenido) {
-          condBreakoutShort = true;
-        }
+        if (retestSostenido) condBreakoutShort = true;
       }
     }
   } else {
-    // Ruptura directa (Agresivo) con Squeeze Bollinger y Opening Range
     const orb = getOpeningRange(klines5m, lastIdx, style === 'swing' ? '1h' : '5m', symbol);
     const prevOrb = getOpeningRange(klines5m, lastIdx - 1, style === 'swing' ? '1h' : '5m', symbol);
 
     const breakoutLongPrev = prevOrb.isActive &&
                              prev5m.close > prevOrb.high + 0.10 * atrSeries5m[lastIdx - 1] &&
                              bbIdx > 0 && prev5m.close > bbSeries5m[bbIdx - 1].upper &&
-                             (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 2.0 &&
+                             (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 1.5 &&
                              (prev5m.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[lastIdx - 1];
 
-    // Bug #1 fix: changed curr5m.low > orb.high to curr5m.close > orb.high.
-    // Requiring the candle LOW to be above the ORB is nearly impossible in practice
-    // since breakout candles almost always have a wick touching the ORB level.
-    // The standard confirmation is that the CLOSE is above the ORB.
     condBreakoutLong = squeezePrev && breakoutLongPrev && curr5m.close > orb.high;
 
     const breakoutShortPrev = prevOrb.isActive &&
                               prev5m.close < prevOrb.low - 0.10 * atrSeries5m[lastIdx - 1] &&
                               bbIdx > 0 && prev5m.close < bbSeries5m[bbIdx - 1].lower &&
-                              (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 2.0 &&
+                              (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 1.8 && // VCME v2.0 Asymmetry: 1.8x
                               (bbSeries5m[bbIdx - 1].lower - prev5m.close) <= 1.0 * atrSeries5m[lastIdx - 1];
 
-    // Bug #1 fix (symmetric): changed curr5m.high < orb.low to curr5m.close < orb.low.
     condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.close < orb.low;
   }
 
-  // C. MEAN REVERSION (Solo en Bias Neutral con Divergencia)
+  // C. MEAN REVERSION
   const condMRLong = bias1D === 'NEUTRAL' &&
                      curr5m.close < bb.lower &&
                      rsi5m < 25 &&
@@ -2399,11 +2427,11 @@ export function calculateVCMESniperSignal(
                       curr5m.close < curr5m.open;
 
   // ═══════════════════════════════════════════════════════════
-  // 5. FILTROS DE CALIDAD Y EJECUCIÓN
+  // 5. FILTROS PREVIOS Y CALIDAD DE VELA (VCME v2.0 Sec 3.5 & Sec 4/5)
   // ═══════════════════════════════════════════════════════════
   const minutesSinceOpen = (() => {
     const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
-    if (isCrypto) return 60; // always valid
+    if (isCrypto) return 60;
     let sessionStartIdx = lastIdx;
     const currentSession = getSessionId(curr5m, style === 'swing' ? '1h' : '5m', symbol);
     while (sessionStartIdx > 0 && getSessionId(klines5m[sessionStartIdx - 1], style === 'swing' ? '1h' : '5m', symbol) === currentSession) {
@@ -2413,64 +2441,55 @@ export function calculateVCMESniperSignal(
     return (lastIdx - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
   })();
 
-  const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m && // no chasing
-                      candleBodyRatio(curr5m) >= 0.3 && // no doji
-                      closePosition(curr5m) >= 0.50 &&
+  const candleRange = curr5m.high - curr5m.low;
+  const strengthCandleLong = candleRange > 0 ? (curr5m.close > curr5m.open) && ((curr5m.close - curr5m.low) > 0.60 * candleRange) : false;
+  const strengthCandleShort = candleRange > 0 ? (curr5m.close < curr5m.open) && ((curr5m.high - curr5m.close) > 0.60 * candleRange) : false;
+
+  const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m &&
+                      candleBodyRatio(curr5m) >= 0.3 &&
+                      strengthCandleLong &&
                       upperWickRatio(curr5m) <= 0.35 &&
-                      minutesSinceOpen >= 15 && // avoid opening chaos
-                      volCurr5m / volAvg5m < 8.0; // avoid news spike
+                      minutesSinceOpen >= 5 &&
+                      rvol < 8.0;
 
   const qualityShort = (vwap5m - curr5m.close) <= 2.0 * atr5m &&
                        candleBodyRatio(curr5m) >= 0.3 &&
-                       closePosition(curr5m) <= 0.50 &&
+                       strengthCandleShort &&
                        lowerWickRatio(curr5m) <= 0.35 &&
-                       minutesSinceOpen >= 15 &&
-                       volCurr5m / volAvg5m < 8.0;
+                       minutesSinceOpen >= 5 &&
+                       rvol < 8.0;
 
   // ═══════════════════════════════════════════════════════════
-  // 6. SISTEMA DE PUNTUACIÓN DE CONFLUENCIA (0-9)
+  // 6. CONFIDENCE SCORE FÓRMULA CONTINUA (VCME v2.0 Sec 6: 0.0 a 1.0)
   // ═══════════════════════════════════════════════════════════
+  const getContinuousConfidence = (dir: 'LONG' | 'SHORT') => {
+    const isLong = dir === 'LONG';
+    const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
+    const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
+    const macdScore = 0.20 * (isLong ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
+    const distScore = 0.15 * Math.min(Math.abs(curr5m.close - ema21Val) / (atr5m || 1), 1.0);
+    const vwapScore = 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0));
+    return Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
+  };
+
+  const confidenceScoreLong = getContinuousConfidence('LONG');
+  const confidenceScoreShort = getContinuousConfidence('SHORT');
+
+  // Legacy Discrete Score 0-9 for UI compatibility
   const getConfluenceScore = (dir: 'LONG' | 'SHORT') => {
     let pt = 0;
     const isLong = dir === 'LONG';
-    
-    // A. Bias 1D alineado (+2)
-    const activeBias = isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA';
-    if (activeBias) pt += 2;
-
-    // B. ADX 1D > 25 (+1)
+    if (isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA') pt += 2;
     if (lastAdx1d > 25) pt += 1;
-
-    // C. RVOL >= 2.0 (+2)
-    if (volCurr5m / volAvg5m >= 2.0) pt += 2;
-
-    // D. Precio 1H sobre/bajo VWAP (+1)
-    const activeVwap1h = isLong ? close1h > vwapVal1h : close1h < vwapVal1h;
-    if (activeVwap1h) pt += 1;
-
-    // E. MACD 1H histograma expandiendo (+1)
-    const activeMacd1h = isLong ? (macdHist1h > 0 && macdHist1h > macdHistPrev1h) : (macdHist1h < 0 && macdHist1h < macdHistPrev1h);
-    if (activeMacd1h) pt += 1;
-
-    // F. Squeeze Bollinger previo (+1)
+    if (rvol >= 2.0) pt += 2;
+    if (isLong ? close1h > vwapVal1h : close1h < vwapVal1h) pt += 1;
+    if (isLong ? (macdHist1h > 0 && macdHist1h > macdHistPrev1h) : (macdHist1h < 0 && macdHist1h < macdHistPrev1h)) pt += 1;
     if (squeezePrev) pt += 1;
 
-    // G. Soporte/Resistencia o Donchian 20 coincidente (+1)
     const srLevel = calculateSupportResistance(klines5m, curr5m.close);
     const distSupport = srLevel.nearestSupport > 0 ? (curr5m.close - srLevel.nearestSupport) / curr5m.close : Infinity;
     const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr5m.close) / curr5m.close : Infinity;
-    const nearLevel = isLong ? distSupport < 0.005 : distResist < 0.005;
-    
-    let donchianHigh = -Infinity;
-    let donchianLow = Infinity;
-    const donStart = Math.max(0, klines1d.length - 20);
-    for (let d = donStart; d < klines1d.length; d++) {
-      if (klines1d[d].high > donchianHigh) donchianHigh = klines1d[d].high;
-      if (klines1d[d].low < donchianLow) donchianLow = klines1d[d].low;
-    }
-    const nearDonchian = isLong ? Math.abs(curr5m.close - donchianLow) / curr5m.close < 0.01 : Math.abs(curr5m.close - donchianHigh) / curr5m.close < 0.01;
-    
-    if (nearLevel || nearDonchian) pt += 1;
+    if (isLong ? distSupport < 0.005 : distResist < 0.005) pt += 1;
 
     return pt;
   };
@@ -2479,7 +2498,7 @@ export function calculateVCMESniperSignal(
   const scoreShort = getConfluenceScore('SHORT');
 
   // ═══════════════════════════════════════════════════════════
-  // 7. DETERMINAR SEÑAL FINAL Y MODALIDAD
+  // 7. DETERMINAR SEÑAL FINAL, CLASIFICACIÓN Y SUPRESIÓN
   // ═══════════════════════════════════════════════════════════
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   let mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
@@ -2509,40 +2528,43 @@ export function calculateVCMESniperSignal(
     triggerDetail = 'Gatillo Reversión a la Media (Sobrecompra extrema BB + Divergencia RSI)';
   }
 
+  const confidenceScore = signal === 'BUY' ? confidenceScoreLong : (signal === 'SELL' ? confidenceScoreShort : Math.max(confidenceScoreLong, confidenceScoreShort));
   const baseScore = signal === 'BUY' ? scoreLong : (signal === 'SELL' ? scoreShort : Math.max(scoreLong, scoreShort));
-  const finalScorePercent = Math.round((baseScore / 9) * 100);
+  const finalScorePercent = Math.round(confidenceScore * 100);
 
-  let requiredThreshold = 44; // score >= 4
-  if (atrVal1h > 1.2 * atrSma1h) requiredThreshold = 33; // score >= 3
-  else if (atrVal1h < 0.8 * atrSma1h) requiredThreshold = 55; // score >= 5
-
-  // Grade Confidence
-  let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
-  if (finalScorePercent >= 70) {
-    confidence = 'ALTA';
-  } else if (finalScorePercent >= requiredThreshold) {
-    confidence = 'MODERADA';
-  }
-
-  if (signal !== 'NEUTRAL' && confidence === 'DESCARTAR') {
+  // Suppress signal if confidence score is below 0.65 threshold (VCME v2.0 Sec 6)
+  if (signal !== 'NEUTRAL' && confidenceScore < 0.65) {
     signal = 'NEUTRAL';
     mode = 'NONE';
-    triggerDetail = `Fuerza confluente insuficiente: ${baseScore} puntos (${finalScorePercent}%)`;
+    triggerDetail = `Confidence Score insuficiente: ${(confidenceScore * 100).toFixed(0)}% (requerido >= 65%)`;
   }
 
+  // Clasificación Trade Type (DAY vs SWING - Sec 8.3)
+  let tradeType: 'DAY' | 'SWING' = 'DAY';
+  if (adxVal1h > 30) {
+    if ((signal === 'BUY' && macdHist1h > macdHistPrev1h) ||
+        (signal === 'SELL' && macdHist1h < macdHistPrev1h)) {
+      tradeType = 'SWING';
+    }
+  }
+
+  let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
+  if (confidenceScore >= 0.75) confidence = 'ALTA';
+  else if (confidenceScore >= 0.65) confidence = 'MODERADA';
+
   // ═══════════════════════════════════════════════════════════
-  // 8. GESTIÓN DE RIESGO (Stop Loss y Take Profits escalonados)
+  // 8. GESTIÓN DE RIESGO ASIMÉTRICA Y CHANDELIER EXIT (VCME v2.0)
   // ═══════════════════════════════════════════════════════════
   let stopLoss = 0;
   let takeProfit1 = 0;
   let takeProfit2 = 0;
   let takeProfit3 = 0;
   let riskRewardRatio = 0;
+  let chandelierExit = 0;
 
   const entry = curr5m.close;
   
-  // Swing style SL lookback is 5 bars, Day Trading is 10 bars
-  const lookbackS = Math.max(0, lastIdx - (style === 'swing' ? 5 : 10));
+  const lookbackS = Math.max(0, lastIdx - (tradeType === 'SWING' ? 5 : 10));
   let swingLow = Infinity;
   let swingHigh = -Infinity;
   for (let s = lookbackS; s < lastIdx; s++) {
@@ -2550,111 +2572,48 @@ export function calculateVCMESniperSignal(
     if (klines5m[s].high > swingHigh) swingHigh = klines5m[s].high;
   }
 
-  const atrMult = style === 'swing' ? 1.0 : 1.5;
-  const tp1Mult = style === 'swing' ? 2.0 : 1.5;
-  const tp2Mult = style === 'swing' ? 4.0 : 2.5;
-  const tp3Mult = style === 'swing' ? 5.0 : 3.5;
+  // Asymmetric SL multipliers (LONG: 1.5 ATR / SHORT: 1.8 ATR)
+  const atrMultLong = 1.5;
+  const atrMultShort = 1.8;
+  const tp1Mult = 2.0;
+
+  const chandelierLong = chandelierData.long[idx1h];
+  const chandelierShort = chandelierData.short[idx1h];
 
   if (signal === 'BUY') {
-    const slATR = entry - atrMult * atr5m;
-    const slStruct = swingLow - 0.25 * atr5m;
-    
-    // Conservative SL: Math.min (lowest price, furthest from entry)
+    const slATR = entry - atrMultLong * atr5m;
+    const slStruct = swingLow > 0 ? (swingLow - 0.20 * atr5m) : slATR;
     stopLoss = Math.min(slATR, slStruct);
 
-    let risk = entry - stopLoss;
-    const minRisk = 0.8 * atr5m;
-    const maxRisk = 1.8 * atr5m;
-
-    if (risk < minRisk) {
-      stopLoss = entry - minRisk;
-      risk = minRisk;
-    }
-
-    const riskPercent = risk / entry;
-    const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
-    if (risk > maxRisk || riskPercent > maxAllowedRisk) {
-      signal = 'NEUTRAL';
-      mode = 'NONE';
-      triggerDetail = `Riesgo excesivo (${(riskPercent * 100).toFixed(2)}% > ${(maxAllowedRisk * 100).toFixed(1)}% / >1.8 ATR)`;
-      stopLoss = 0;
-    } else {
-      takeProfit1 = entry + risk * tp1Mult;
-      takeProfit2 = entry + risk * tp2Mult;
-      takeProfit3 = entry + risk * tp3Mult; // trailing target
-      riskRewardRatio = tp1Mult;
-    }
+    chandelierExit = !isNaN(chandelierLong) ? Number(chandelierLong.toFixed(2)) : Number((entry - 3.0 * atrVal1h).toFixed(2));
+    takeProfit1 = entry + tp1Mult * Math.abs(entry - stopLoss);
+    takeProfit2 = Math.max(ema20Val1h, chandelierExit); // Trailing method
+    takeProfit3 = entry + 3.5 * Math.abs(entry - stopLoss);
+    riskRewardRatio = tp1Mult;
   } else if (signal === 'SELL') {
-    const slATR = entry + atrMult * atr5m;
-    const slStruct = swingHigh + 0.25 * atr5m;
-    
-    // Conservative SL: Math.max (highest price, furthest from entry)
+    const slATR = entry + atrMultShort * atr5m;
+    const slStruct = swingHigh > 0 ? (swingHigh + 0.20 * atr5m) : slATR;
     stopLoss = Math.max(slATR, slStruct);
 
-    let risk = stopLoss - entry;
-    const minRisk = 0.8 * atr5m;
-    const maxRisk = 1.8 * atr5m;
-
-    if (risk < minRisk) {
-      stopLoss = entry + minRisk;
-      risk = minRisk;
-    }
-
-    const riskPercent = risk / entry;
-    const maxAllowedRisk = style === 'swing' ? 0.035 : 0.012;
-    if (risk > maxRisk || riskPercent > maxAllowedRisk) {
-      signal = 'NEUTRAL';
-      mode = 'NONE';
-      triggerDetail = `Riesgo excesivo (${(riskPercent * 100).toFixed(2)}% > ${(maxAllowedRisk * 100).toFixed(1)}% / >1.8 ATR)`;
-      stopLoss = 0;
-    } else {
-      takeProfit1 = entry - risk * tp1Mult;
-      takeProfit2 = entry - risk * tp2Mult;
-      takeProfit3 = entry - risk * tp3Mult;
-      riskRewardRatio = tp1Mult;
-    }
+    chandelierExit = !isNaN(chandelierShort) ? Number(chandelierShort.toFixed(2)) : Number((entry + 3.0 * atrVal1h).toFixed(2));
+    takeProfit1 = entry - tp1Mult * Math.abs(stopLoss - entry);
+    takeProfit2 = Math.min(ema20Val1h, chandelierExit); // Trailing method
+    takeProfit3 = entry - 3.5 * Math.abs(stopLoss - entry);
+    riskRewardRatio = tp1Mult;
   }
 
-  // Meta-learning / Adaptive Factor calculations
-  let adaptiveFactor = 1.0;
-  let marketRegime = 'Normal';
-  let volatilityProfile = 'Normal';
-  let recentPerfLabel = 'Sin datos';
+  // Position sizing (1% risk, max 20% position size limit - Sec 7)
+  const accountEquity = 10000;
+  const riskAmount = 100; // 1% of 10,000 USD
+  const stopDistance = Math.abs(entry - stopLoss);
+  let positionSizeUnits = stopDistance > 0 ? riskAmount / stopDistance : 0;
+  const maxUnits = (0.20 * accountEquity) / entry;
+  positionSizeUnits = Math.min(positionSizeUnits, maxUnits);
 
-  if (atrVal1h > 1.2 * atrSma1h) {
-    adaptiveFactor *= 1.15;
-    marketRegime = 'Alta Volatilidad (+15% Size)';
-  } else if (atrVal1h < 0.8 * atrSma1h) {
-    adaptiveFactor *= 0.82;
-    marketRegime = 'Baja Volatilidad (-18% Size)';
-  }
-
-  if (avgDailyRange > 3.5) {
-    adaptiveFactor *= 1.12;
-    volatilityProfile = 'Alta Volatilidad (+12% Size)';
-  } else if (avgDailyRange < 1.2) {
-    adaptiveFactor *= 0.75;
-    volatilityProfile = 'Baja Volatilidad (-25% Size)';
-  }
-
-  if (recentWinRate !== undefined) {
-    let perfMult = 1.0;
-    if (recentWinRate > 0.68) {
-      perfMult += 0.12;
-      recentPerfLabel = `Excelente WR: ${(recentWinRate * 100).toFixed(0)}% (+12% Size)`;
-    } else if (recentWinRate < 0.45) {
-      perfMult -= 0.18;
-      recentPerfLabel = `Deficiente WR: ${(recentWinRate * 100).toFixed(0)}% (-18% Size)`;
-    } else {
-      recentPerfLabel = `Estable WR: ${(recentWinRate * 100).toFixed(0)}%`;
-    }
-    if (recentProfitFactor && recentProfitFactor > 1.8) {
-      perfMult += 0.08;
-      recentPerfLabel += ` | Buen PF: ${recentProfitFactor.toFixed(2)}`;
-    }
-    const clampedPerf = Math.max(0.65, Math.min(1.25, perfMult));
-    adaptiveFactor *= clampedPerf;
-  }
+  const adaptiveFactor = 1.0;
+  const marketRegime = atrVal1h > 1.2 * atrSma1h ? 'Alta Volatilidad' : 'Normal';
+  const volatilityProfile = avgDailyRange > 3.5 ? 'Alta Volatilidad' : 'Normal';
+  const recentPerfLabel = 'VCME v2.0 Activo';
 
   const sr = calculateSupportResistance(klines5m, entry);
   const atrPercent = entry > 0 ? (atr5m / entry * 100) : 0;
@@ -2662,11 +2621,16 @@ export function calculateVCMESniperSignal(
   return {
     signal,
     mode,
+    tradeType,
     stopLoss: Number(stopLoss.toFixed(2)),
     takeProfit1: Number(takeProfit1.toFixed(2)),
     takeProfit2: Number(takeProfit2.toFixed(2)),
     takeProfit3: Number(takeProfit3.toFixed(2)),
     riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
+    chandelierExit,
+    positionSizeUnits: Number(positionSizeUnits.toFixed(2)),
+    riskAmount,
+    confidenceScore,
     bias1D,
     adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
     momentum1H,
@@ -2689,7 +2653,14 @@ export function calculateVCMESniperSignal(
     recentPerfLabel,
     atrPercent: Number(atrPercent.toFixed(2)),
     avgDailyRange: Number(avgDailyRange.toFixed(2)),
-    confidence
+    confidence,
+    snapshot: {
+      atr_5m: Number(atr5m.toFixed(2)),
+      atr_1H: Number(atrVal1h.toFixed(2)),
+      ema21_1H: Number(ema20Val1h.toFixed(2)),
+      vwap_5m: Number(vwap5m.toFixed(2)),
+      rvol: Number(rvol.toFixed(2))
+    }
   };
 }
 

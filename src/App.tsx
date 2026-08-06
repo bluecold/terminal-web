@@ -521,7 +521,29 @@ function App() {
             }
 
             const entryPrice = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0;
-            const levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval);
+            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval);
+
+            if (bestStrategy === 'multitemporal') {
+              const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
+              const vcmeRes = calculateVCMESniperSignal(
+                triggerKlines,
+                closed1h,
+                closed1d,
+                symbol,
+                btMulti.winRate,
+                btMulti.profitFactor,
+                executionStyle,
+                triggerMode
+              );
+              if (vcmeRes.stopLoss > 0) {
+                levels = {
+                  stopLoss: vcmeRes.stopLoss,
+                  takeProfit1: vcmeRes.takeProfit1,
+                  takeProfit2: vcmeRes.takeProfit2,
+                };
+              }
+            }
+
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
             const newAlert: AuditAlertItem = {
@@ -667,7 +689,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.05.2
+            v2026.08.06.1
           </span>
         </div>
       </header>
