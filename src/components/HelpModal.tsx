@@ -167,7 +167,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia · v2026.08.06.1
+              Motor de señales técnicas multiestrategia · v2026.08.06.2
             </div>
           </div>
           <button
@@ -198,11 +198,12 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             </p>
 
             {/* Key concepts grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
-                { icon: '🏆', title: 'Torneo de Estrategias', text: 'Cada vez que cambiás de activo, los 5 motores compiten por Profit Factor. El ganador lidera la señal general.' },
-                { icon: '📊', title: 'Backtesting O(n)', text: 'Simulación histórica instantánea sobre las últimas 60–150 velas, con gestión de riesgo realista (SL/TP adaptativos).' },
-                { icon: '🔔', title: 'Alertas en Background', text: 'El scanner revisa toda la watchlist cada 60 segundos incluso con la pestaña en segundo plano.' },
+                { icon: '🏆', title: 'Torneo QVE', text: 'Los 5 motores compiten por Profit Factor histórico. El ganador lidera la señal del activo.' },
+                { icon: '⚡', title: 'VCME v2.0 Engine', text: 'Fórmulas cuantitativas de 3 capas (1D/1H/5m), asimetría Long/Short y Score continuo (0.0-1.0).' },
+                { icon: '🎯', title: 'Live Tracking & Chart', text: 'Seguimiento en vivo de alertas (WinRate / +R) y proyección visual de líneas SL/TP sobre el gráfico.' },
+                { icon: '🔔', title: 'Alertas Background', text: 'El scanner revisa toda la watchlist cada 60s disparando notificaciones con niveles reales.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>
                   <div style={{ fontSize: '1.2rem', marginBottom: '6px' }}>{c.icon}</div>
@@ -221,9 +222,9 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado.' },
                 { icon: '🔍', color: 'var(--accent-blue)', text: 'Un Profit Factor ≥ 1.3 en backtesting es el umbral mínimo para que una estrategia sea elegida como líder. Por debajo de ese valor, el sistema cae a un fallback escalonado.' },
                 { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. Las condiciones de mercado cambian. Usá siempre stop loss.' },
-                { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME Sniper y Multifractal MTF son las más exigentes en confluencia. Es normal que pasen horas o días sin disparar — eso es parte del diseño, no un error.' },
+                { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME v2.0 y Multifractal MTF son las más exigentes en confluencia. VCME v2.0 exige un Confidence Score ≥ 65% (0.65) para disparar. Es normal que transcurran horas sin señal — esto es protección por diseño.' },
                 { icon: '📰', color: 'var(--accent-blue)', text: 'Revisá siempre el Calendario de Catalizadores antes de entrar. Una señal técnica perfecta puede fallar si hay un reporte de ganancias o decisión de la Fed en las próximas 48 horas.' },
-                { icon: '💰', color: 'var(--accent-yellow)', text: 'Usá la Calculadora de Position Sizing. El sistema limita el riesgo máximo al 25% del capital, pero vos decidís el drawdown aceptable con el slider de salud de la cuenta.' },
+                { icon: '💰', color: 'var(--accent-yellow)', text: 'Usá la Calculadora de Position Sizing (VCME v2.0). El sistema calcula las unidades exactas sugiriendo un riesgo del 1% de capital y límite de concentración del 20%.' },
               ].map((item, i) => (
                 <div key={i} style={{ display: 'flex', gap: '10px', padding: '10px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', alignItems: 'flex-start' }}>
                   <span style={{ fontSize: '0.9rem', flexShrink: 0, marginTop: '1px' }}>{item.icon}</span>
@@ -309,24 +310,24 @@ export default function HelpModal({ onClose }: HelpModalProps) {
 
               <SignalCard
                 number="S4"
-                name="VCME Sniper Engine v4"
+                name="VCME v2.0 Quant Engine"
                 color="#f59e0b"
-                badge="MULTITEMPORAL · 3 CAPAS · CUANTITATIVO"
+                badge="INSTITUCIONAL · MULTITEMPORAL · 3 CAPAS"
                 badgeColor="#f59e0b"
-                description="El motor más sofisticado. Usa tres capas secuenciales (1D → 1H → 5m/1H) como compuertas lógicas: si cualquier capa falla, la señal no se emite. Combina bias macro, setup de momentum y gatillo de ejecución con gestión de riesgo integrada."
+                description="Motor algorítmico cuantitativo de grado institucional. Utiliza 3 capas secuenciales (1D Juez → 1H Contexto/Régimen → 5m Gatillo) con asimetría LONG/SHORT, score de confianza matemático continuo (0.0–1.0), clasificación dinámica DAY/SWING y salidas complejas por Chandelier Exit."
                 howItWorks={[
-                  'CAPA 1 (1D Bias): precio > EMA 200, EMA 50 > EMA 200, ADX > 20 con +DI > -DI',
-                  'CAPA 2 (1H Setup): cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50-70, histograma MACD en expansión positiva — evaluado en las últimas 3 velas 1H',
-                  'CAPA 3 (Gatillo): Pullback con ruptura de micro-máximo O Breakout ORB + Bollinger Squeeze, con RVOL estacional ≥ 1.5×',
-                  'Filtros de calidad: cuerpo ≥ 40%, closePosition ≥ 0.60, no chasing (< 2 ATR del VWAP), sin caos de apertura (< 15 min), sin spike de noticias (RVOL < 8×)',
-                  'Score de confluencia 0-9 puntos: bias 1D, ADX fuerte, RVOL ≥ 2×, VWAP 1H, MACD 1H, squeeze BB, S/R cercano',
-                  'Confianza ALTA (≥ 70%), MODERADA (≥ umbral dinámico) o DESCARTAR',
-                  'SL estructural ajustado por ATR (0.8–1.8×), TP1/TP2/TP3 escalonados',
+                  'CAPA 1 (1D Bias): Cierre > EMA 200, EMA 50 > EMA 200, ADX > 20 y +DI > -DI (para LONG)',
+                  'CAPA 2 (1H Contexto & Régimen): Cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50-70, MACD Hist en expansión positiva + filtro de pendiente de la EMA 200 1H (> 0.0005)',
+                  'CAPA 3 (Gatillo 5m): Asimétrico. LONG exige RVOL ≥ 1.5x y cierre en el 40% superior. SHORT exige RVOL ≥ 1.8x y cierre en el 40% inferior (evita short squeezes)',
+                  'Score de Confianza Continuo [0.0–1.0]: Pondera RVOL (30%), Bias 1D (25%), MACD 1H (20%), Distancia a EMA21 (15%) y VWAP (10%). Umbral mínimo de activación: 65% (0.65)',
+                  'Clasificación DAY vs SWING: Clasifica según ADX 1H > 30. Trades DAY incluyen time-stop de 40 min; trades SWING ejecutan trailing stop continuo en 1H',
+                  'Gestión de Riesgo Asimétrica: SL de 1.5 ATR (LONG) y 1.8 ATR (SHORT). Trailing TP2 guiado por el Chandelier Exit (22, 3.0) en 1H',
+                  'Position Sizing Automático: Calcula las unidades exactas a operar basándose en el 1% de riesgo de capital y 20% máximo de concentración',
                 ]}
-                strengths={['Máxima calidad de señal: pocas pero muy filtradas', 'Gestión de riesgo integrada: SL/TP calculados con ATR real', 'Score de confianza permite graduar el position sizing', 'Modo Conservador (retest) para mercados de alta volatilidad']}
-                weaknesses={['Exige 200+ velas diarias: no funciona con activos muy nuevos', 'Las 5 condiciones de la capa 1H raramente coinciden todas → pocas señales', 'No opera bien en activos sin sesión definida (24/7 crypto en swing)', 'En mercados laterales la capa 1D rara vez cumple ADX > 20']}
-                bestFor="Acciones de EEUU y crypto líquida (BTC, ETH) en Day Trading 5m o Swing 1H con tendencia diaria clara"
-                considerations="Si el motor muestra 'DESCARTAR', no es un error — el score de confluencia no alcanzó el umbral mínimo. El modo Agresivo dispara más seguido; el Conservador busca retests y es más adecuado para cripto de alta volatilidad."
+                strengths={['Grado institucional: máxima solidez cuantitativa y cero repintado', 'Asimetría LONG/SHORT previene trampas de mercado y squeeze bajistas', 'Score continuo 0.0–1.0 sin saltos discretos', 'Trailing por Chandelier Exit 1H maximiza ganancias en tendencias extendidas']}
+                weaknesses={['Exige 200+ velas diarias y 60+ velas de 1H para converger indicadores', 'Muy exigente en confluencia: la supresión al 65% descarta trades de baja probabilidad', 'En mercados completamente laterales sin tendencia 1D/1H genera neutrales']}
+                bestFor="Acciones de EEUU y criptomonedas líquidas (BTC, ETH, SOL) en Day Trading 5m o Swing 1-3 días con sesgo cuantitativo claro"
+                considerations="Si la señal indica 'Confidence Score insuficiente (<65%)', la operación se cancela automáticamente por prudencia algorítmica. Revisá si el trade es DAY o SWING en el panel para conocer la estrategia de trailing aplicada."
               />
 
               <SignalCard
