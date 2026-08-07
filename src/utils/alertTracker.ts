@@ -68,6 +68,20 @@ export function calculateAlertLevels(
 }
 
 /**
+ * Checks whether an alert timestamp is from the current calendar day (local time).
+ */
+export function isAlertFromToday(timestamp: number): boolean {
+  if (!timestamp) return false;
+  const date = new Date(timestamp);
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+/**
  * Evaluates open alerts against latest klines for each symbol.
  * Updates alert status (TP1_HIT, TP2_HIT, SL_HIT, EXPIRED) and floating PnL.
  */
@@ -104,9 +118,12 @@ export function updateAlertsOutcome(
       if (isBuy) {
         // SL check first (conservative OHLC evaluation)
         if (candle.low <= alert.stopLoss) {
-          newStatus = 'SL_HIT';
-          realizedR = -1.0;
-          break;
+          // If TP1 was already hit in an earlier candle, lock in TP1_HIT instead of overwriting with SL_HIT
+          if (newStatus !== 'TP1_HIT') {
+            newStatus = 'SL_HIT';
+            realizedR = -1.0;
+            break;
+          }
         }
         if (candle.high >= alert.takeProfit2) {
           newStatus = 'TP2_HIT';
@@ -121,9 +138,11 @@ export function updateAlertsOutcome(
       } else {
         // Sell signal
         if (candle.high >= alert.stopLoss) {
-          newStatus = 'SL_HIT';
-          realizedR = -1.0;
-          break;
+          if (newStatus !== 'TP1_HIT') {
+            newStatus = 'SL_HIT';
+            realizedR = -1.0;
+            break;
+          }
         }
         if (candle.low <= alert.takeProfit2) {
           newStatus = 'TP2_HIT';
@@ -156,9 +175,14 @@ export function updateAlertsOutcome(
 
 /**
  * Calculates session summary metrics for the header bar.
+ * By default filters alerts for the current calendar day ("HOY").
  */
-export function calculateSessionStats(alerts: AuditAlertItem[]): SessionStats {
-  if (alerts.length === 0) {
+export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly: boolean = true): SessionStats {
+  const targetAlerts = filterTodayOnly
+    ? alerts.filter(a => isAlertFromToday(a.timestamp))
+    : alerts;
+
+  if (targetAlerts.length === 0) {
     return { total: 0, wins: 0, losses: 0, openCount: 0, winRate: 0, totalR: 0 };
   }
 
@@ -167,7 +191,7 @@ export function calculateSessionStats(alerts: AuditAlertItem[]): SessionStats {
   let openCount = 0;
   let totalR = 0;
 
-  alerts.forEach(alert => {
+  targetAlerts.forEach(alert => {
     if (alert.status === 'TP1_HIT' || alert.status === 'TP2_HIT') {
       wins++;
       totalR += alert.realizedR;
@@ -187,7 +211,7 @@ export function calculateSessionStats(alerts: AuditAlertItem[]): SessionStats {
   const winRate = resolved > 0 ? Number(((wins / resolved) * 100).toFixed(1)) : 0;
 
   return {
-    total: alerts.length,
+    total: targetAlerts.length,
     wins,
     losses,
     openCount,

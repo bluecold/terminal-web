@@ -147,6 +147,11 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Trailing Stop Avanzado con Chandelier Exit (22, 3.0)**: Salida dinámica por $EMA21_{1H}$ y *Chandelier Exit* de 1H en el objetivo secundario ($TP2$).
   - **Clasificación DAY vs SWING con Time-Stop**: Clasificación basada en $ADX_{1H} > 30$; trades tipo `DAY` incluyen time-stop de 40 min en ausencia de momentum, trades tipo `SWING` ejecutan trailing de 1H.
   - **Sincronización Total Backtest & Alertas (`backtester.ts`, `App.tsx`)**: Alineación completa del simulador `backtestMultitemporal` y el generador de alertas en segundo plano con las nuevas reglas VCME v2.0.
+  - **Actualización v2026.08.07.1 — Corrección del Historial de Alertas y Contador Diario de Sesión**:
+  - **Filtro Diario "HOY" (`alertTracker.ts`)**: Introducida la función `isAlertFromToday` para que las métricas de aciertos, fallos, Win Rate y R acumulado filtren estrictamente las alertas del día actual.
+  - **Capacidad de Historial y Pruning (`App.tsx`)**: Ampliada la retención de `alertsLog` a 100 alertas con depuración automática de elementos mayores a 7 días en `localStorage`.
+  - **Deduplicación Atómica de Alertas (`App.tsx`)**: Prevención de alertas duplicadas al cambiar temporalidades o recargar la app mediante chequeo de estado `OPEN` y cooldown activo.
+  - **Corrección de Mapeo de Klines y Preservación de TP1**: Corrección del mapeo por activo en `updateAlertsOutcome` y preservación del estado `TP1_HIT`.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 

@@ -20,7 +20,10 @@ function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          return parsed.filter(item => item && typeof item.timestamp === 'number' && item.timestamp > sevenDaysAgo);
+        }
       } catch (e) {
         console.error('Error parsing alerts log from local storage', e);
       }
@@ -199,7 +202,7 @@ function App() {
       setLoading(false);
 
       // Update outcome for any open alerts using newly loaded klines
-      setAlertsLog(prev => updateAlertsOutcome(prev, fetchedKlines));
+      setAlertsLog(prev => updateAlertsOutcome(prev, { [currentAsset]: fetchedKlines[interval] || [] }));
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -326,11 +329,10 @@ function App() {
   const scannerRunningRef = useRef(false);
   const maxConcurrentSymbolScans = 4;
 
-  // Reset caches on timeframe change to prevent false crossover notifications
+  // Reset signal and strategy caches on timeframe change
   useEffect(() => {
     lastSignalsRef.current = {};
     bestStrategyRef.current = {};
-    alertCooldownsRef.current = {};
   }, [interval]);
 
   useEffect(() => {
@@ -566,7 +568,22 @@ function App() {
             };
 
             setAlertsLog(prev => {
-              const updated = updateAlertsOutcome([newAlert, ...prev], scannedKlinesMap).slice(0, 20);
+              const cooldownMs = signalInterval === '5m'
+                ? 15 * 60 * 1000
+                : signalInterval === '1h'
+                  ? 60 * 60 * 1000
+                  : 12 * 60 * 60 * 1000;
+
+              const isDuplicate = prev.some(a => {
+                if (a.symbol !== symbol || a.interval !== signalInterval) return false;
+                if (a.status === 'OPEN') return true;
+                if (now - a.timestamp < cooldownMs) return true;
+                return false;
+              });
+
+              if (isDuplicate) return prev;
+
+              const updated = updateAlertsOutcome([newAlert, ...prev], scannedKlinesMap).slice(0, 100);
               localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
               return updated;
             });
@@ -689,7 +706,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.06.2
+            v2026.08.07.1
           </span>
         </div>
       </header>
