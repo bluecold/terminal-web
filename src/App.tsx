@@ -706,7 +706,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.07.1
+            v2026.08.10.1
           </span>
         </div>
       </header>
@@ -792,12 +792,85 @@ function App() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  fontSize: '0.65rem'
+                  fontSize: '0.65rem',
+                  position: 'relative'
                 }}>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>HOY</span>
-                    <span style={{ color: 'var(--accent-green)', fontWeight: '700' }}>{sessionStats.wins} TP ✅</span>
-                    <span style={{ color: 'var(--accent-red)', fontWeight: '700' }}>{sessionStats.losses} SL ❌</span>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {/* HOY badge with global strategy breakdown tooltip */}
+                    <div className="stats-badge-wrapper">
+                      <span style={{ color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>HOY</span>
+                      <div className="stats-tooltip" style={{ left: '0' }}>
+                        <div style={{ fontWeight: '800', color: '#fff', marginBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', fontSize: '0.62rem', display: 'flex', justifyContent: 'space-between' }}>
+                          <span>📊 RENDIMIENTO HOY</span>
+                          <span style={{ color: 'var(--accent-blue)' }}>{sessionStats.winRate}% WR</span>
+                        </div>
+                        {Object.keys(sessionStats.byStrategy || {}).length === 0 ? (
+                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin alertas hoy</div>
+                        ) : (
+                          Object.entries(sessionStats.byStrategy).map(([strat, data]) => (
+                            <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
+                              <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>{strat}</span>
+                              <div style={{ display: 'flex', gap: '6px', fontFamily: 'var(--font-mono)' }}>
+                                <span style={{ color: 'var(--accent-green)' }}>{data.wins} TP</span>
+                                <span style={{ color: 'var(--accent-red)' }}>{data.losses} SL</span>
+                                <span style={{ color: data.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: '700' }}>
+                                  {data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* TP Badge with TP-only breakdown tooltip */}
+                    <div className="stats-badge-wrapper">
+                      <span style={{ color: 'var(--accent-green)', fontWeight: '700' }}>{sessionStats.wins} TP ✅</span>
+                      <div className="stats-tooltip" style={{ left: '-15px' }}>
+                        <div style={{ fontWeight: '800', color: 'var(--accent-green)', marginBottom: '6px', borderBottom: '1px solid rgba(16, 185, 129, 0.25)', paddingBottom: '4px', fontSize: '0.62rem' }}>
+                          🎯 ACIERTOS POR ESTRATEGIA (TP)
+                        </div>
+                        {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.wins > 0).length === 0 ? (
+                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin aciertos hoy</div>
+                        ) : (
+                          Object.entries(sessionStats.byStrategy)
+                            .filter(([_, d]) => d.wins > 0)
+                            .map(([strat, data]) => (
+                              <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
+                                <span style={{ color: 'var(--text-secondary)' }}>{strat}</span>
+                                <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>
+                                  {data.wins} TP ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
+                                </span>
+                              </div>
+                            ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* SL Badge with SL-only breakdown tooltip */}
+                    <div className="stats-badge-wrapper">
+                      <span style={{ color: 'var(--accent-red)', fontWeight: '700' }}>{sessionStats.losses} SL ❌</span>
+                      <div className="stats-tooltip" style={{ left: '-30px' }}>
+                        <div style={{ fontWeight: '800', color: 'var(--accent-red)', marginBottom: '6px', borderBottom: '1px solid rgba(244, 63, 94, 0.25)', paddingBottom: '4px', fontSize: '0.62rem' }}>
+                          ⚠️ FALLOS POR ESTRATEGIA (SL)
+                        </div>
+                        {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.losses > 0).length === 0 ? (
+                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin fallos hoy</div>
+                        ) : (
+                          Object.entries(sessionStats.byStrategy)
+                            .filter(([_, d]) => d.losses > 0)
+                            .map(([strat, data]) => (
+                              <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
+                                <span style={{ color: 'var(--text-secondary)' }}>{strat}</span>
+                                <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>
+                                  {data.losses} SL ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
+                                </span>
+                              </div>
+                            ))
+                        )}
+                      </div>
+                    </div>
+
                     {sessionStats.openCount > 0 && (
                       <span style={{ color: 'var(--accent-blue)', fontWeight: '700' }}>{sessionStats.openCount} ⏳</span>
                     )}

@@ -22,6 +22,13 @@ export interface AuditAlertItem {
   timestamp: number;          // Unix ms timestamp when alert was fired
 }
 
+export interface StrategyBreakdown {
+  wins: number;
+  losses: number;
+  openCount: number;
+  totalR: number;
+}
+
 export interface SessionStats {
   total: number;
   wins: number;
@@ -29,6 +36,7 @@ export interface SessionStats {
   openCount: number;
   winRate: number;            // Percentage 0-100
   totalR: number;             // Sum of net R earned
+  byStrategy: Record<string, StrategyBreakdown>;
 }
 
 /**
@@ -183,28 +191,50 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
     : alerts;
 
   if (targetAlerts.length === 0) {
-    return { total: 0, wins: 0, losses: 0, openCount: 0, winRate: 0, totalR: 0 };
+    return { total: 0, wins: 0, losses: 0, openCount: 0, winRate: 0, totalR: 0, byStrategy: {} };
   }
 
   let wins = 0;
   let losses = 0;
   let openCount = 0;
   let totalR = 0;
+  const byStrategy: Record<string, StrategyBreakdown> = {};
 
   targetAlerts.forEach(alert => {
+    const strat = alert.strategy || 'Standard';
+    if (!byStrategy[strat]) {
+      byStrategy[strat] = { wins: 0, losses: 0, openCount: 0, totalR: 0 };
+    }
+    const stratObj = byStrategy[strat];
+
     if (alert.status === 'TP1_HIT' || alert.status === 'TP2_HIT') {
       wins++;
       totalR += alert.realizedR;
+      stratObj.wins++;
+      stratObj.totalR += alert.realizedR;
     } else if (alert.status === 'SL_HIT') {
       losses++;
       totalR += alert.realizedR; // -1.0
+      stratObj.losses++;
+      stratObj.totalR += alert.realizedR;
     } else if (alert.status === 'EXPIRED') {
-      if (alert.realizedR >= 0) wins++;
-      else losses++;
+      if (alert.realizedR >= 0) {
+        wins++;
+        stratObj.wins++;
+      } else {
+        losses++;
+        stratObj.losses++;
+      }
       totalR += alert.realizedR;
+      stratObj.totalR += alert.realizedR;
     } else {
       openCount++;
+      stratObj.openCount++;
     }
+  });
+
+  Object.keys(byStrategy).forEach(key => {
+    byStrategy[key].totalR = Number(byStrategy[key].totalR.toFixed(1));
   });
 
   const resolved = wins + losses;
@@ -217,5 +247,6 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
     openCount,
     winRate,
     totalR: Number(totalR.toFixed(1)),
+    byStrategy,
   };
 }

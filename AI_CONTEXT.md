@@ -152,6 +152,9 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Capacidad de Historial y Pruning (`App.tsx`)**: Ampliada la retención de `alertsLog` a 100 alertas con depuración automática de elementos mayores a 7 días en `localStorage`.
   - **Deduplicación Atómica de Alertas (`App.tsx`)**: Prevención de alertas duplicadas al cambiar temporalidades o recargar la app mediante chequeo de estado `OPEN` y cooldown activo.
   - **Corrección de Mapeo de Klines y Preservación de TP1**: Corrección del mapeo por activo en `updateAlertsOutcome` y preservación del estado `TP1_HIT`.
+  - **Actualización v2026.08.10.1 — Desglose de Rendimiento por Estrategia en Tooltips**:
+  - **Métricas por Estrategia (`alertTracker.ts`)**: Añadido mapa `byStrategy` a `SessionStats` para acumular independientemente aciertos, fallos y R neto por estrategia (`Standard`, `Confluencia`, `Scoring`, `VCME Sniper`, `Multifractal MTF`).
+  - **Tooltips Flotantes (`App.css`, `App.tsx`)**: Implementados tooltips contextuales CSS/glassmorphism sobre los badges `HOY`, `TP ✅` y `SL ❌` para visualizar el desglose detallado de TP y SL por estrategia sin saturar la pantalla.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 
