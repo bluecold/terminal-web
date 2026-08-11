@@ -1008,7 +1008,7 @@ export function backtestMultitemporal(
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
-    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '48 hs max (Intradía)',
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '24 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: style === 'swing' ? 2.0 : 1.5,
@@ -1747,6 +1747,6 @@ export function backtestMultifractalMTF(
     threshold: 0.01,
     targetThreshold: 0.015,
     targetMultiplier: 1.5,
-    insufficient: totalSignals === 0
+    insufficient: false
   };
 }

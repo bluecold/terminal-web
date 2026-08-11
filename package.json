@@ -1,11 +1,12 @@
 {
   "name": "terminal-web",
   "private": true,
-  "version": "2026.08.11.3",
+  "version": "2026.08.11.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "npx tsx src/utils/__tests__/backtester.test.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },

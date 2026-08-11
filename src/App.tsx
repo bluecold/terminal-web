@@ -267,6 +267,14 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
   }, [currentAsset, interval]);
 
+  useEffect(() => {
+    if (klines.length >= 35) {
+      const closedData = klines.slice(0, -1);
+      const signal = computeOverallSignal(closedData, interval, allKlines);
+      setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
+    }
+  }, [executionStyle, triggerMode]);
+
 
 
   useEffect(() => {
@@ -706,7 +714,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.11.3
+            v2026.08.11.4
           </span>
         </div>
       </header>
