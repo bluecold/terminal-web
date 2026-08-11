@@ -227,23 +227,23 @@ export function backtestMultitemporal(
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
   const evalWindow = 576;
-  const forwardWindow = style === 'swing' ? 48 : 576; // ~48 hours of candles
+  const forwardWindow = style === 'swing' ? 48 : 288; // 288 candles in 5m = 24 hours
   const cooldownPeriod = style === 'swing' ? 2 : 24;  // 2 hours cooldown between signals
+  const isSessionBased = hasSessionGaps(klines5m, '5m');
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
     label: `datos insuficientes`,
-    forwardLabel: '48 hs max',
+    forwardLabel: '24 hs max',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: 1.5,
     insufficient: true
   };
 
-  // Every evaluated trade needs its complete forward horizon. This is especially
-  // important for the 48-hour day-trading profile.
+  // Every evaluated trade needs its complete forward horizon.
   if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
   if (!klines1h || klines1h.length < 60) return fallbackResult;
   if (!klines1d || klines1d.length < 30) return fallbackResult;
@@ -251,8 +251,7 @@ export function backtestMultitemporal(
   // ── Pre-calculate all series O(n) ─────────────────────────────────────
   // 1D series
   const closes1d = klines1d.map(k => k.close);
-  const emaPeriod1d = Math.min(200, Math.max(20, closes1d.length));
-  const ema200_1d = calculateEMA(closes1d, emaPeriod1d);
+  const ema200_1d = closes1d.length >= 150 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
   const ema50_1d = calculateEMA(closes1d, 50);
   const adxData1d = calculateADXSeries(klines1d, 14);
 
@@ -318,6 +317,11 @@ export function backtestMultitemporal(
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
+      neutrals++;
+      continue;
+    }
+
+    if (isSessionBased && isNearSessionEnd(klines5m, i, '5m', forwardWindow)) {
       neutrals++;
       continue;
     }
@@ -494,7 +498,7 @@ export function backtestMultitemporal(
       } else {
         const gateVWAP = k.close < vw;
         const gateBreakout = k.close < b.lower && prevK.close >= prevB.lower;
-        const gateVol = rvol >= 1.5;
+        const gateVol = rvol >= 1.8; // VCME v2.0 Asymmetry: 1.8x for SHORT
         const gateRSI = rsi < 50 && rsi > 25;
         return gateVWAP && gateBreakout && gateVol && gateRSI;
       }
@@ -932,32 +936,24 @@ export function backtestMultitemporal(
     }
 
 
-    // B2+B4 fix: Properly classify timeouts. Marginal P&L (< 0.3%) on timeout
-    // should not inflate WinRate — count as timeout instead of win.
+    const frictionPct = 0.08;
+    pnlPct = pnlPct > 0 ? pnlPct - frictionPct : pnlPct - frictionPct;
+
     if (tradeOutcome === 'win') {
       wins++;
-      totalGainPct += pnlPct;
+      totalGainPct += Math.max(0, pnlPct);
       completedTrades.push({ win: true, gain: pnlPct });
-    } else if (tradeOutcome === 'timeout') {
-      timeouts++;
-      if (pnlPct >= 0.3) {
-        // Meaningful positive outcome despite timeout — count as win
-        wins++;
-        totalGainPct += pnlPct;
-        completedTrades.push({ win: true, gain: pnlPct });
-      } else if (pnlPct <= -0.3) {
-        // Meaningful negative outcome — count as loss
-        losses++;
-        totalLossPct += Math.abs(pnlPct);
-        completedTrades.push({ win: false, gain: pnlPct });
-      } else {
-        // Marginal P&L (between -0.3% and +0.3%) — true timeout, don't distort stats
-        completedTrades.push({ win: false, gain: pnlPct });
-      }
-    } else {
-      // tradeOutcome === 'loss'
+    } else if (tradeOutcome === 'loss') {
       losses++;
       totalLossPct += Math.abs(pnlPct);
+      completedTrades.push({ win: false, gain: pnlPct });
+    } else {
+      timeouts++;
+      if (pnlPct > 0) {
+        totalGainPct += pnlPct;
+      } else if (pnlPct < 0) {
+        totalLossPct += Math.abs(pnlPct);
+      }
       completedTrades.push({ win: false, gain: pnlPct });
     }
 
@@ -969,9 +965,7 @@ export function backtestMultitemporal(
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
   const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? 99.9 : 0);
 
-  const avgWinPct = wins > 0 ? totalGainPct / wins : 0;
-  const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
-  const expectancy = resolved > 0 ? (winRate * avgWinPct) - ((1 - winRate) * avgLossPct) : 0;
+  const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
 
@@ -1201,9 +1195,9 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
     // RVOL filter matching UI logic (B1 fix): asymmetric thresholds + weak consensus penalty
     if (rawSignal !== 'NEUTRAL' && i >= 20) {
       const rvol = rvolSeries[i];
-      const rvolThreshold = rawSignal.includes('BUY') ? 1.2 : 0.8;
+      const rvolThreshold = rawSignal.includes('BUY') ? 0.9 : 0.6;
       const voteMargin = Math.abs(buyVotes - sellVotes);
-      const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.5) : rvolThreshold;
+      const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.1) : rvolThreshold;
       if (rvol < effectiveRvolThreshold) {
         rawSignal = 'NEUTRAL';
       }
@@ -1223,8 +1217,8 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
     // Sync fix: closePosition filter added to match live calculateStandardVoting
     if (finalSig !== 'NEUTRAL') {
       const cp = closePosition(klines[i]);
-      if (finalSig === 'BUY'  && cp < 0.55) finalSig = 'NEUTRAL';
-      if (finalSig === 'SELL' && cp > 0.45) finalSig = 'NEUTRAL';
+      if (finalSig === 'BUY'  && cp < 0.45) finalSig = 'NEUTRAL';
+      if (finalSig === 'SELL' && cp > 0.55) finalSig = 'NEUTRAL';
     }
 
     signals[i] = finalSig;
