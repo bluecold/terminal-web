@@ -79,7 +79,7 @@ function getParams(interval: string): BacktestParams {
   switch (interval) {
     case '5m':
       return {
-        evalWindow: 288,               // 24 hours of 5m data
+        evalWindow: 576,               // 48 hours of 5m data
         forwardWindow: 6,
         forwardLabel: '6 velas (30 min)',
         fallbackThreshold: 0.008,
@@ -130,8 +130,8 @@ function hasSessionGaps(klines: Kline[], interval: string): boolean {
   if (klines.length < 10) return false;
   const expectedGapSec = interval === '5m' ? 300 : interval === '1h' ? 3600 : 86400;
 
-  // Sample last 20 candles for gaps
-  for (let i = Math.max(1, klines.length - 20); i < klines.length; i++) {
+  // Scan full historical klines for session gaps
+  for (let i = 1; i < klines.length; i++) {
     const gap = klines[i].time - klines[i - 1].time;
     if (gap > expectedGapSec * 3) return true; // Gap > 3× expected = session break
   }
@@ -165,7 +165,10 @@ function evaluateOutcome(
   stopThreshold: number,
   targetThreshold: number
 ): TradeOutcome {
-  const entry = klines[entryIdx].close;
+  // Realistic execution: entry at next candle open + 0.08% friction (commission + slippage)
+  const nextIdx = entryIdx + 1 < klines.length ? entryIdx + 1 : entryIdx;
+  const entry = klines[nextIdx].open || klines[entryIdx].close;
+  const frictionPct = 0.08;
 
   const target = signal === 'BUY'
     ? entry * (1 + targetThreshold)
@@ -179,11 +182,11 @@ function evaluateOutcome(
 
     if (signal === 'BUY') {
       // Check stop first (pessimistic)
-      if (low <= stop)    return { result: 'loss', pnlPct: -stopThreshold * 100 };
-      if (high >= target) return { result: 'win',  pnlPct: targetThreshold * 100 };
+      if (low <= stop)    return { result: 'loss', pnlPct: -stopThreshold * 100 - frictionPct };
+      if (high >= target) return { result: 'win',  pnlPct: targetThreshold * 100 - frictionPct };
     } else {
-      if (high >= stop)  return { result: 'loss', pnlPct: -stopThreshold * 100 };
-      if (low <= target) return { result: 'win',  pnlPct: targetThreshold * 100 };
+      if (high >= stop)  return { result: 'loss', pnlPct: -stopThreshold * 100 - frictionPct };
+      if (low <= target) return { result: 'win',  pnlPct: targetThreshold * 100 - frictionPct };
     }
   }
 
@@ -194,7 +197,7 @@ function evaluateOutcome(
     ? (exitPrice - entry) / entry * 100
     : (entry - exitPrice) / entry * 100;
 
-  return { result: 'timeout', pnlPct: rawPnl };
+  return { result: 'timeout', pnlPct: rawPnl - frictionPct };
 }
 
 // ─── Public API (Optimized O(n)) ────────────────────────────────────────────
@@ -223,7 +226,7 @@ export function backtestMultitemporal(
   style: 'dayTrading' | 'swing' = 'dayTrading',
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
-  const evalWindow = 150;
+  const evalWindow = 576;
   const forwardWindow = style === 'swing' ? 48 : 576; // ~48 hours of candles
   const cooldownPeriod = style === 'swing' ? 2 : 24;  // 2 hours cooldown between signals
 
@@ -255,9 +258,11 @@ export function backtestMultitemporal(
 
   // 1H series
   const closes1h = klines1h.map(k => k.close);
+  const ema200_1h = calculateEMA(closes1h, Math.min(200, closes1h.length));
   const ema50_1h = calculateEMA(closes1h, 50);
   const ema20_1h = calculateEMA(closes1h, 20);
   const rsiSeries1h = calculateRSISeries(closes1h, 14);
+  const adxSeries1h = calculateADXSeries(klines1h, 14);
   const macdData1h = calculateMACDSeries(closes1h);
   const atrSeries1h = calculateATRSeries(klines1h, 14);
   const vwapSeries1h = calculateVWAPSeries(klines1h, '1h', symbol);
@@ -348,7 +353,7 @@ export function backtestMultitemporal(
     if (bias_long) bias1D = 'ALCISTA';
     else if (bias_short) bias1D = 'BAJISTA';
 
-    // ── LAYER 2: 1H Setup (Stateless State Machine) ─────────────────────
+    // ── LAYER 2: 1H Setup (Stateless State Machine + ADX/EMA200 Slope Regime) ──
     let idx1h = -1;
     for (let h = klines1h.length - 1; h >= 0; h--) {
       const endTime1h = klines1h[h].time + 3600;
@@ -372,7 +377,14 @@ export function backtestMultitemporal(
     const isSetupLongCandle = (hIdx: number) => {
       const hist = macdData1h.histogram[hIdx];
       const prevHist = macdData1h.histogram[hIdx - 1];
+      const ema200Val = ema200_1h[hIdx];
+      const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+      const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
+      const adxVal = adxSeries1h.adx[hIdx];
+      const regimeOkLong = adxVal > 20 && slope > 0.0005;
+
       return (
+        regimeOkLong &&
         closes1h[hIdx] > vwapSeries1h[hIdx] &&
         ema20_1h[hIdx] > ema50_1h[hIdx] &&
         rsiSeries1h[hIdx] >= 50 && rsiSeries1h[hIdx] <= 70 &&
@@ -384,7 +396,14 @@ export function backtestMultitemporal(
     const isSetupShortCandle = (hIdx: number) => {
       const hist = macdData1h.histogram[hIdx];
       const prevHist = macdData1h.histogram[hIdx - 1];
+      const ema200Val = ema200_1h[hIdx];
+      const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+      const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
+      const adxVal = adxSeries1h.adx[hIdx];
+      const regimeOkShort = adxVal > 20 && slope < -0.0005;
+
       return (
+        regimeOkShort &&
         closes1h[hIdx] < vwapSeries1h[hIdx] &&
         ema20_1h[hIdx] < ema50_1h[hIdx] &&
         rsiSeries1h[hIdx] >= 30 && rsiSeries1h[hIdx] <= 50 &&
@@ -521,7 +540,7 @@ export function backtestMultitemporal(
                               (hasPullbackShort(i) || hasPullbackShort(i - 1) || hasPullbackShort(i - 2)) &&
                               curr.close < minPrevLow3 &&
                               curr.close < curr.open &&
-                              volCurr5m / volAvg5m >= 1.5 &&
+                              volCurr5m / volAvg5m >= 1.8 &&
                               curr.close < vwap5m;
 
     // B. Breakout Trigger
@@ -677,7 +696,7 @@ export function backtestMultitemporal(
     }
 
     // ── RISK & POSITION CONFIG (VCME v2.0 Asymmetric SL) ──────────────────
-    const entry = curr.close;
+    const entry = i + 1 < klines5m.length ? klines5m[i + 1].open : curr.close;
     let stopLoss = 0;
     
     const lookbackS = Math.max(0, i - (tradeType === 'SWING' ? 5 : 10));
@@ -1062,6 +1081,11 @@ function runBacktestGenericOptimized(
       totalLossPct += Math.abs(outcome.pnlPct);
     } else {
       timeouts++;
+      if (outcome.pnlPct > 0) {
+        totalGainPct += outcome.pnlPct;
+      } else if (outcome.pnlPct < 0) {
+        totalLossPct += Math.abs(outcome.pnlPct);
+      }
     }
 
     nextAllowedIdx = i + forwardWindow + 1;
@@ -1072,9 +1096,7 @@ function runBacktestGenericOptimized(
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
   const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? Infinity : 0);
 
-  const avgWinPct = wins > 0 ? totalGainPct / wins : 0;
-  const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
-  const expectancy = resolved > 0 ? (winRate * avgWinPct) - ((1 - winRate) * avgLossPct) : 0;
+  const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
 
@@ -1258,10 +1280,10 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
     const bullish_candle = hammer || engulf === 1 || strongBullish;
     const bearish_candle = engulf === -1;
 
-    const is_buy  = curr.close > vw && e9 > e20 && curr.volume > vAvg
-                    && bullish_candle && bRatio >= 0.4 && isNotOverextended && cp >= 0.60;
-    const is_sell = curr.close < vw && e9 < e20 && curr.volume > vAvg
-                    && (bearish_candle || curr.close < e20) && bRatio >= 0.4 && isNotOverextended && cp <= 0.40;
+    const is_buy  = curr.close > vw && e9 > e20 && curr.volume >= vAvg * 0.8
+                    && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
+    const is_sell = curr.close < vw && e9 < e20 && curr.volume >= vAvg * 0.8
+                    && (bearish_candle || curr.close < e20) && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
 
     let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     if (is_buy) signal = 'BUY';
@@ -1475,7 +1497,7 @@ export function backtestMultifractalMTF(
   _interval: string = '5m',
   _symbol: string = 'ASSET'
 ): BacktestResult {
-  const evalWindow = 150;
+  const evalWindow = 576;
   const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
   const cooldownPeriod = 12; // Must be >= forwardWindow to prevent overlapping trades
 
@@ -1483,7 +1505,7 @@ export function backtestMultifractalMTF(
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
-    label: `últimas 150 velas (5m)`,
+    label: `últimas 576 velas (5m)`,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0,
     targetThreshold: 0,
@@ -1493,9 +1515,8 @@ export function backtestMultifractalMTF(
 
   if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
 
-  // Bug #4 fix: removed incorrect klines5m fallback for k1h and k1d.
-  // If 1H or 1D data is insufficient, we still run but with degraded Layer 1/2
-  // (isCompressed1H = false, bias1D = NEUTRAL), consistent with the live signal.
+  const isSessionBased = hasSessionGaps(klines5m, '5m');
+
   const hasValid1H = klines1h && klines1h.length >= 20;
   const hasValid1D = klines1d && klines1d.length >= 14;
 
@@ -1524,14 +1545,14 @@ export function backtestMultifractalMTF(
       continue;
     }
 
+    if (isSessionBased && isNearSessionEnd(klines5m, i, '5m', forwardWindow)) {
+      neutrals++;
+      continue;
+    }
+
     const curr = klines5m[i];
     const prev = klines5m[i - 1];
 
-    // Bug #4 fix: use temporal search to find the correct 1H and 1D indices
-    // instead of the incorrect proportional mapping (i / n5m) * n1h.
-    // This mirrors the approach used in backtestMultitemporal.
-
-    // Find latest closed 1H band whose end time <= current 5m candle time
     let isCompressed1H = false;
     if (hasValid1H && volBands1H.length > 0) {
       let idx1h = -1;
@@ -1542,7 +1563,6 @@ export function backtestMultifractalMTF(
         }
       }
       if (idx1h >= 0) {
-        // Check last 4 closed 1H bands for compression
         const startH = Math.max(0, idx1h - 3);
         for (let h = startH; h <= idx1h; h++) {
           if (volBands1H[h] && volBands1H[h].isCompressed) {
@@ -1553,7 +1573,6 @@ export function backtestMultifractalMTF(
       }
     }
 
-    // Find latest closed 1D Andian reading whose end time <= current 5m candle time
     let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
     if (hasValid1D && andian1D.length > 0) {
       let idx1d = -1;
@@ -1606,7 +1625,10 @@ export function backtestMultifractalMTF(
     totalSignals++;
     lastSignalIdx = i;
 
-    const entryPrice = curr.close;
+    // Realistic execution: entry at next open + 0.08% friction
+    const nextIdx = i + 1 < klines5m.length ? i + 1 : i;
+    const entryPrice = klines5m[nextIdx].open || curr.close;
+    const frictionPct = 0.08;
     const risk = Math.abs(entryPrice - stopLossPrice);
     const takeProfitPrice = signal === 'BUY'
       ? entryPrice + risk * 1.5
@@ -1624,11 +1646,13 @@ export function backtestMultifractalMTF(
         if (fBand) {
           if (signal === 'BUY' && fCandle.close < fBand.midpoint) {
             outcome = 'LOSS';
-            totalLossPct += Math.abs((fCandle.close - entryPrice) / entryPrice);
+            const lossPct = Math.abs((fCandle.close - entryPrice) / entryPrice * 100) + frictionPct;
+            totalLossPct += lossPct;
             break;
           } else if (signal === 'SELL' && fCandle.close > fBand.midpoint) {
             outcome = 'LOSS';
-            totalLossPct += Math.abs((entryPrice - fCandle.close) / entryPrice);
+            const lossPct = Math.abs((entryPrice - fCandle.close) / entryPrice * 100) + frictionPct;
+            totalLossPct += lossPct;
             break;
           }
         }
@@ -1637,38 +1661,54 @@ export function backtestMultifractalMTF(
       if (signal === 'BUY') {
         if (fCandle.low <= stopLossPrice) {
           outcome = 'LOSS';
-          totalLossPct += Math.abs((stopLossPrice - entryPrice) / entryPrice);
+          const lossPct = Math.abs((stopLossPrice - entryPrice) / entryPrice * 100) + frictionPct;
+          totalLossPct += lossPct;
           break;
         }
         if (fCandle.high >= takeProfitPrice) {
           outcome = 'WIN';
-          totalGainPct += Math.abs((takeProfitPrice - entryPrice) / entryPrice);
+          const gainPct = Math.abs((takeProfitPrice - entryPrice) / entryPrice * 100) - frictionPct;
+          totalGainPct += Math.max(0, gainPct);
           break;
         }
       } else {
         if (fCandle.high >= stopLossPrice) {
           outcome = 'LOSS';
-          totalLossPct += Math.abs((entryPrice - stopLossPrice) / entryPrice);
+          const lossPct = Math.abs((entryPrice - stopLossPrice) / entryPrice * 100) + frictionPct;
+          totalLossPct += lossPct;
           break;
         }
         if (fCandle.low <= takeProfitPrice) {
           outcome = 'WIN';
-          totalGainPct += Math.abs((entryPrice - takeProfitPrice) / entryPrice);
+          const gainPct = Math.abs((entryPrice - takeProfitPrice) / entryPrice * 100) - frictionPct;
+          totalGainPct += Math.max(0, gainPct);
           break;
         }
       }
     }
 
-    if (outcome === 'WIN') wins++;
-    else if (outcome === 'LOSS') losses++;
-    else timeouts++;
+    if (outcome === 'WIN') {
+      wins++;
+    } else if (outcome === 'LOSS') {
+      losses++;
+    } else {
+      timeouts++;
+      const lastIdx = Math.min(i + forwardWindow, klines5m.length - 1);
+      const endPrice = klines5m[lastIdx].close;
+      const timeoutPnl = (signal === 'BUY' ? (endPrice - entryPrice) / entryPrice : (entryPrice - endPrice) / entryPrice) * 100 - frictionPct;
+      if (timeoutPnl > 0) {
+        totalGainPct += timeoutPnl;
+      } else if (timeoutPnl < 0) {
+        totalLossPct += Math.abs(timeoutPnl);
+      }
+    }
   }
 
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number((resolved / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : wins > 0 ? 3.0 : 0;
-  const expectancy = totalSignals > 0 ? Number(((wins * 1.5 - losses * 1.0) / totalSignals).toFixed(2)) : 0;
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? 99.9 : 0);
+  const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
 
   return {
     totalSignals,

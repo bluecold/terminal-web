@@ -42,7 +42,7 @@ export function evaluateStrategyTournament(
   }
 
   // Target minimum resolved trades for HIGH confidence
-  const minHighResolved = timeframe === '5m' ? 5 : timeframe === '1h' ? 4 : 3;
+  const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
   const idealMin = Math.round(minHighResolved * 1.5);
 
   // Helper to calculate composite score with sigmoid sample penalty

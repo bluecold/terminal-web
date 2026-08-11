@@ -2082,9 +2082,8 @@ export function calculateVCMESniperSignal(
   // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias - VCME v2.0)
   // ═══════════════════════════════════════════════════════════
   const closes1d = klines1d.map(k => k.close);
-  const emaPeriod1d = Math.min(200, Math.max(20, closes1d.length));
-  const ema200_1d = calculateEMA(closes1d, emaPeriod1d);
-  const ema50_1d = calculateEMA(closes1d, Math.min(50, closes1d.length));
+  const ema200_1d = closes1d.length >= 150 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
+  const ema50_1d = closes1d.length >= 50 ? calculateEMA(closes1d, 50) : new Array(closes1d.length).fill(NaN);
 
   const lastEma200_1d = ema200_1d[ema200_1d.length - 1];
   const lastEma50_1d = ema50_1d[ema50_1d.length - 1];
@@ -2095,20 +2094,17 @@ export function calculateVCMESniperSignal(
   const lastPlusDI1d = adxData1d.plusDI[adxData1d.plusDI.length - 1];
   const lastMinusDI1d = adxData1d.minusDI[adxData1d.minusDI.length - 1];
 
-  if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d) || isNaN(lastAdx1d)) {
-    return { ...fallback, triggerDetail: 'Datos diarios incompletos' };
-  }
+  let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
+  const hasDailyTrend = !isNaN(lastEma200_1d) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
+  const bias_long = hasDailyTrend && lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
+  const bias_short = hasDailyTrend && lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
+
+  if (bias_long) bias1D = 'ALCISTA';
+  else if (bias_short) bias1D = 'BAJISTA';
 
   // Rango diario promedio (últimas 20 velas)
   const last20Ranges = klines1d.slice(-20).map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0);
   const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
-
-  let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  const bias_long = lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
-  const bias_short = lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
-
-  if (bias_long) bias1D = 'ALCISTA';
-  else if (bias_short) bias1D = 'BAJISTA';
 
   // ═══════════════════════════════════════════════════════════
   // 2. FILTROS Y SETUP DE 1H (VCME v2.0 Context & Regime)
