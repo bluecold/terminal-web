@@ -226,17 +226,18 @@ export function backtestMultitemporal(
   style: 'dayTrading' | 'swing' = 'dayTrading',
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
+  const tf = style === 'swing' ? '1h' : '5m';
   const evalWindow = 576;
   const forwardWindow = style === 'swing' ? 48 : 288; // 288 candles in 5m = 24 hours
   const cooldownPeriod = style === 'swing' ? 2 : 24;  // 2 hours cooldown between signals
-  const isSessionBased = hasSessionGaps(klines5m, '5m');
+  const isSessionBased = hasSessionGaps(klines5m, tf);
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
     label: `datos insuficientes`,
-    forwardLabel: '24 hs max',
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '24 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: 1.5,
@@ -321,7 +322,7 @@ export function backtestMultitemporal(
       continue;
     }
 
-    if (isSessionBased && isNearSessionEnd(klines5m, i, '5m', forwardWindow)) {
+    if (isSessionBased && isNearSessionEnd(klines5m, i, tf, 6)) {
       neutrals++;
       continue;
     }
@@ -778,6 +779,23 @@ export function backtestMultitemporal(
     for (let f = i + 1; f <= i + forwardWindow && f < klines5m.length; f++) {
       const k = klines5m[f];
 
+      if (isSessionBased && f > i + 1) {
+        const gap = klines5m[f].time - klines5m[f - 1].time;
+        const expectedGapSec = tf === '5m' ? 300 : 3600;
+        if (gap > expectedGapSec * 3) {
+          // Intraday EOD exit before overnight session gap
+          const exitPrice = klines5m[f - 1].close;
+          const tp1P = tp1Hit ? 0.50 * (signal === 'BUY' ? (tp1 - entry) / entry * 100 : (entry - tp1) / entry * 100) : 0;
+          const tp2P = tp2Hit ? 0.25 * (signal === 'BUY' ? (tp2 - entry) / entry * 100 : (entry - tp2) / entry * 100) : 0;
+          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
+          const openPortionPnl = signal === 'BUY' ? (exitPrice - entry) / entry * 100 : (entry - exitPrice) / entry * 100;
+          pnlPct = tp1P + tp2P + leftWeight * openPortionPnl;
+          tradeOutcome = 'timeout';
+          exitIdx = f - 1;
+          break;
+        }
+      }
+
       if (k.high > highestHigh) highestHigh = k.high;
       if (k.low < lowestLow) lowestLow = k.low;
 
@@ -935,9 +953,19 @@ export function backtestMultitemporal(
       }
     }
 
+    if (tradeOutcome === 'timeout' && pnlPct === 0) {
+      const lastIdx = Math.min(i + forwardWindow, klines5m.length - 1);
+      const exitPrice = klines5m[lastIdx].close;
+      const tp1P = tp1Hit ? 0.50 * (signal === 'BUY' ? (tp1 - entry) / entry * 100 : (entry - tp1) / entry * 100) : 0;
+      const tp2P = tp2Hit ? 0.25 * (signal === 'BUY' ? (tp2 - entry) / entry * 100 : (entry - tp2) / entry * 100) : 0;
+      const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
+      const openPortionPnl = signal === 'BUY' ? (exitPrice - entry) / entry * 100 : (entry - exitPrice) / entry * 100;
+      pnlPct = tp1P + tp2P + leftWeight * openPortionPnl;
+      exitIdx = lastIdx;
+    }
 
     const frictionPct = 0.08;
-    pnlPct = pnlPct > 0 ? pnlPct - frictionPct : pnlPct - frictionPct;
+    pnlPct -= frictionPct;
 
     if (tradeOutcome === 'win') {
       wins++;
