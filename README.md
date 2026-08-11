@@ -99,7 +99,12 @@ La aplicación cuenta con **5 estrategias principales** que analizan los datos e
    npm run dev
    ```
 
-5. Abre [http://localhost:5173](http://localhost:5173) en tu navegador para ver la aplicación.
+5. Corre la suite de pruebas unitarias automatizadas:
+   ```bash
+   npm test
+   ```
+
+6. Abre [http://localhost:5173](http://localhost:5173) en tu navegador para ver la aplicación.
 
 ---
 

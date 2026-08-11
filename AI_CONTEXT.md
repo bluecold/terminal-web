@@ -152,9 +152,14 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Capacidad de Historial y Pruning (`App.tsx`)**: Ampliada la retención de `alertsLog` a 100 alertas con depuración automática de elementos mayores a 7 días en `localStorage`.
   - **Deduplicación Atómica de Alertas (`App.tsx`)**: Prevención de alertas duplicadas al cambiar temporalidades o recargar la app mediante chequeo de estado `OPEN` y cooldown activo.
   - **Corrección de Mapeo de Klines y Preservación de TP1**: Corrección del mapeo por activo en `updateAlertsOutcome` y preservación del estado `TP1_HIT`.
-  - **Actualización v2026.08.10.1 — Desglose de Rendimiento por Estrategia en Tooltips**:
-  - **Métricas por Estrategia (`alertTracker.ts`)**: Añadido mapa `byStrategy` a `SessionStats` para acumular independientemente aciertos, fallos y R neto por estrategia (`Standard`, `Confluencia`, `Scoring`, `VCME Sniper`, `Multifractal MTF`).
-  - **Tooltips Flotantes (`App.css`, `App.tsx`)**: Implementados tooltips contextuales CSS/glassmorphism sobre los badges `HOY`, `TP ✅` y `SL ❌` para visualizar el desglose detallado de TP y SL por estrategia sin saturar la pantalla.
+  - **Actualización v2026.08.11.5 — Refinamiento del Alert Tracker Multi-Timeframe, P&L Congelado, Nivel Estructural Multifractal y Suite de Pruebas Unitarias**:
+    - **Multi-Timeframe Exacto en Alert Tracker (`alertTracker.ts`)**: Mapeo estricto por `${symbol}:${interval}` en `scannedKlinesMap`. Cada alerta audita su evolución utilizando velas del timeframe real de emisión (5m para Multifractal, 1h para VCME Swing).
+    - **P&L Congelado al Cierre & Progresión TP1 $\rightarrow$ TP2 (`alertTracker.ts`)**: Congela el retorno `%` real al momento del cierre (`TP2_HIT`, `SL_HIT`, `EXPIRED`), eliminando variaciones flotantes posteriores. Al alcanzar `TP1_HIT`, desplaza el Stop Loss a *breakeven* (`entryPrice`) y continúa auditando hacia `TP2_HIT`.
+    - **Niveles Estructurales para Alertas Multifractal (`App.tsx`)**: Integrados niveles de Stop Loss y Take Profits derivados del análisis cuantitativo de `calculateMultifractalMTFSignal` al disparar notificaciones de escritorio y guardar en el historial de alertas.
+    - **Invalidación Reactiva de Caché del Scanner (`App.tsx`)**: Invalida inmediatamente `bestStrategyRef` y `lastSignalsRef` al cambiar entre Day Trading / Swing o Agresivo / Conservador.
+    - **ResizeObserver en Gráficos (`Chart.tsx`)**: Adaptación dinámica automática del canvas ante la expansión o colapso de paneles de la UI mediante `ResizeObserver`.
+    - **Resiliencia en Storage (`main.tsx`)**: Limpieza segura de `localStorage` en `ErrorBoundary` restringida únicamente a claves `terminal_*`.
+    - **Suite de Pruebas Automatizadas (`npm test`, `backtester.test.ts`)**: Cobertura de 7 unit tests ejecutables que verifican límite de Binance 999 velas, inmunidad a gaps en Swing 1H, paridad de Standard/Confluencia y flujo completo del tracking de alertas.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 
