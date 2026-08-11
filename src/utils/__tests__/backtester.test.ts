@@ -5,6 +5,7 @@ import {
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
+import { updateAlertsOutcome, type AuditAlertItem } from '../alertTracker';
 import type { Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100): Kline[] {
@@ -90,6 +91,43 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const result = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'ETHUSDT');
     assert.strictEqual(result.insufficient, false);
+  });
+
+  // Test 6: Alert Tracker Multi-Timeframe Lookup & Frozen Exit P&L
+  test('updateAlertsOutcome freezes P&L for closed alerts and looks up multi-timeframe klines', () => {
+    const closedAlert: AuditAlertItem = {
+      id: '1', symbol: 'BTCUSDT', interval: '5m', signal: 'BUY', time: '12:00',
+      pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
+      status: 'TP2_HIT', realizedR: 2.5, pnlPercent: 4.5, timestamp: 1700000000000
+    };
+
+    const klinesMap = {
+      'BTCUSDT:5m': [{ time: 1700000010, open: 100, high: 110, low: 90, close: 90, volume: 100 }]
+    };
+
+    const updated = updateAlertsOutcome([closedAlert], klinesMap);
+    assert.strictEqual(updated[0].pnlPercent, 4.5, 'Closed alert P&L should be frozen');
+    assert.strictEqual(updated[0].status, 'TP2_HIT');
+  });
+
+  // Test 7: Alert Tracker TP1 -> TP2 Progression
+  test('updateAlertsOutcome advances OPEN alert to TP1_HIT and then TP2_HIT', () => {
+    const openAlert: AuditAlertItem = {
+      id: '2', symbol: 'ETHUSDT', interval: '1h', signal: 'BUY', time: '12:00',
+      pf: 1.8, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 102, takeProfit2: 105,
+      status: 'OPEN', realizedR: 0, pnlPercent: 0, timestamp: 1700000000000
+    };
+
+    const klinesMap = {
+      'ETHUSDT:1h': [
+        { time: 1700000010, open: 100, high: 103, low: 99.5, close: 102.5, volume: 100 },
+        { time: 1700003610, open: 102.5, high: 106, low: 101, close: 105.5, volume: 100 }
+      ]
+    };
+
+    const updated = updateAlertsOutcome([openAlert], klinesMap);
+    assert.strictEqual(updated[0].status, 'TP2_HIT', 'Alert should progress through TP1 to TP2_HIT');
+    assert(updated[0].pnlPercent > 0);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

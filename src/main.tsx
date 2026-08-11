@@ -26,7 +26,11 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 
   handleReset = () => {
-    localStorage.clear();
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('terminal_')) {
+        localStorage.removeItem(key);
+      }
+    });
     window.location.reload();
   };
 

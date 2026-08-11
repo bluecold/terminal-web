@@ -274,8 +274,11 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
     };
 
     window.addEventListener('resize', handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
     return () => {
+      resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       if (container) {
         container.removeEventListener('mouseleave', handleMouseLeave);

@@ -267,10 +267,12 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
   }, [currentAsset, interval]);
 
+  /* eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded */
   useEffect(() => {
     if (klines.length >= 35) {
       const closedData = klines.slice(0, -1);
       const signal = computeOverallSignal(closedData, interval, allKlines);
+      /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional re-evaluation on mode toggle */
       setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
     }
   }, [executionStyle, triggerMode]);
@@ -337,11 +339,11 @@ function App() {
   const scannerRunningRef = useRef(false);
   const maxConcurrentSymbolScans = 4;
 
-  // Reset signal and strategy caches on timeframe change
+  // Reset signal and strategy caches on timeframe or mode change
   useEffect(() => {
     lastSignalsRef.current = {};
     bestStrategyRef.current = {};
-  }, [interval]);
+  }, [interval, executionStyle, triggerMode]);
 
   useEffect(() => {
     let isMounted = true;
@@ -374,6 +376,10 @@ function App() {
           if (!isMounted) return;
           if (data.length < 35) return;
           scannedKlinesMap[symbol] = data;
+          scannedKlinesMap[`${symbol}:${interval}`] = data;
+          if (data5m.length > 0) scannedKlinesMap[`${symbol}:5m`] = data5m;
+          if (data1h.length > 0) scannedKlinesMap[`${symbol}:1h`] = data1h;
+          if (data1d.length > 0) scannedKlinesMap[`${symbol}:1d`] = data1d;
 
           // ── Determine best strategy (cached for 5 minutes) ──────────────
           const now = Date.now();
@@ -552,6 +558,18 @@ function App() {
                   takeProfit2: vcmeRes.takeProfit2,
                 };
               }
+            } else if (bestStrategy === 'multifractal') {
+              const mfRes = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol);
+              if (mfRes.stopLoss > 0) {
+                const entryP = mfRes.triggerPrice || entryPrice;
+                const riskDist = Math.abs(entryP - mfRes.stopLoss);
+                const isBuySig = overallSignal.includes('BUY');
+                levels = {
+                  stopLoss: mfRes.stopLoss,
+                  takeProfit1: Number((isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist).toFixed(4)),
+                  takeProfit2: Number((isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist).toFixed(4)),
+                };
+              }
             }
 
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -714,7 +732,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.11.4
+            v2026.08.11.5
           </span>
         </div>
       </header>

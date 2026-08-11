@@ -98,85 +98,129 @@ export function updateAlertsOutcome(
   klinesBySymbol: Record<string, Kline[]>
 ): AuditAlertItem[] {
   return alerts.map(alert => {
-    // Only process OPEN alerts or alerts needing PnL update
-    const symbolKlines = klinesBySymbol[alert.symbol];
+    // If the alert is already closed (TP2_HIT, SL_HIT, EXPIRED), freeze its outcome and realized PnL
+    if (alert.status === 'TP2_HIT' || alert.status === 'SL_HIT' || alert.status === 'EXPIRED') {
+      return alert;
+    }
+
+    // Lookup klines using specific symbol:interval key first, falling back to symbol
+    const key = `${alert.symbol}:${alert.interval}`;
+    const symbolKlines = klinesBySymbol[key] || klinesBySymbol[alert.symbol];
     if (!symbolKlines || symbolKlines.length === 0) return alert;
 
     const latestCandle = symbolKlines[symbolKlines.length - 1];
     const latestPrice = latestCandle.close;
     const isBuy = alert.signal.includes('BUY');
 
-    // Calculate current floating PnL %
-    const pnlPercent = isBuy
-      ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
-      : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
-
-    if (alert.status !== 'OPEN') {
-      return { ...alert, pnlPercent: Number(pnlPercent.toFixed(2)) };
-    }
-
     // Evaluate candles that arrived after alert timestamp
     const futureCandles = symbolKlines.filter(k => k.time * 1000 >= alert.timestamp);
     const candlesToEvaluate = futureCandles.length > 0 ? futureCandles : [latestCandle];
 
-    let newStatus: AlertStatus = 'OPEN';
-    let realizedR = 0;
+    let currentStatus: AlertStatus = alert.status;
+    let realizedR = alert.realizedR || 0;
+    let currentPnl = alert.pnlPercent;
+
+    const initialRiskPct = Math.abs((alert.stopLoss - alert.entryPrice) / alert.entryPrice);
+    let activeSL = currentStatus === 'TP1_HIT' ? alert.entryPrice : alert.stopLoss;
 
     for (const candle of candlesToEvaluate) {
       if (isBuy) {
-        // SL check first (conservative OHLC evaluation)
-        if (candle.low <= alert.stopLoss) {
-          // If TP1 was already hit in an earlier candle, lock in TP1_HIT instead of overwriting with SL_HIT
-          if (newStatus !== 'TP1_HIT') {
-            newStatus = 'SL_HIT';
+        // 1. Check Stop Loss
+        if (candle.low <= activeSL) {
+          if (currentStatus === 'TP1_HIT') {
+            // SL at Breakeven after TP1: lock in 0.50 * TP1 gain
+            const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+            currentPnl = Number(tp1Gain.toFixed(2));
+            realizedR = 1.0;
+            currentStatus = 'TP1_HIT';
+            break;
+          } else {
+            currentStatus = 'SL_HIT';
+            currentPnl = -Number((initialRiskPct * 100).toFixed(2));
             realizedR = -1.0;
             break;
           }
         }
+
+        // 2. Check TP2
         if (candle.high >= alert.takeProfit2) {
-          newStatus = 'TP2_HIT';
-          realizedR = 2.5;
+          currentStatus = 'TP2_HIT';
+          const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+          const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + tp2Gain).toFixed(2));
+          realizedR = initialRiskPct > 0 ? Number((((alert.takeProfit1 + alert.takeProfit2) / 2 - alert.entryPrice) / (alert.entryPrice * initialRiskPct)).toFixed(2)) : 2.5;
           break;
         }
-        if (candle.high >= alert.takeProfit1) {
-          newStatus = 'TP1_HIT';
+
+        // 3. Check TP1
+        if (currentStatus === 'OPEN' && candle.high >= alert.takeProfit1) {
+          currentStatus = 'TP1_HIT';
+          activeSL = alert.entryPrice; // Trailing SL to breakeven
+          const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+          const openFloating = ((candle.close - alert.entryPrice) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
           realizedR = 1.5;
-          // Continue evaluating to see if TP2 is reached later
         }
       } else {
         // Sell signal
-        if (candle.high >= alert.stopLoss) {
-          if (newStatus !== 'TP1_HIT') {
-            newStatus = 'SL_HIT';
+        if (candle.high >= activeSL) {
+          if (currentStatus === 'TP1_HIT') {
+            const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+            currentPnl = Number(tp1Gain.toFixed(2));
+            realizedR = 1.0;
+            currentStatus = 'TP1_HIT';
+            break;
+          } else {
+            currentStatus = 'SL_HIT';
+            currentPnl = -Number((initialRiskPct * 100).toFixed(2));
             realizedR = -1.0;
             break;
           }
         }
+
         if (candle.low <= alert.takeProfit2) {
-          newStatus = 'TP2_HIT';
-          realizedR = 2.5;
+          currentStatus = 'TP2_HIT';
+          const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+          const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + tp2Gain).toFixed(2));
+          realizedR = initialRiskPct > 0 ? Number(((alert.entryPrice - (alert.takeProfit1 + alert.takeProfit2) / 2) / (alert.entryPrice * initialRiskPct)).toFixed(2)) : 2.5;
           break;
         }
-        if (candle.low <= alert.takeProfit1) {
-          newStatus = 'TP1_HIT';
+
+        if (currentStatus === 'OPEN' && candle.low <= alert.takeProfit1) {
+          currentStatus = 'TP1_HIT';
+          activeSL = alert.entryPrice;
+          const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+          const openFloating = ((alert.entryPrice - candle.close) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
           realizedR = 1.5;
         }
       }
     }
 
-    // Check expiration (if 24 candles passed without SL or TP)
-    if (newStatus === 'OPEN' && candlesToEvaluate.length >= 24) {
-      newStatus = 'EXPIRED';
-      // Compute realized R based on current PnL vs initial risk %
-      const riskPct = Math.abs((alert.stopLoss - alert.entryPrice) / alert.entryPrice);
-      realizedR = riskPct > 0 ? Number(((pnlPercent / 100) / riskPct).toFixed(2)) : 0;
+    // Expiration check (24 candles without SL or TP2)
+    if (currentStatus === 'OPEN' && candlesToEvaluate.length >= 24) {
+      currentStatus = 'EXPIRED';
+      const floatingPnl = isBuy
+        ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
+        : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
+      currentPnl = Number(floatingPnl.toFixed(2));
+      realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 0;
+    }
+
+    // If still open, compute current floating PnL
+    if (currentStatus === 'OPEN') {
+      const floatingPnl = isBuy
+        ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
+        : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
+      currentPnl = Number(floatingPnl.toFixed(2));
     }
 
     return {
       ...alert,
-      status: newStatus,
-      realizedR: newStatus === 'OPEN' ? (realizedR > 0 ? realizedR : 0) : realizedR,
-      pnlPercent: Number(pnlPercent.toFixed(2)),
+      status: currentStatus,
+      realizedR,
+      pnlPercent: currentPnl,
     };
   });
 }
