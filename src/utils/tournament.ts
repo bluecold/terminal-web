@@ -48,7 +48,8 @@ export function evaluateStrategyTournament(
   // Helper to calculate composite score with sigmoid sample penalty
   const calcScore = (c: StrategyCandidate): number => {
     const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
-    const baseScore = c.profitFactor * 0.45 + Math.max(0, c.expectancy) * 0.35 + c.winRate * 0.20;
+    const cappedPF = Math.min(c.profitFactor, 5.0);
+    const baseScore = cappedPF * 0.45 + Math.max(0, c.expectancy) * 0.35 + c.winRate * 0.20;
     return baseScore * sampleConfidence;
   };
 
@@ -70,9 +71,9 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (meets at least 1 resolved trade and PF >= 0.95)
+  // 2. Check for LIMITED confidence candidates (meets at least 1 resolved trade and PF >= 0.95, requiring 1.15 if resolved === 1)
   const limitedCandidates = candidates
-    .filter(c => c.resolved >= 1 && c.profitFactor >= 0.95)
+    .filter(c => c.resolved >= 1 && c.profitFactor >= (c.resolved === 1 ? 1.15 : 0.95))
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
 

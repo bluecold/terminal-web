@@ -157,7 +157,7 @@ export interface TickerSummary {
 
 export async function fetchTickerSummary(symbol: string, prettyName: string): Promise<TickerSummary | null> {
   try {
-    const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=1d&interval=1m`);
+    const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=1d&interval=1d`);
     const data = await response.json();
     const meta = data.chart?.result?.[0]?.meta;
     if (!meta) return null;

@@ -7,6 +7,7 @@ interface WatchlistProps {
   onSelectAsset: (asset: string) => void;
   onRemoveAsset: (asset: string) => void;
   currentAsset: string;
+  activeSignals?: Record<string, string>;
 }
 
 interface AssetData {
@@ -15,7 +16,7 @@ interface AssetData {
   change: string;
 }
 
-export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, currentAsset }: WatchlistProps) {
+export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, currentAsset, activeSignals = {} }: WatchlistProps) {
   const [assets, setAssets] = useState<AssetData[]>([]);
   const assetsRef = useRef<AssetData[]>([]);
 
@@ -94,6 +95,9 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
         const isCurrent = currentAsset === asset.symbol;
         const changeIsPositive = asset.change.startsWith('+');
         const changeIsNegative = asset.change.startsWith('-');
+        const activeSig = activeSignals[asset.symbol];
+        const isBuySig = activeSig && activeSig.includes('BUY');
+        const isSellSig = activeSig && activeSig.includes('SELL');
         
         return (
           <div 
@@ -133,8 +137,29 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
                 fontWeight: '700', 
                 color: isCurrent ? 'var(--text-primary)' : 'rgba(243, 244, 246, 0.85)',
                 fontSize: '0.9rem',
-                letterSpacing: '0.5px'
-              }}>{asset.symbol}</div>
+                letterSpacing: '0.5px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <span>{asset.symbol}</span>
+                {activeSig && (isBuySig || isSellSig) && (
+                  <span style={{
+                    fontSize: '0.58rem',
+                    padding: '1px 5px',
+                    borderRadius: '4px',
+                    fontWeight: '700',
+                    lineHeight: '1.2',
+                    letterSpacing: '0.3px',
+                    backgroundColor: isBuySig ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: isBuySig ? '#22c55e' : '#ef4444',
+                    border: isBuySig ? '1px solid rgba(34, 197, 94, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)',
+                    boxShadow: isBuySig ? '0 0 6px rgba(34, 197, 94, 0.2)' : '0 0 6px rgba(239, 68, 68, 0.2)',
+                  }}>
+                    {isBuySig ? 'BUY' : 'SELL'}
+                  </span>
+                )}
+              </div>
             </div>
             <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '10px' }}>
               <div>

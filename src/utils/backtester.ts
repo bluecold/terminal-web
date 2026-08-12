@@ -200,21 +200,60 @@ function evaluateOutcome(
   return { result: 'timeout', pnlPct: rawPnl - frictionPct };
 }
 
+// ─── Cache Layer for Backtesting Performance ──────────────────────────────
+const backtestCache = new Map<string, { lastTime: number; length: number; result: BacktestResult }>();
+
+function getBacktestCache(key: string, klines: Kline[]): BacktestResult | null {
+  if (!klines || klines.length === 0) return null;
+  const cached = backtestCache.get(key);
+  const lastTime = klines[klines.length - 1].time;
+  if (cached && cached.lastTime === lastTime && cached.length === klines.length) {
+    return cached.result;
+  }
+  return null;
+}
+
+function setBacktestCache(key: string, klines: Kline[], result: BacktestResult): BacktestResult {
+  if (klines && klines.length > 0 && result) {
+    if (backtestCache.size >= 150) {
+      const oldestKey = backtestCache.keys().next().value;
+      if (oldestKey) backtestCache.delete(oldestKey);
+    }
+    const lastTime = klines[klines.length - 1].time;
+    backtestCache.set(key, { lastTime, length: klines.length, result });
+  }
+  return result;
+}
+
 // ─── Public API (Optimized O(n)) ────────────────────────────────────────────
 
 export function backtestStandard(klines: Kline[], interval: string): BacktestResult {
+  const cacheKey = `standard:${interval}`;
+  const cached = getBacktestCache(cacheKey, klines);
+  if (cached) return cached;
   const signals = computeStandardSignalsSeries(klines);
-  return runBacktestGenericOptimized(klines, interval, signals);
+  const res = runBacktestGenericOptimized(klines, interval, signals);
+  return setBacktestCache(cacheKey, klines, res);
 }
 
 export function backtestConfluencia(klines: Kline[], interval: string): BacktestResult {
+  const cacheKey = `confluencia:${interval}`;
+  const cached = getBacktestCache(cacheKey, klines);
+  if (cached) return cached;
   const signals = computeConfluenciaSignalsSeries(klines, interval);
-  return runBacktestGenericOptimized(klines, interval, signals);
+  const res = runBacktestGenericOptimized(klines, interval, signals);
+  return setBacktestCache(cacheKey, klines, res);
 }
 
 export function backtestScoring(klines: Kline[], interval: string, weights?: ScoringWeights): BacktestResult {
+  const w = weights || DEFAULT_WEIGHTS;
+  const weightsKey = `${w.trend}_${w.rsi}_${w.bollinger}_${w.volume}_${w.candle}`;
+  const cacheKey = `scoring:${interval}:${weightsKey}`;
+  const cached = getBacktestCache(cacheKey, klines);
+  if (cached) return cached;
   const signals = computeScoringSignalsSeries(klines, interval, weights);
-  return runBacktestGenericOptimized(klines, interval, signals);
+  const res = runBacktestGenericOptimized(klines, interval, signals);
+  return setBacktestCache(cacheKey, klines, res);
 }
 
 export function backtestMultitemporal(
@@ -226,10 +265,18 @@ export function backtestMultitemporal(
   style: 'dayTrading' | 'swing' = 'dayTrading',
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
+  const cacheKey = `multitemporal:${symbol || 'any'}:${_interval}:${style}:${triggerMode}`;
+  const cached = getBacktestCache(cacheKey, klines5m);
+  if (cached) return cached;
   const tf = style === 'swing' ? '1h' : '5m';
   const evalWindow = 576;
-  const forwardWindow = style === 'swing' ? 48 : 288; // 288 candles in 5m = 24 hours
-  const cooldownPeriod = style === 'swing' ? 2 : 24;  // 2 hours cooldown between signals
+  const stepSec = klines5m.length > 1 ? (klines5m[1].time - klines5m[0].time) : (style === 'swing' ? 3600 : 300);
+  const forwardWindow = style === 'swing'
+    ? (stepSec === 300 ? 576 : 48)  // 576 x 5m = 48h OR 48 x 1h = 48h
+    : 288;                           // 288 x 5m = 24h
+  const cooldownHours = style === 'swing' ? 4 : 2;
+  const candlesPerHour = Math.max(1, Math.round(3600 / (stepSec || 300)));
+  const cooldownPeriod = cooldownHours * candlesPerHour;  // 4h cooldown for Swing, 2h for DayTrading
   const isSessionBased = hasSessionGaps(klines5m, tf);
 
   const fallbackResult: BacktestResult = {
@@ -313,8 +360,26 @@ export function backtestMultitemporal(
   let totalLossPct = 0;
   let nextAllowedIdx = 0;
 
-  // Track completed trades for Meta-learning
-  const completedTrades: { win: boolean; gain: number }[] = [];
+  // ── Pre-calculate 1D and 1H timestamp lookup maps O(N) ───────────────
+  const idx1dMap = new Int32Array(klines5m.length);
+  let dPtr = 0;
+  for (let i = 0; i < klines5m.length; i++) {
+    const t = klines5m[i].time;
+    while (dPtr < klines1d.length && klines1d[dPtr].time + 86400 <= t) {
+      dPtr++;
+    }
+    idx1dMap[i] = dPtr - 1;
+  }
+
+  const idx1hMap = new Int32Array(klines5m.length);
+  let hPtr = 0;
+  for (let i = 0; i < klines5m.length; i++) {
+    const t = klines5m[i].time;
+    while (hPtr < klines1h.length && klines1h[hPtr].time + 3600 <= t) {
+      hPtr++;
+    }
+    idx1hMap[i] = hPtr - 1;
+  }
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
@@ -331,14 +396,7 @@ export function backtestMultitemporal(
     const prev = klines5m[i - 1];
 
     // ── LAYER 1: Daily Bias 1D ───────────────────────────────────────────
-    let idx1d = -1;
-    for (let d = klines1d.length - 1; d >= 0; d--) {
-      const endTime1d = klines1d[d].time + 86400;
-      if (endTime1d <= curr.time) {
-        idx1d = d;
-        break;
-      }
-    }
+    const idx1d = idx1dMap[i];
     if (idx1d < 27) { neutrals++; continue; } // ADX(14) needs ~28 bars to converge
 
     const lastEma200_1d = ema200_1d[idx1d];
@@ -359,14 +417,7 @@ export function backtestMultitemporal(
     else if (bias_short) bias1D = 'BAJISTA';
 
     // ── LAYER 2: 1H Setup (Stateless State Machine + ADX/EMA200 Slope Regime) ──
-    let idx1h = -1;
-    for (let h = klines1h.length - 1; h >= 0; h--) {
-      const endTime1h = klines1h[h].time + 3600;
-      if (endTime1h <= curr.time) {
-        idx1h = h;
-        break;
-      }
-    }
+    const idx1h = idx1hMap[i];
     if (idx1h < 50) { neutrals++; continue; }
 
     const rsiVal1h = rsiSeries1h[idx1h];
@@ -723,6 +774,10 @@ export function backtestMultitemporal(
       const slStruct = swingLow > 0 ? (swingLow - 0.20 * atr5m) : slATR;
       stopLoss = Math.min(slATR, slStruct);
       let risk = entry - stopLoss;
+      if (risk <= 0) {
+        neutrals++;
+        continue;
+      }
       const minRisk = 0.8 * atr5m;
       const maxRisk = 1.8 * atr5m;
 
@@ -742,6 +797,10 @@ export function backtestMultitemporal(
       const slStruct = swingHigh > 0 ? (swingHigh + 0.20 * atr5m) : slATR;
       stopLoss = Math.max(slATR, slStruct);
       let risk = stopLoss - entry;
+      if (risk <= 0) {
+        neutrals++;
+        continue;
+      }
       const minRisk = 0.8 * atr5m;
       const maxRisk = 1.8 * atr5m;
 
@@ -899,7 +958,8 @@ export function backtestMultitemporal(
           break;
         }
 
-        if (!tp1Hit && (f - i) >= 12) {
+        // Time Stop for DAY trades: 8 candles (40 min)
+        if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
           const currentPnl = entry - k.close;
           if (currentPnl < 0.5 * risk) {
             pnlPct = (currentPnl / entry) * 100;
@@ -970,11 +1030,9 @@ export function backtestMultitemporal(
     if (tradeOutcome === 'win') {
       wins++;
       totalGainPct += Math.max(0, pnlPct);
-      completedTrades.push({ win: true, gain: pnlPct });
     } else if (tradeOutcome === 'loss') {
       losses++;
       totalLossPct += Math.abs(pnlPct);
-      completedTrades.push({ win: false, gain: pnlPct });
     } else {
       timeouts++;
       if (pnlPct > 0) {
@@ -982,7 +1040,6 @@ export function backtestMultitemporal(
       } else if (pnlPct < 0) {
         totalLossPct += Math.abs(pnlPct);
       }
-      completedTrades.push({ win: false, gain: pnlPct });
     }
 
     nextAllowedIdx = exitIdx + cooldownPeriod;
@@ -997,7 +1054,7 @@ export function backtestMultitemporal(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
 
-  return {
+  const res: BacktestResult = {
     totalSignals,
     wins,
     losses,
@@ -1014,6 +1071,8 @@ export function backtestMultitemporal(
     targetMultiplier: style === 'swing' ? 2.0 : 1.5,
     insufficient: false
   };
+
+  return setBacktestCache(cacheKey, klines5m, res);
 }
 
 // ==========================================
@@ -1519,6 +1578,9 @@ export function backtestMultifractalMTF(
   _interval: string = '5m',
   _symbol: string = 'ASSET'
 ): BacktestResult {
+  const cacheKey = `multifractal:${_symbol || 'any'}:${_interval}`;
+  const cached = getBacktestCache(cacheKey, klines5m);
+  if (cached) return cached;
   const evalWindow = 576;
   const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
   const cooldownPeriod = 12; // Must be >= forwardWindow to prevent overlapping trades
@@ -1561,6 +1623,30 @@ export function backtestMultifractalMTF(
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
 
+  const idx1hMap = new Int32Array(klines5m.length);
+  if (hasValid1H) {
+    let hPtr = 0;
+    for (let i = 0; i < klines5m.length; i++) {
+      const t = klines5m[i].time;
+      while (hPtr < klines1h.length && klines1h[hPtr].time + 3600 <= t) {
+        hPtr++;
+      }
+      idx1hMap[i] = hPtr - 1;
+    }
+  }
+
+  const idx1dMap = new Int32Array(klines5m.length);
+  if (hasValid1D) {
+    let dPtr = 0;
+    for (let i = 0; i < klines5m.length; i++) {
+      const t = klines5m[i].time;
+      while (dPtr < klines1d.length && klines1d[dPtr].time + 86400 <= t) {
+        dPtr++;
+      }
+      idx1dMap[i] = dPtr - 1;
+    }
+  }
+
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i - lastSignalIdx < cooldownPeriod) {
       neutrals++;
@@ -1577,13 +1663,7 @@ export function backtestMultifractalMTF(
 
     let isCompressed1H = false;
     if (hasValid1H && volBands1H.length > 0) {
-      let idx1h = -1;
-      for (let h = klines1h.length - 1; h >= 0; h--) {
-        if (klines1h[h].time + 3600 <= curr.time) {
-          idx1h = h;
-          break;
-        }
-      }
+      const idx1h = idx1hMap[i];
       if (idx1h >= 0) {
         const startH = Math.max(0, idx1h - 3);
         for (let h = startH; h <= idx1h; h++) {
@@ -1597,13 +1677,7 @@ export function backtestMultifractalMTF(
 
     let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
     if (hasValid1D && andian1D.length > 0) {
-      let idx1d = -1;
-      for (let d = klines1d.length - 1; d >= 0; d--) {
-        if (klines1d[d].time + 86400 <= curr.time) {
-          idx1d = d;
-          break;
-        }
-      }
+      const idx1d = idx1dMap[i];
       if (idx1d >= 0 && andian1D[idx1d]) {
         bias1D = andian1D[idx1d].bias;
       }
@@ -1732,7 +1806,7 @@ export function backtestMultifractalMTF(
   const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? 99.9 : 0);
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
 
-  return {
+  const res: BacktestResult = {
     totalSignals,
     wins,
     losses,
@@ -1749,4 +1823,6 @@ export function backtestMultifractalMTF(
     targetMultiplier: 1.5,
     insufficient: false
   };
+
+  return setBacktestCache(cacheKey, klines5m, res);
 }

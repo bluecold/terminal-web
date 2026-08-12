@@ -8,7 +8,7 @@ import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal } from './utils/indicators';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import { calculateAlertLevels, updateAlertsOutcome, calculateSessionStats, type AuditAlertItem } from './utils/alertTracker';
@@ -35,6 +35,16 @@ function App() {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
   const [searchVal, setSearchVal] = useState(currentAsset);
+
+  const activeSignals = useMemo(() => {
+    const map: Record<string, string> = {};
+    alertsLog.forEach(alert => {
+      if (alert.status === 'OPEN' || alert.status === 'TP1_HIT') {
+        map[alert.symbol] = alert.signal;
+      }
+    });
+    return map;
+  }, [alertsLog]);
   
   // Sync search input when currentAsset changes from external sources (e.g. watchlist click)
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync of controlled input */
@@ -520,24 +530,10 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
-            const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
-              && ('Notification' in window) && Notification.permission === 'granted';
-
-            if (desktopNotificationsEnabled) {
-              const confidenceTag = bestConfidence === 'LIMITED'
-                ? ' ⚠️ [Muestra Limitada]'
-                : bestConfidence === 'NONE'
-                  ? ' 🛡️ [Sin Ventaja]'
-                  : '';
-              const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-              new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
-                body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})`,
-                tag: `${symbol}-${signalInterval}`,
-              });
-            }
-
             const entryPrice = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0;
-            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval);
+            const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
+            const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
+            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR);
 
             if (bestStrategy === 'multitemporal') {
               const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
@@ -570,6 +566,29 @@ function App() {
                   takeProfit2: Number((isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist).toFixed(4)),
                 };
               }
+            }
+
+            const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
+              && ('Notification' in window) && Notification.permission === 'granted';
+
+            if (desktopNotificationsEnabled) {
+              const confidenceTag = bestConfidence === 'LIMITED'
+                ? ' ⚠️ [Muestra Limitada]'
+                : bestConfidence === 'NONE'
+                  ? ' 🛡️ [Sin Ventaja]'
+                  : '';
+              const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
+              
+              const formatP = (val: number) => val >= 1000
+                ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : `$${val.toFixed(2)}`;
+
+              const levelInfo = `Entry: ${formatP(entryPrice)} | SL: ${formatP(levels.stopLoss)} | TP1: ${formatP(levels.takeProfit1)} | TP2: ${formatP(levels.takeProfit2)}`;
+
+              new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
+                body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})\n${levelInfo}`,
+                tag: `${symbol}-${signalInterval}`,
+              });
             }
 
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -656,7 +675,12 @@ function App() {
   }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
-  const latestVolume = klines.length > 0 ? (klines.slice().reverse().find(k => k.volume > 0)?.volume || 0) : 0;
+  const latestVolume = useMemo(() => {
+    for (let i = klines.length - 1; i >= 0; i--) {
+      if (klines[i].volume > 0) return klines[i].volume;
+    }
+    return 0;
+  }, [klines]);
   const closes = useMemo(() => klines.map(k => k.close), [klines]);
 
   const isCurrentInWatchlist = watchlistSymbols.includes(currentAsset);
@@ -732,7 +756,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.11.5
+            v2026.08.12.10
           </span>
         </div>
       </header>
@@ -749,6 +773,7 @@ function App() {
                 onSelectAsset={setCurrentAsset} 
                 currentAsset={currentAsset} 
                 onRemoveAsset={(sym) => setWatchlistSymbols(prev => prev.filter(s => s !== sym))}
+                activeSignals={activeSignals}
               />
             </div>
           </div>

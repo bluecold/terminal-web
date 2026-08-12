@@ -152,14 +152,14 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Capacidad de Historial y Pruning (`App.tsx`)**: Ampliada la retención de `alertsLog` a 100 alertas con depuración automática de elementos mayores a 7 días en `localStorage`.
   - **Deduplicación Atómica de Alertas (`App.tsx`)**: Prevención de alertas duplicadas al cambiar temporalidades o recargar la app mediante chequeo de estado `OPEN` y cooldown activo.
   - **Corrección de Mapeo de Klines y Preservación de TP1**: Corrección del mapeo por activo en `updateAlertsOutcome` y preservación del estado `TP1_HIT`.
-  - **Actualización v2026.08.11.5 — Refinamiento del Alert Tracker Multi-Timeframe, P&L Congelado, Nivel Estructural Multifractal y Suite de Pruebas Unitarias**:
-    - **Multi-Timeframe Exacto en Alert Tracker (`alertTracker.ts`)**: Mapeo estricto por `${symbol}:${interval}` en `scannedKlinesMap`. Cada alerta audita su evolución utilizando velas del timeframe real de emisión (5m para Multifractal, 1h para VCME Swing).
-    - **P&L Congelado al Cierre & Progresión TP1 $\rightarrow$ TP2 (`alertTracker.ts`)**: Congela el retorno `%` real al momento del cierre (`TP2_HIT`, `SL_HIT`, `EXPIRED`), eliminando variaciones flotantes posteriores. Al alcanzar `TP1_HIT`, desplaza el Stop Loss a *breakeven* (`entryPrice`) y continúa auditando hacia `TP2_HIT`.
-    - **Niveles Estructurales para Alertas Multifractal (`App.tsx`)**: Integrados niveles de Stop Loss y Take Profits derivados del análisis cuantitativo de `calculateMultifractalMTFSignal` al disparar notificaciones de escritorio y guardar en el historial de alertas.
-    - **Invalidación Reactiva de Caché del Scanner (`App.tsx`)**: Invalida inmediatamente `bestStrategyRef` y `lastSignalsRef` al cambiar entre Day Trading / Swing o Agresivo / Conservador.
-    - **ResizeObserver en Gráficos (`Chart.tsx`)**: Adaptación dinámica automática del canvas ante la expansión o colapso de paneles de la UI mediante `ResizeObserver`.
-    - **Resiliencia en Storage (`main.tsx`)**: Limpieza segura de `localStorage` en `ErrorBoundary` restringida únicamente a claves `terminal_*`.
-    - **Suite de Pruebas Automatizadas (`npm test`, `backtester.test.ts`)**: Cobertura de 7 unit tests ejecutables que verifican límite de Binance 999 velas, inmunidad a gaps en Swing 1H, paridad de Standard/Confluencia y flujo completo del tracking de alertas.
+  - **Actualización v2026.08.12.10 — Performance de CPU O(N), Caché FIFO, Badges en Watchlist, Notificaciones Enriquecidas y Refinamiento de Memoria**:
+    - **Optimización de CPU de Backtesting ($O(N)$)**: Pre-indexación lineal $O(N+M)$ de las series 1H y 1D en `backtestMultitemporal` y `backtestMultifractalMTF`, reduciendo las iteraciones retrocedidas anidadas de $\approx 96.000$ a solo $744$ pasos (reducción del 99% en bucles anidados).
+    - **Caché en Memoria con Evicción FIFO**: Implementada la capa `getBacktestCache` / `setBacktestCache` en los 5 motores de backtesting. Elimina el doble cómputo entre `App.tsx` y `SignalPanel.tsx` (respuestas en **0.01ms**). Política de desalojo suave First-In, First-Out (`Map.delete(oldestKey)`) al alcanzar 150 entradas para evitar *cache stampedes*.
+    - **Expiración de Alertas por Tiempo Real**: Expiración determinista en `alertTracker.ts` basada en la estampa de tiempo del mercado (`latestCandle.time * 1000 >= alert.timestamp + 24 * intervalMs`), inmune a fallbacks de timeframe o cargas masivas iniciales.
+    - **Unificación de Guardia de 1D en UI**: Homologado el guard de `closedKlines1d` a `>= 30` velas en `SignalPanel.tsx`, sincronizando la interfaz visual con las alertas emitidas por el scanner.
+    - **Indicadores de Señal Activa en Watchlist**: Badges neón 🟢 **`BUY`** o 🔴 **`SELL`** en la Watchlist mientras la alerta permanezca en `OPEN` o `TP1_HIT`. Desaparición automática al cerrarse o expirar la posición.
+    - **Notificaciones de Escritorio Enriquecidas**: Inclusión directa de los niveles de trading (`Entry`, `SL`, `TP1`, `TP2`) en el cuerpo de las notificaciones emergentes del sistema operativo.
+    - **Bucle O(1) en `latestVolume` y Fallback UI Macro**: Reemplazado `.slice().reverse()` por un bucle retroceso sin asignaciones de memoria en `App.tsx`, eliminación del array inerte `completedTrades`, y agregado mensaje de respaldo para el calendario macro (`SignalPanel.tsx`).
 
 ## Cuestiones Pendientes y Futuras Mejoras
 

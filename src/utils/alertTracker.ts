@@ -45,13 +45,16 @@ export interface SessionStats {
 export function calculateAlertLevels(
   signal: string,
   entryPrice: number,
-  interval: string
+  interval: string,
+  atr?: number
 ): { stopLoss: number; takeProfit1: number; takeProfit2: number } {
   const isBuy = signal.includes('BUY');
   
-  // Percentages per timeframe
+  // Dynamic ATR or percentage fallback per timeframe
   let stopPct = 0.006; // 0.6% for 5m
-  if (interval === '1h') {
+  if (atr && atr > 0 && entryPrice > 0) {
+    stopPct = Math.max(0.003, (atr * 1.5) / entryPrice);
+  } else if (interval === '1h') {
     stopPct = 0.018;   // 1.8% for 1h
   } else if (interval === '1d') {
     stopPct = 0.035;   // 3.5% for 1d
@@ -198,8 +201,12 @@ export function updateAlertsOutcome(
       }
     }
 
-    // Expiration check (24 candles without SL or TP2)
-    if (currentStatus === 'OPEN' && candlesToEvaluate.length >= 24) {
+    // Expiration check (24 candles of alert timeframe without SL or TP2)
+    const intervalMs = alert.interval === '1h' ? 3600000 : alert.interval === '1d' ? 86400000 : 300000;
+    const expiryTime = alert.timestamp + 24 * intervalMs;
+    const isExpiredByTime = latestCandle.time * 1000 >= expiryTime;
+
+    if (currentStatus === 'OPEN' && isExpiredByTime) {
       currentStatus = 'EXPIRED';
       const floatingPnl = isBuy
         ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100

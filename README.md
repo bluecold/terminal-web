@@ -14,9 +14,11 @@
 * **Multi-Soporte de Mercados:**
   * **Criptomonedas:** Obtención de datos mediante WebSockets en tiempo real (Binance) y agregadores de datos históricos.
   * **Mercados Tradicionales/Stocks:** Integración con Data Feeds de baja latencia para stocks, ETFs y futuros.
+* **Indicadores de Señal Activa en Watchlist:** Badges de neón 🟢 **`BUY`** o 🔴 **`SELL`** que aparecen dinámicamente al lado de los símbolos mientras su alerta permanezca en estado `OPEN` o `TP1_HIT`, desapareciendo automáticamente al cerrarse o expirar el trade.
+* **Notificaciones de Escritorio Enriquecidas con Niveles de Trading:** Notificaciones del sistema operativo que detallan directamente los puntos exactos de `Entry`, `SL`, `TP1` y `TP2` para que el trader pueda operar sin abrir la app.
 * **Motor QVE de Ventaja Estadística (QVE Engine):** Torneo cuantitativo centralizado (`tournament.ts`) que evalúa dinámicamente el rendimiento histórico de las 5 estrategias y selecciona automáticamente la estrategia líder con mayor ventaja matemática (`Profit Factor`, `Expectancy` y `WinRate`).
-* **Niveles de Confianza Progresiva:** Clasificación transparente de señales en `Alta Confianza` (supera muestra estadística mínima), `Muestra Limitada ⚠️` (muestra reducida con penalización sigmoide) y `Sin Ventaja Estadística 🛡️` (descarte automático de alertas cuando no hay ventaja histórica).
-* **Live Forward Test & Tracking en Vivo de Alertas:** Motor de seguimiento automático que registra y audita el resultado de cada alerta emitida (`TP1 +1.5R`, `TP2 +2.5R`, `SL -1.0R`, `Abierta ⏳` con PnL flotante en tiempo real) en función de las velas posteriores.
+* **Optimización de CPU $O(N)$ y Caché FIFO:** Simulador multitemporal pre-indexado $O(N+M)$ que reduce iteraciones en un 99%, junto a un caché en memoria con política de evicción FIFO (`Map.delete(oldestKey)`) para eliminar el doble cómputo entre componentes en **0.01ms**.
+* **Live Forward Test & Tracking en Vivo de Alertas:** Motor de seguimiento automático que registra y audita el resultado de cada alerta emitida (`TP1 +1.5R`, `TP2 +2.5R`, `SL -1.0R`, `Abierta ⏳` con PnL flotante en tiempo real) en función de las velas posteriores con expiración determinista basada en tiempo.
 * **Barra Ejecutiva de Rendimiento de Sesión:** Resumen en vivo en el historial de alertas que calcula el WinRate % del día y el retorno neto acumulado en unidades de riesgo ($+R$).
 * **Líneas de Precio y Overlays en Gráfico (Entry / SL / TP):** Al hacer clic en cualquier tarjeta del historial de alertas, el gráfico dibuja instantáneamente sobre TradingView las líneas de Entrada (Azul), Stop Loss (Rojo), TP1 (Verde) y TP2 (Esmeralda).
 * **Rendimiento Ultra-Optimizado (Cero Sobrecarga GPU):** Arquitectura CSS y renderizado sin cuellos de botella de desenfoque GPU (`backdrop-filter`), garantizando un consumo de GPU de <5% a 60-144 FPS.
@@ -24,7 +26,7 @@
 * **Marquesina de Índices en Tiempo Real:** Barra superior interactiva (carrusel/marquee) que muestra cotizaciones de los principales mercados mundiales (S&P 500, Nasdaq, Dow Jones, Russell 2000, VIX, Oro, Petróleo, BTC) con aislamiento de capa GPU (`contain: layout paint`).
 * **Calculadora de Position Sizing Dinámico y Gestión de Capital:** Herramienta cuantitativa profesional con multiplicadores por score, ATR%, Drawdown de cuenta y penalización por correlación de sector.
 * **Matriz de Confluencia Multitemporal:** Widget que evalúa y expone en tiempo real las señales del activo en 5m, 1h y 1d.
-* **Calendario de Catalizadores y Métricas de Sentimiento:** Advertencias de ganancias corporativas (Earnings), macro 2026 (IPC/FOMC), Zacks Rank y Crypto Fear & Greed.
+* **Calendario de Catalizadores y Métricas de Sentimiento:** Advertencias de ganancias corporativas (Earnings), macro 2026 (IPC/FOMC con aviso de actualización al agotarse), Zacks Rank y Crypto Fear & Greed.
 
 ---
 

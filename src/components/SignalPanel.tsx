@@ -62,7 +62,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.08.11.5';
+    const APP_VERSION = 'v2026.08.12.10';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -272,7 +272,7 @@ export default function SignalPanel({
   const btScoring     = useMemo(() => closedKlines.length > 20 ? backtestScoring(closedKlines, interval, weights) : null, [closedKlines, interval, weights]);
   const btMultitemporal = useMemo(() => {
     const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
-    return triggerKlines.length >= 30 && closedKlines1h.length >= 60 && closedKlines1d.length >= 200
+    return triggerKlines.length >= 30 && closedKlines1h.length >= 60 && closedKlines1d.length >= 30
       ? backtestMultitemporal(triggerKlines, closedKlines1h, closedKlines1d, '5m', symbol, executionStyle, triggerMode)
       : null;
   }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, executionStyle, triggerMode]);
@@ -2303,7 +2303,7 @@ export default function SignalPanel({
                   </div>
                 )}
                 
-                {nextMacro && (
+                {nextMacro ? (
                   <div style={{ 
                     display: 'flex', 
                     justifyContent: 'space-between', 
@@ -2327,6 +2327,15 @@ export default function SignalPanel({
                     }}>
                       {nextMacro.daysLeft === 0 ? 'Hoy' : nextMacro.daysLeft === 1 ? 'Mañana' : `en ${nextMacro.daysLeft} días`}
                     </span>
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: '6px 10px',
+                    background: 'rgba(255, 255, 255, 0.01)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px'
+                  }}>
+                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Calendario Macro pendiente de actualización</span>
                   </div>
                 )}
               </div>
