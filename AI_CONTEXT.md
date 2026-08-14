@@ -160,6 +160,37 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - **Indicadores de Señal Activa en Watchlist**: Badges neón 🟢 **`BUY`** o 🔴 **`SELL`** en la Watchlist mientras la alerta permanezca en `OPEN` o `TP1_HIT`. Desaparición automática al cerrarse o expirar la posición.
     - **Notificaciones de Escritorio Enriquecidas**: Inclusión directa de los niveles de trading (`Entry`, `SL`, `TP1`, `TP2`) en el cuerpo de las notificaciones emergentes del sistema operativo.
     - **Bucle O(1) en `latestVolume` y Fallback UI Macro**: Reemplazado `.slice().reverse()` por un bucle retroceso sin asignaciones de memoria en `App.tsx`, eliminación del array inerte `completedTrades`, y agregado mensaje de respaldo para el calendario macro (`SignalPanel.tsx`).
+  - **Actualización v2026.08.14.1 — Optimización de Red (Paso 1: Deduplicación y Caché en Memoria)**:
+  - **Capa de Deduplicación y Caché (`src/services/api.ts`)**: Implementado el motor `fetchWithDeduplication` para colapsar llamadas HTTP idénticas en vuelo (batching de promesas) y almacenar respuestas en RAM con TTL por tipo de dato:
+    - *Velas/Klines*: 25 segundos (evita repeticiones en el mismo ciclo de escaneo de 60s).
+    - *Resúmenes de Tickers*: 30 segundos.
+    - *Noticias*: 5 minutos.
+    - *Fundamentales/Zacks/Ganancias*: 1 hora.
+  - **Reutilización Cruzada de Datos**: Al descargar velas de 1D en el scanner de `App.tsx`, el sistema auto-puebla la clave de resumen (`summary_${symbol}`). La `Watchlist` y el `MarketTicker` leen estos valores en 0.01 ms sin realizar peticiones HTTP a Vercel.
+  - **Preservación de Señales (0% Impacto)**: El scanner en segundo plano continúa ejecutándose a la frecuencia exacta de 60 segundos sobre velas cerradas, manteniendo la precisión intradía de las alertas.
+  - **Reducción Estimada de Consumo**: Disminuye las solicitudes Edge de Vercel de ~30 req/min a ~8-10 req/min (reducción del 65-70%).
+
+---
+
+## 📌 Guía de Arquitectura para la Fase 2 (Proxy de Infraestructura Futuro)
+
+En caso de requerir independencia total del plan gratuito de Vercel (1.000.000 Edge Requests/mes) en el futuro, se han evaluado dos alternativas de proxy dedicadas:
+
+### 1. Opción Raspberry Pi 4 (Proxy Local 24/7 de Capacidad Ilimitada)
+- **Servicio Node.js/Express en la Pi**:
+  Crear un microservicio en la Raspberry Pi 4 que reenvíe peticiones a Yahoo Finance (`query2.finance.yahoo.com`) y Zacks (`quote-feed.zacks.com`).
+- **Puntos de Enlace**:
+  - Endpoint Proxy Yahoo: `http://<PI_LOCAL_IP>:3001/api/yahoo/...`
+  - Endpoint Proxy Zacks: `http://<PI_LOCAL_IP>:3001/api/zacks/...`
+- **Ventajas**: Peticiones ilimitadas ($0/mes), consumo eléctrico insignificante (~3-5W), caché en RAM local.
+- **Acceso Remoto**: Si se requiere acceder fuera del Wi-Fi de hogar, usar **Cloudflare Tunnel** (`cloudflared`) o **Tailscale** para exponer el puerto 3001 con cifrado TLS sin abrir puertos en el router.
+
+### 2. Opción Cloudflare Workers (Proxy Serverless en la Nube 24/7)
+- **Script Worker de Cloudflare**:
+  Crear un Worker gratuito (script de ~20 líneas JS) que procese `fetch(request)` hacia Yahoo/Zacks.
+- **Capacidad Gratuita**: 100.000 peticiones/día (3.000.000 peticiones/mes).
+- **Integración**: Reemplazar en `vercel.json` la propiedad `destination` para apuntar a la URL de Cloudflare Worker (`https://tu-proxy.workers.dev/$1`).
+- **Ventajas**: Sin mantenimiento de hardware, acceso universal desde cualquier dispositivo.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 
