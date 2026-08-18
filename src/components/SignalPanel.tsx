@@ -62,7 +62,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.08.14.1';
+    const APP_VERSION = 'v2026.08.18.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -267,9 +267,9 @@ export default function SignalPanel({
   const { rawSignal } = voting;
 
   // ── Backtest results (heavy computation, memoized) ──────────────────────
-  const btStandard    = useMemo(() => closedKlines.length > 20 ? backtestStandard(closedKlines, interval)    : null, [closedKlines, interval]);
-  const btConfluencia = useMemo(() => closedKlines.length > 20 ? backtestConfluencia(closedKlines, interval) : null, [closedKlines, interval]);
-  const btScoring     = useMemo(() => closedKlines.length > 20 ? backtestScoring(closedKlines, interval, weights) : null, [closedKlines, interval, weights]);
+  const btStandard    = useMemo(() => closedKlines.length > 20 ? backtestStandard(closedKlines, interval, symbol)    : null, [closedKlines, interval, symbol]);
+  const btConfluencia = useMemo(() => closedKlines.length > 20 ? backtestConfluencia(closedKlines, interval, symbol) : null, [closedKlines, interval, symbol]);
+  const btScoring     = useMemo(() => closedKlines.length > 20 ? backtestScoring(closedKlines, interval, weights, symbol) : null, [closedKlines, interval, weights, symbol]);
   const btMultitemporal = useMemo(() => {
     const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
     return triggerKlines.length >= 30 && closedKlines1h.length >= 60 && closedKlines1d.length >= 30

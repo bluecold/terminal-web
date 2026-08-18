@@ -211,8 +211,17 @@ function App() {
       }
       setLoading(false);
 
-      // Update outcome for any open alerts using newly loaded klines
-      setAlertsLog(prev => updateAlertsOutcome(prev, { [currentAsset]: fetchedKlines[interval] || [] }));
+      // Update outcome for any open alerts using newly loaded klines with exact timeframe mapping
+      const klinesMap: Record<string, Kline[]> = {
+        [currentAsset]: fetchedKlines[interval] || [],
+        [`${currentAsset}:${interval}`]: fetchedKlines[interval] || [],
+      };
+      timeframes.forEach((tf) => {
+        if (fetchedKlines[tf] && fetchedKlines[tf].length > 0) {
+          klinesMap[`${currentAsset}:${tf}`] = fetchedKlines[tf];
+        }
+      });
+      setAlertsLog(prev => updateAlertsOutcome(prev, klinesMap));
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -405,9 +414,9 @@ function App() {
             const closed5m = data5m.slice(0, -1);
             const closed1h = data1h.slice(0, -1);
             const closed1d = data1d.slice(0, -1);
-            const btStd  = backtestStandard(closedData, interval);
-            const btConf = backtestConfluencia(closedData, interval);
-            const btScore = backtestScoring(closedData, interval);
+            const btStd  = backtestStandard(closedData, interval, symbol);
+            const btConf = backtestConfluencia(closedData, interval, symbol);
+            const btScore = backtestScoring(closedData, interval, undefined, symbol);
 
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
             if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
@@ -621,7 +630,7 @@ function App() {
 
               const isDuplicate = prev.some(a => {
                 if (a.symbol !== symbol || a.interval !== signalInterval) return false;
-                if (a.status === 'OPEN') return true;
+                if (a.status === 'OPEN' || a.status === 'TP1_HIT') return true;
                 if (now - a.timestamp < cooldownMs) return true;
                 return false;
               });
@@ -756,7 +765,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.14.1
+            v2026.08.18.1
           </span>
         </div>
       </header>
@@ -967,8 +976,12 @@ function App() {
                     statusLabel = 'TP2 (+2.5R) ✅';
                     statusBg = 'rgba(16, 185, 129, 0.2)';
                     statusColor = 'var(--accent-green)';
+                  } else if (alert.status === 'TP1_BE_CLOSED') {
+                    statusLabel = 'TP1/BE (+1.0R) ✅';
+                    statusBg = 'rgba(16, 185, 129, 0.15)';
+                    statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'TP1_HIT') {
-                    statusLabel = 'TP1 (+1.5R) ✅';
+                    statusLabel = 'TP1 (+1.5R) 🎯';
                     statusBg = 'rgba(16, 185, 129, 0.15)';
                     statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'SL_HIT') {

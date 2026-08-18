@@ -1,23 +1,26 @@
 import assert from 'node:assert';
 import {
+  backtestStandard,
+  backtestConfluencia,
+  backtestScoring,
   backtestMultitemporal,
   backtestMultifractalMTF,
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
-import { updateAlertsOutcome, type AuditAlertItem } from '../alertTracker';
+import { updateAlertsOutcome, calculateSessionStats, type AuditAlertItem } from '../alertTracker';
 import type { Kline } from '../../services/api';
 
-function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100): Kline[] {
+function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
   const klines: Kline[] = [];
   let price = startPrice;
   const startTime = 1700000000;
 
   for (let i = 0; i < count; i++) {
     const time = startTime + i * intervalSeconds;
-    const change = (Math.sin(i / 10) * 0.5) + ((i % 5 === 0 ? 1 : -0.8) * 0.3);
+    const change = (Math.sin(i / 10) * 0.5) + ((i % 5 === 0 ? 1 : -0.8) * 0.3) + drift;
     const open = price;
-    const close = Math.max(10, price + change);
+    const close = Math.max(1, price + change);
     const high = Math.max(open, close) + 0.5;
     const low = Math.min(open, close) - 0.5;
     const volume = 1000 + (i % 7) * 200;
@@ -128,6 +131,96 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const updated = updateAlertsOutcome([openAlert], klinesMap);
     assert.strictEqual(updated[0].status, 'TP2_HIT', 'Alert should progress through TP1 to TP2_HIT');
     assert(updated[0].pnlPercent > 0);
+  });
+
+  // Test 8: Backtest Cache Isolation per Symbol
+  test('backtestStandard caches independently per symbol without cross-pollution', () => {
+    const btcKlines = generateSyntheticKlines(200, 300, 50000, 0.05);
+    const ethKlines = generateSyntheticKlines(200, 300, 3000, -0.05);
+
+    const btcResult = backtestStandard(btcKlines, '5m', 'BTCUSDT');
+    const ethResult = backtestStandard(ethKlines, '5m', 'ETHUSDT');
+
+    assert.notStrictEqual(btcResult, ethResult, 'Different symbols must not return the exact same cached reference');
+  });
+
+  // Test 9: Alert Tracker TP1 -> Breakeven Hit (TP1_BE_CLOSED)
+  test('updateAlertsOutcome transitions TP1_HIT to TP1_BE_CLOSED when hitting entry price', () => {
+    const alert: AuditAlertItem = {
+      id: '3', symbol: 'SOLUSDT', interval: '5m', signal: 'BUY', time: '12:00',
+      pf: 2.1, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
+      status: 'OPEN', realizedR: 0, pnlPercent: 0, timestamp: 1700000000000
+    };
+
+    const klinesMap = {
+      'SOLUSDT:5m': [
+        // Candle 1: hits TP1 (high=104)
+        { time: 1700000300, open: 100, high: 104, low: 99.5, close: 102, volume: 100 },
+        // Candle 2: falls to entry price (low=100) -> SL at BE triggered
+        { time: 1700000600, open: 102, high: 102.5, low: 99.8, close: 100.2, volume: 100 }
+      ]
+    };
+
+    const updated = updateAlertsOutcome([alert], klinesMap);
+    assert.strictEqual(updated[0].status, 'TP1_BE_CLOSED', 'Alert should close in TP1_BE_CLOSED');
+    assert.strictEqual(updated[0].realizedR, 1.0, 'Realized R should be locked at +1.0R for TP1 + BE');
+    assert(updated[0].pnlPercent > 0, 'PnL should be positive from locked 50% TP1 gain');
+
+    // Next pass: verify that subsequent candles cannot change the outcome of TP1_BE_CLOSED
+    const futureKlinesMap = {
+      'SOLUSDT:5m': [
+        { time: 1700000900, open: 100.2, high: 110, low: 90, close: 90, volume: 100 }
+      ]
+    };
+    const frozen = updateAlertsOutcome(updated, futureKlinesMap);
+    assert.strictEqual(frozen[0].status, 'TP1_BE_CLOSED', 'Outcome must remain frozen');
+    assert.strictEqual(frozen[0].pnlPercent, updated[0].pnlPercent, 'PnL must remain frozen');
+  });
+
+  // Test 10: Alert Expiration for OPEN and TP1_HIT
+  test('updateAlertsOutcome expires OPEN and TP1_HIT alerts after 24 candles', () => {
+    const oldTimestamp = 1700000000000;
+    const expiryCandleTime = (1700000000000 + 25 * 300000) / 1000;
+
+    const openAlert: AuditAlertItem = {
+      id: '4', symbol: 'ADAUSDT', interval: '5m', signal: 'BUY', time: '12:00',
+      pf: 1.5, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
+      status: 'OPEN', realizedR: 0, pnlPercent: 0, timestamp: oldTimestamp
+    };
+
+    const tp1Alert: AuditAlertItem = {
+      id: '5', symbol: 'DOTUSDT', interval: '5m', signal: 'BUY', time: '12:00',
+      pf: 1.5, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
+      status: 'TP1_HIT', realizedR: 1.5, pnlPercent: 1.5, timestamp: oldTimestamp
+    };
+
+    const klinesMap = {
+      'ADAUSDT:5m': [{ time: expiryCandleTime, open: 100.5, high: 101, low: 100.2, close: 100.8, volume: 100 }],
+      'DOTUSDT:5m': [{ time: expiryCandleTime, open: 101.5, high: 102, low: 101.2, close: 101.8, volume: 100 }]
+    };
+
+    const updated = updateAlertsOutcome([openAlert, tp1Alert], klinesMap);
+    assert.strictEqual(updated[0].status, 'EXPIRED');
+    assert.strictEqual(updated[1].status, 'EXPIRED');
+  });
+
+  // Test 11: Session Stats with TP1_BE_CLOSED
+  test('calculateSessionStats correctly tallies TP1_BE_CLOSED as a win and TP1_HIT as active', () => {
+    const todayMs = Date.now();
+    const alerts: AuditAlertItem[] = [
+      { id: '1', symbol: 'BTC', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_BE_CLOSED', realizedR: 1.0, pnlPercent: 1.5, timestamp: todayMs },
+      { id: '2', symbol: 'ETH', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP2_HIT', realizedR: 2.5, pnlPercent: 4.5, timestamp: todayMs },
+      { id: '3', symbol: 'SOL', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'SL_HIT', realizedR: -1.0, pnlPercent: -2.0, timestamp: todayMs },
+      { id: '4', symbol: 'BNB', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_HIT', realizedR: 1.5, pnlPercent: 2.0, timestamp: todayMs }
+    ];
+
+    const stats = calculateSessionStats(alerts, false);
+    assert.strictEqual(stats.total, 4);
+    assert.strictEqual(stats.wins, 2, 'TP1_BE_CLOSED and TP2_HIT must count as wins');
+    assert.strictEqual(stats.losses, 1, 'SL_HIT must count as loss');
+    assert.strictEqual(stats.openCount, 1, 'TP1_HIT must be counted in openCount while trailing');
+    assert.strictEqual(stats.winRate, 66.7);
+    assert.strictEqual(stats.totalR, 2.5);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

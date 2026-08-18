@@ -169,6 +169,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Reutilización Cruzada de Datos**: Al descargar velas de 1D en el scanner de `App.tsx`, el sistema auto-puebla la clave de resumen (`summary_${symbol}`). La `Watchlist` y el `MarketTicker` leen estos valores en 0.01 ms sin realizar peticiones HTTP a Vercel.
   - **Preservación de Señales (0% Impacto)**: El scanner en segundo plano continúa ejecutándose a la frecuencia exacta de 60 segundos sobre velas cerradas, manteniendo la precisión intradía de las alertas.
   - **Reducción Estimada de Consumo**: Disminuye las solicitudes Edge de Vercel de ~30 req/min a ~8-10 req/min (reducción del 65-70%).
+  - **Actualización v2026.08.18.1 — Aislamiento de Caché por Activo, Sincronización 1:1 de Fórmulas y Perfeccionamiento de Auditoría de Alertas**:
+  - **Aislamiento de Caché de Backtest (`src/utils/backtester.ts`)**: Se incluyó el `symbol` en las claves de caché de `backtestStandard`, `backtestConfluencia` y `backtestScoring` (`${strategy}:${symbol}:${interval}`), eliminando la contaminación cruzada donde activos con idéntico número de velas y timestamp en Binance compartían estadísticas ajenas.
+  - **Sincronización Matemática de Indicadores y Backtest**:
+    - *VCME Sniper Breakout*: Alineados los multiplicadores de volumen en `backtestMultitemporal` a `1.5x` (LONG) y `1.8x` (SHORT) para coincidir con la fórmula en tiempo real de `calculateVCMESniperSignal`.
+    - *Scoring Multicapa*: Añadidos los filtros de penalización por mechas (`upperWickRatio > 0.25` / `lowerWickRatio > 0.25`) en `computeScoringSignalsSeries`.
+  - **Ciclo de Vida y Auditoría de Alertas (`src/utils/alertTracker.ts`)**:
+    - Introducido el estado terminal `TP1_BE_CLOSED` para congelar salidas en Breakeven tras TP1 (+1.0R neto) y prevenir reevaluaciones erráticas continuas.
+    - Expiración de alertas corregida para aplicar tras 24 velas tanto en estado `OPEN` como en `TP1_HIT`.
+    - `calculateSessionStats` actualizado para contabilizar `TP1_BE_CLOSED` como ganancia cerrada y mantener `TP1_HIT` como posición activa mientras continúa el trailing del 50% restante.
+  - **Corrección de Timeframe Mismatch en Auditoría (`src/App.tsx`)**: Suministrado el mapa completo de temporalidades (`symbol:5m`, `symbol:1h`, `symbol:1d`) en `loadExtraData` evitando evaluar alertas de 5m con velas diarias al cambiar el gráfico.
 
 ---
 

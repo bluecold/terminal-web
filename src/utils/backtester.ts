@@ -227,8 +227,8 @@ function setBacktestCache(key: string, klines: Kline[], result: BacktestResult):
 
 // ─── Public API (Optimized O(n)) ────────────────────────────────────────────
 
-export function backtestStandard(klines: Kline[], interval: string): BacktestResult {
-  const cacheKey = `standard:${interval}`;
+export function backtestStandard(klines: Kline[], interval: string, symbol?: string): BacktestResult {
+  const cacheKey = `standard:${symbol || 'any'}:${interval}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeStandardSignalsSeries(klines);
@@ -236,8 +236,8 @@ export function backtestStandard(klines: Kline[], interval: string): BacktestRes
   return setBacktestCache(cacheKey, klines, res);
 }
 
-export function backtestConfluencia(klines: Kline[], interval: string): BacktestResult {
-  const cacheKey = `confluencia:${interval}`;
+export function backtestConfluencia(klines: Kline[], interval: string, symbol?: string): BacktestResult {
+  const cacheKey = `confluencia:${symbol || 'any'}:${interval}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeConfluenciaSignalsSeries(klines, interval);
@@ -245,10 +245,10 @@ export function backtestConfluencia(klines: Kline[], interval: string): Backtest
   return setBacktestCache(cacheKey, klines, res);
 }
 
-export function backtestScoring(klines: Kline[], interval: string, weights?: ScoringWeights): BacktestResult {
+export function backtestScoring(klines: Kline[], interval: string, weights?: ScoringWeights, symbol?: string): BacktestResult {
   const w = weights || DEFAULT_WEIGHTS;
   const weightsKey = `${w.trend}_${w.rsi}_${w.bollinger}_${w.volume}_${w.candle}`;
-  const cacheKey = `scoring:${interval}:${weightsKey}`;
+  const cacheKey = `scoring:${symbol || 'any'}:${interval}:${weightsKey}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeScoringSignalsSeries(klines, interval, weights);
@@ -650,7 +650,7 @@ export function backtestMultitemporal(
       const breakoutLongPrev = prevOrb.isActive &&
                                prev.close > prevOrb.high + 0.10 * atrSeries5m[i - 1] &&
                                bbIdx > 0 && prev.close > bbSeries5m[bbIdx - 1].upper &&
-                               (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
+                               (vol5m[i - 1] / volSma5m[i - 1]) >= 1.5 &&
                                (prev.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[i - 1];
 
       // Bug #1 fix: changed curr.low > orb.high to curr.close > orb.high.
@@ -660,7 +660,7 @@ export function backtestMultitemporal(
       const breakoutShortPrev = prevOrb.isActive &&
                                 prev.close < prevOrb.low - 0.10 * atrSeries5m[i - 1] &&
                                 bbIdx > 0 && prev.close < bbSeries5m[bbIdx - 1].lower &&
-                                (vol5m[i - 1] / volSma5m[i - 1]) >= 2.0 &&
+                                (vol5m[i - 1] / volSma5m[i - 1]) >= 1.8 &&
                                 (bbSeries5m[bbIdx - 1].lower - prev.close) <= 1.0 * atrSeries5m[i - 1];
 
       // Bug #1 fix (symmetric): changed curr.high < orb.low to curr.close < orb.low.
@@ -1504,6 +1504,8 @@ export function computeScoringSignalsSeries(
     const body = curr.close - curr.open;
     const range = curr.high - curr.low;
     const pctBody = range > 0 ? Math.abs(body) / range : 0;
+    const uWick = upperWickRatio(curr);
+    const lWick = lowerWickRatio(curr);
     let s5 = 0;
     if (pctBody < 0.3) {
       s5 = 0;
@@ -1512,6 +1514,9 @@ export function computeScoringSignalsSeries(
       else if (body > 0)                  s5 += 1;
       else if (body < 0 && pctBody > 0.5) s5 -= 1;
       else if (body < 0)                  s5 -= 1;
+
+      if (body > 0 && uWick > 0.25) { s5 -= 0.5; }
+      else if (body < 0 && lWick > 0.25) { s5 += 0.5; }
     }
 
     // Layer 6 - Structure (Support / Resistance)

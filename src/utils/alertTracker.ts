@@ -1,7 +1,7 @@
 import type { Kline } from '../services/api';
 import type { ConfidenceLevel } from './tournament';
 
-export type AlertStatus = 'OPEN' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'EXPIRED';
+export type AlertStatus = 'OPEN' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'TP1_BE_CLOSED' | 'EXPIRED';
 
 export interface AuditAlertItem {
   id: string;
@@ -94,15 +94,15 @@ export function isAlertFromToday(timestamp: number): boolean {
 
 /**
  * Evaluates open alerts against latest klines for each symbol.
- * Updates alert status (TP1_HIT, TP2_HIT, SL_HIT, EXPIRED) and floating PnL.
+ * Updates alert status (TP1_HIT, TP2_HIT, SL_HIT, TP1_BE_CLOSED, EXPIRED) and floating PnL.
  */
 export function updateAlertsOutcome(
   alerts: AuditAlertItem[],
   klinesBySymbol: Record<string, Kline[]>
 ): AuditAlertItem[] {
   return alerts.map(alert => {
-    // If the alert is already closed (TP2_HIT, SL_HIT, EXPIRED), freeze its outcome and realized PnL
-    if (alert.status === 'TP2_HIT' || alert.status === 'SL_HIT' || alert.status === 'EXPIRED') {
+    // If the alert is already closed (TP2_HIT, SL_HIT, TP1_BE_CLOSED, EXPIRED), freeze its outcome and realized PnL
+    if (alert.status === 'TP2_HIT' || alert.status === 'SL_HIT' || alert.status === 'TP1_BE_CLOSED' || alert.status === 'EXPIRED') {
       return alert;
     }
 
@@ -135,7 +135,7 @@ export function updateAlertsOutcome(
             const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
             currentPnl = Number(tp1Gain.toFixed(2));
             realizedR = 1.0;
-            currentStatus = 'TP1_HIT';
+            currentStatus = 'TP1_BE_CLOSED';
             break;
           } else {
             currentStatus = 'SL_HIT';
@@ -171,7 +171,7 @@ export function updateAlertsOutcome(
             const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
             currentPnl = Number(tp1Gain.toFixed(2));
             realizedR = 1.0;
-            currentStatus = 'TP1_HIT';
+            currentStatus = 'TP1_BE_CLOSED';
             break;
           } else {
             currentStatus = 'SL_HIT';
@@ -201,26 +201,45 @@ export function updateAlertsOutcome(
       }
     }
 
-    // Expiration check (24 candles of alert timeframe without SL or TP2)
+    // Expiration check (24 candles of alert timeframe without SL, TP2 or TP1_BE)
     const intervalMs = alert.interval === '1h' ? 3600000 : alert.interval === '1d' ? 86400000 : 300000;
     const expiryTime = alert.timestamp + 24 * intervalMs;
     const isExpiredByTime = latestCandle.time * 1000 >= expiryTime;
 
-    if (currentStatus === 'OPEN' && isExpiredByTime) {
+    if ((currentStatus === 'OPEN' || currentStatus === 'TP1_HIT') && isExpiredByTime) {
+      if (currentStatus === 'TP1_HIT') {
+        const tp1Gain = isBuy
+          ? ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50
+          : ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+        const openFloating = isBuy
+          ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 50
+          : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 50;
+        currentPnl = Number((tp1Gain + openFloating).toFixed(2));
+        realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 1.0;
+      } else {
+        const floatingPnl = isBuy
+          ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
+          : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
+        currentPnl = Number(floatingPnl.toFixed(2));
+        realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 0;
+      }
       currentStatus = 'EXPIRED';
-      const floatingPnl = isBuy
-        ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
-        : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
-      currentPnl = Number(floatingPnl.toFixed(2));
-      realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 0;
     }
 
-    // If still open, compute current floating PnL
+    // If still actively floating (OPEN or TP1_HIT), compute current floating PnL
     if (currentStatus === 'OPEN') {
       const floatingPnl = isBuy
         ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 100
         : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 100;
       currentPnl = Number(floatingPnl.toFixed(2));
+    } else if (currentStatus === 'TP1_HIT') {
+      const tp1Gain = isBuy
+        ? ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50
+        : ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+      const openFloating = isBuy
+        ? ((latestPrice - alert.entryPrice) / alert.entryPrice) * 50
+        : ((alert.entryPrice - latestPrice) / alert.entryPrice) * 50;
+      currentPnl = Number((tp1Gain + openFloating).toFixed(2));
     }
 
     return {
@@ -258,11 +277,14 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
     }
     const stratObj = byStrategy[strat];
 
-    if (alert.status === 'TP1_HIT' || alert.status === 'TP2_HIT') {
+    if (alert.status === 'TP2_HIT' || alert.status === 'TP1_BE_CLOSED') {
       wins++;
       totalR += alert.realizedR;
       stratObj.wins++;
       stratObj.totalR += alert.realizedR;
+    } else if (alert.status === 'TP1_HIT') {
+      openCount++;
+      stratObj.openCount++;
     } else if (alert.status === 'SL_HIT') {
       losses++;
       totalR += alert.realizedR; // -1.0
