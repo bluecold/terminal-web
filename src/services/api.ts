@@ -13,8 +13,8 @@ interface CacheEntry<T> {
   data: T;
 }
 
-const apiCache = new Map<string, CacheEntry<any>>();
-const inFlightRequests = new Map<string, Promise<any>>();
+const apiCache = new Map<string, CacheEntry<unknown>>();
+const inFlightRequests = new Map<string, Promise<unknown>>();
 
 const KLINE_TTL_MS = 25000; // 25s TTL for klines (prevents duplicates inside same 60s scan cycle)
 const TICKER_SUMMARY_TTL_MS = 30000; // 30s TTL for ticker summaries
@@ -29,7 +29,7 @@ async function fetchWithDeduplication<T>(
   const now = Date.now();
   const cached = apiCache.get(cacheKey);
   if (cached && now - cached.timestamp < ttlMs) {
-    return cached.data;
+    return cached.data as T;
   }
 
   if (inFlightRequests.has(cacheKey)) {
@@ -233,8 +233,8 @@ export async function fetchTickerSummary(symbol: string, prettyName: string): Pr
 
   // 1. Check if summary is already in memory cache
   const cached = apiCache.get(cacheKey);
-  if (cached && now - cached.timestamp < TICKER_SUMMARY_TTL_MS) {
-    return { ...cached.data, name: prettyName };
+  if (cached && now - cached.timestamp < TICKER_SUMMARY_TTL_MS && cached.data) {
+    return { ...(cached.data as TickerSummary), name: prettyName };
   }
 
   // 2. Check if daily klines for this symbol were recently fetched by Scanner/Chart

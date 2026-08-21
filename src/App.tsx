@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import './App.css';
-import { Search } from 'lucide-react';
+import { Search, LayoutGrid, LineChart } from 'lucide-react';
 import Chart from './components/Chart';
 import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
+import MarketRadar from './components/MarketRadar';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
@@ -11,7 +12,17 @@ import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
-import { calculateAlertLevels, updateAlertsOutcome, calculateSessionStats, type AuditAlertItem } from './utils/alertTracker';
+import {
+  calculateAlertLevels,
+  updateAlertsOutcome,
+  calculateSessionStats,
+  isCandleAlertFired,
+  registerFiredCandleAlert,
+  pruneFiredAlertsRegistry,
+  clearFiredAlertsRegistry,
+  generateCandleAlertKey,
+  type AuditAlertItem
+} from './utils/alertTracker';
 import type { AlertOverlay } from './components/Chart';
 
 function App() {
@@ -31,6 +42,7 @@ function App() {
     return [];
   });
   const [selectedAlertOverlay, setSelectedAlertOverlay] = useState<AlertOverlay | null>(null);
+  const [mainView, setMainView] = useState<'chart' | 'radar'>('chart');
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
@@ -91,6 +103,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem('terminal_trigger_mode', triggerMode);
   }, [triggerMode]);
+
+  // Prune expired fired alerts registry entries on mount (older than 7 days)
+  useEffect(() => {
+    pruneFiredAlertsRegistry(7);
+  }, []);
 
   // ── Confluence Matrix & Earnings Events States ───────────────────────────
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
@@ -286,7 +303,6 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
   }, [currentAsset, interval]);
 
-  /* eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded */
   useEffect(() => {
     if (klines.length >= 35) {
       const closedData = klines.slice(0, -1);
@@ -294,6 +310,7 @@ function App() {
       /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional re-evaluation on mode toggle */
       setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal and klines are intentionally managed to avoid cascading updates
   }, [executionStyle, triggerMode]);
 
 
@@ -522,7 +539,15 @@ function App() {
           const isFirstScan = prevSignal === undefined;
           const isTransition = prevSignal !== undefined && prevSignal !== overallSignal;
 
-          if (isActionableSignal && (isFirstScan || isTransition)) {
+          // Identify closed trigger candle timestamp for persistent atomic deduplication
+          const triggerCandle = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1] : null;
+          const candleTimestamp = triggerCandle ? triggerCandle.time : 0;
+
+          // Atomic Candle Deduplication check:
+          // If this exact closed candle has already generated an alert under this strategy or direction, skip firing!
+          const alreadyFiredForCandle = candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal);
+
+          if (isActionableSignal && (isFirstScan || isTransition) && !alreadyFiredForCandle) {
             const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
             const cooldownMs = signalInterval === '5m'
               ? 15 * 60 * 1000        // 15 min for 5m intraday day trading
@@ -601,6 +626,9 @@ function App() {
             }
 
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            const dedupKey = candleTimestamp > 0
+              ? generateCandleAlertKey(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal)
+              : `${symbol}-${signalInterval}-${now}`;
 
             const newAlert: AuditAlertItem = {
               id: `${symbol}-${signalInterval}-${Date.now()}`,
@@ -619,7 +647,21 @@ function App() {
               realizedR: 0,
               pnlPercent: 0,
               timestamp: now,
+              candleTimestamp: candleTimestamp > 0 ? candleTimestamp : undefined,
+              dedupKey,
             };
+
+            // Register in persistent atomic deduplication registry
+            if (candleTimestamp > 0) {
+              registerFiredCandleAlert({
+                symbol,
+                interval: signalInterval,
+                candleTimestamp,
+                strategy: strategyLabel,
+                signal: overallSignal,
+                firedAt: now,
+              });
+            }
 
             setAlertsLog(prev => {
               const cooldownMs = signalInterval === '5m'
@@ -629,6 +671,8 @@ function App() {
                   : 12 * 60 * 60 * 1000;
 
               const isDuplicate = prev.some(a => {
+                if (a.dedupKey && newAlert.dedupKey && a.dedupKey === newAlert.dedupKey) return true;
+                if (a.symbol === symbol && a.interval === signalInterval && a.candleTimestamp && candleTimestamp > 0 && a.candleTimestamp === candleTimestamp) return true;
                 if (a.symbol !== symbol || a.interval !== signalInterval) return false;
                 if (a.status === 'OPEN' || a.status === 'TP1_HIT') return true;
                 if (now - a.timestamp < cooldownMs) return true;
@@ -765,7 +809,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.18.1
+            v2026.08.21.1
           </span>
         </div>
       </header>
@@ -779,7 +823,10 @@ function App() {
             <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
               <Watchlist 
                 symbols={watchlistSymbols}
-                onSelectAsset={setCurrentAsset} 
+                onSelectAsset={(sym) => {
+                  setCurrentAsset(sym);
+                  setMainView('chart');
+                }} 
                 currentAsset={currentAsset} 
                 onRemoveAsset={(sym) => setWatchlistSymbols(prev => prev.filter(s => s !== sym))}
                 activeSignals={activeSignals}
@@ -805,6 +852,7 @@ function App() {
                   onClick={() => {
                     setAlertsLog([]);
                     localStorage.removeItem('terminal_alerts_log');
+                    clearFiredAlertsRegistry();
                   }}
                   style={{
                     background: 'rgba(255, 255, 255, 0.03)',
@@ -1009,6 +1057,7 @@ function App() {
                       onClick={() => {
                         if (!alert.symbol) return;
                         setCurrentAsset(alert.symbol);
+                        setMainView('chart');
                         setTimeInterval(alert.interval || '5m');
                         if (alert.entryPrice && alert.stopLoss && alert.takeProfit1) {
                           setSelectedAlertOverlay({
@@ -1108,58 +1157,102 @@ function App() {
           </div>
         </aside>
 
-        {/* Center - Chart & Indicators */}
-        <main className="chart-area">
+        {/* Center - Chart & Market Radar */}
+        <main className="chart-area" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              {currentAsset} - <span style={{ color: 'var(--text-secondary)' }}>{interval.toUpperCase()} CHART</span>
-              {latestClose > 0 && <span style={{ marginLeft: '16px', color: 'var(--accent-blue)' }}>${latestClose.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>}
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <button 
-                onClick={() => setShowBB(prev => !prev)}
-                style={{
-                  backgroundColor: showBB ? 'var(--accent-blue)' : 'var(--bg-panel)',
-                  color: showBB ? '#fff' : 'var(--text-secondary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '4px',
-                  padding: '4px 12px',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                  fontWeight: showBB ? 'bold' : 'normal',
-                  marginRight: '8px',
-                  transition: 'all 0.2s',
-                }}
-                title="Mostrar/Ocultar Bandas de Bollinger"
-              >
-                BB
-              </button>
-              <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', marginRight: '8px' }}></div>
-              {['5m', '1h', '1d'].map((t) => (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              {/* Main View Switcher */}
+              <div style={{ display: 'flex', gap: '4px', background: 'rgba(0, 0, 0, 0.3)', padding: '3px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                 <button
-                  key={t}
-                  onClick={() => {
-                    setSelectedAlertOverlay(null);
-                    setTimeInterval(t);
-                  }}
+                  className={`view-toggle-btn ${mainView === 'chart' ? 'active' : ''}`}
+                  onClick={() => setMainView('chart')}
+                  title="Vista de gráfico individual"
+                >
+                  <LineChart size={13} />
+                  <span>GRÁFICO</span>
+                </button>
+                <button
+                  className={`view-toggle-btn ${mainView === 'radar' ? 'active' : ''}`}
+                  onClick={() => setMainView('radar')}
+                  title="Radar multi-activo en tiempo real"
+                >
+                  <LayoutGrid size={13} />
+                  <span>RADAR</span>
+                </button>
+              </div>
+
+              {mainView === 'chart' ? (
+                <div>
+                  {currentAsset} - <span style={{ color: 'var(--text-secondary)' }}>{interval.toUpperCase()} CHART</span>
+                  {latestClose > 0 && <span style={{ marginLeft: '14px', color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>${latestClose >= 1000 ? latestClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : latestClose.toFixed(2)}</span>}
+                </div>
+              ) : (
+                <div style={{ fontSize: '0.78rem', fontWeight: '800', color: 'var(--text-primary)', letterSpacing: '0.5px' }}>
+                  RADAR MULTI-ACTIVO EN VIVO
+                </div>
+              )}
+            </div>
+
+            {mainView === 'chart' && (
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button 
+                  onClick={() => setShowBB(prev => !prev)}
                   style={{
-                    backgroundColor: interval === t ? 'var(--accent-blue)' : 'var(--bg-panel)',
-                    color: interval === t ? '#fff' : 'var(--text-secondary)',
+                    backgroundColor: showBB ? 'var(--accent-blue)' : 'var(--bg-panel)',
+                    color: showBB ? '#fff' : 'var(--text-secondary)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '4px',
                     padding: '4px 12px',
                     cursor: 'pointer',
                     fontSize: '0.8rem',
-                    fontWeight: interval === t ? 'bold' : 'normal',
+                    fontWeight: showBB ? 'bold' : 'normal',
+                    marginRight: '8px',
+                    transition: 'all 0.2s',
                   }}
+                  title="Mostrar/Ocultar Bandas de Bollinger"
                 >
-                  {t.toUpperCase()}
+                  BB
                 </button>
-              ))}
-            </div>
+                <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', marginRight: '8px' }}></div>
+                {['5m', '1h', '1d'].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => {
+                      setSelectedAlertOverlay(null);
+                      setTimeInterval(t);
+                    }}
+                    style={{
+                      backgroundColor: interval === t ? 'var(--accent-blue)' : 'var(--bg-panel)',
+                      color: interval === t ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      padding: '4px 12px',
+                      cursor: 'pointer',
+                      fontSize: '0.8rem',
+                      fontWeight: interval === t ? 'bold' : 'normal',
+                    }}
+                  >
+                    {t.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="chart-container">
-            {klines.length > 0 && <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />}
+          <div className="chart-container" style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
+            {mainView === 'chart' ? (
+              klines.length > 0 && <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
+            ) : (
+              <MarketRadar
+                watchlistSymbols={watchlistSymbols}
+                currentAsset={currentAsset}
+                onSelectAsset={(sym) => setCurrentAsset(sym)}
+                onNavigateToChart={(sym) => {
+                  setCurrentAsset(sym);
+                  setMainView('chart');
+                }}
+                activeSignals={activeSignals}
+              />
+            )}
           </div>
         </main>
 

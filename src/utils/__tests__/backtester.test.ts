@@ -1,14 +1,21 @@
 import assert from 'node:assert';
 import {
   backtestStandard,
-  backtestConfluencia,
-  backtestScoring,
   backtestMultitemporal,
   backtestMultifractalMTF,
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
-import { updateAlertsOutcome, calculateSessionStats, type AuditAlertItem } from '../alertTracker';
+import {
+  updateAlertsOutcome,
+  calculateSessionStats,
+  generateCandleAlertKey,
+  isCandleAlertFired,
+  registerFiredCandleAlert,
+  pruneFiredAlertsRegistry,
+  clearFiredAlertsRegistry,
+  type AuditAlertItem
+} from '../alertTracker';
 import type { Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -221,6 +228,87 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(stats.openCount, 1, 'TP1_HIT must be counted in openCount while trailing');
     assert.strictEqual(stats.winRate, 66.7);
     assert.strictEqual(stats.totalR, 2.5);
+  });
+
+  // Test 12: Atomic Candle Deduplication Key Generation
+  test('generateCandleAlertKey produces canonical, normalized keys', () => {
+    const key1 = generateCandleAlertKey('btcusdt', '5M', 1700000300, 'VCME Sniper', 'buy');
+    const key2 = generateCandleAlertKey('BTCUSDT', '5m', 1700000300, 'vcme sniper', 'BUY');
+    assert.strictEqual(key1, 'BTCUSDT:5m:1700000300:vcme sniper:BUY');
+    assert.strictEqual(key1, key2, 'Keys must be identical regardless of case/spacing');
+  });
+
+  // Test 13: Atomic Candle Deduplication prevents duplicate alerts on same candle timestamp
+  test('isCandleAlertFired and registerFiredCandleAlert prevent duplicate alerts on same candle timestamp', () => {
+    clearFiredAlertsRegistry();
+    const candleTs = 1700000600;
+    
+    // Initial check: candle has not fired
+    assert.strictEqual(isCandleAlertFired('ETHUSDT', '5m', candleTs, 'VCME Sniper', 'BUY'), false);
+    
+    // Register the alert
+    registerFiredCandleAlert({
+      symbol: 'ETHUSDT',
+      interval: '5m',
+      candleTimestamp: candleTs,
+      strategy: 'VCME Sniper',
+      signal: 'BUY',
+    });
+
+    // Second check: candle is now deduplicated
+    assert.strictEqual(isCandleAlertFired('ETHUSDT', '5m', candleTs, 'VCME Sniper', 'BUY'), true);
+    
+    // Subsequent candle timestamp (e.g. +300s) should NOT be deduplicated
+    assert.strictEqual(isCandleAlertFired('ETHUSDT', '5m', candleTs + 300, 'VCME Sniper', 'BUY'), false);
+    
+    // Different symbol on same timestamp should NOT be deduplicated
+    assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'VCME Sniper', 'BUY'), false);
+  });
+
+  // Test 14: Pruning of expired entries older than 7 days
+  test('pruneFiredAlertsRegistry removes records older than 7 days and preserves recent ones', () => {
+    clearFiredAlertsRegistry();
+    const now = Date.now();
+    const tenDaysAgo = now - 10 * 24 * 60 * 60 * 1000;
+    const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+
+    registerFiredCandleAlert({
+      symbol: 'OLD_COIN',
+      interval: '1h',
+      candleTimestamp: 1699000000,
+      strategy: 'Standard',
+      signal: 'BUY',
+      firedAt: tenDaysAgo
+    });
+
+    registerFiredCandleAlert({
+      symbol: 'NEW_COIN',
+      interval: '1h',
+      candleTimestamp: 1700000000,
+      strategy: 'Standard',
+      signal: 'BUY',
+      firedAt: twoDaysAgo
+    });
+
+    const prunedCount = pruneFiredAlertsRegistry(7);
+    assert.strictEqual(prunedCount, 1, 'Should prune exactly 1 expired entry');
+    assert.strictEqual(isCandleAlertFired('OLD_COIN', '1h', 1699000000, 'Standard', 'BUY'), false, 'Expired entry should be gone');
+    assert.strictEqual(isCandleAlertFired('NEW_COIN', '1h', 1700000000, 'Standard', 'BUY'), true, 'Recent entry should remain');
+  });
+
+  // Test 15: clearFiredAlertsRegistry wipes all records
+  test('clearFiredAlertsRegistry completely wipes all registry entries', () => {
+    registerFiredCandleAlert({
+      symbol: 'SOLUSDT',
+      interval: '5m',
+      candleTimestamp: 1700000900,
+      strategy: 'VCME',
+      signal: 'SELL'
+    });
+    assert.strictEqual(isCandleAlertFired('SOLUSDT', '5m', 1700000900, 'VCME', 'SELL'), true);
+    
+    clearFiredAlertsRegistry();
+    assert.strictEqual(isCandleAlertFired('SOLUSDT', '5m', 1700000900, 'VCME', 'SELL'), false);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

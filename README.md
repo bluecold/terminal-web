@@ -17,7 +17,9 @@
 * **Indicadores de Señal Activa en Watchlist:** Badges de neón 🟢 **`BUY`** o 🔴 **`SELL`** que aparecen dinámicamente al lado de los símbolos mientras su alerta permanezca en estado `OPEN` o `TP1_HIT`, desapareciendo automáticamente al cerrarse o expirar el trade.
 * **Notificaciones de Escritorio Enriquecidas con Niveles de Trading:** Notificaciones del sistema operativo que detallan directamente los puntos exactos de `Entry`, `SL`, `TP1` y `TP2` para que el trader pueda operar sin abrir la app.
 * **Motor QVE de Ventaja Estadística (QVE Engine):** Torneo cuantitativo centralizado (`tournament.ts`) que evalúa dinámicamente el rendimiento histórico de las 5 estrategias y selecciona automáticamente la estrategia líder con mayor ventaja matemática (`Profit Factor`, `Expectancy` y `WinRate`).
+* **Radar Multi-Activo & Market Screener en Tiempo Real:** Vista panorámica tipo Bloomberg (`[ 📈 GRÁFICO ]` / `[ 📡 RADAR ]`) con presets de mercado (`Mi Watchlist`, `Cripto`, `Mega Tech`, `Growth`, `Índices`), matriz de confluencia 3/3 en vivo (5m/1h/1d), estrategia líder QVE, ratio de volumen relativo (RVOL) y filtros de compresión de volatilidad (Squeeze BB) con navegación en 1 clic.
 * **Optimización de CPU $O(N)$ y Caché FIFO:** Simulador multitemporal pre-indexado $O(N+M)$ que reduce iteraciones en un 99%, junto a un caché en memoria con política de evicción FIFO (`Map.delete(oldestKey)`) para eliminar el doble cómputo entre componentes en **0.01ms**.
+* **Deduplicación Persistente Atómica por Vela:** Motor de firma canónica `${symbol}:${interval}:${candleTimestamp}:${strategy}:${signal}` y registro persistente en LocalStorage con TTL de 7 días. Garantiza inmunidad total ante recargas, cambios de pestaña o ejecuciones paralelas del scanner.
 * **Deduplicación de Red en Vuelo y Caché In-Memory:** Motor inteligente de peticiones que colapsa llamadas HTTP duplicadas a Yahoo/Zacks y aplica TTL adaptativo (25s a 1h) reutilizando datos en memoria, reduciendo el tráfico Edge en un ~65-70% sin perder un solo milisegundo en la oportunidad de las alertas.
 * **Live Forward Test & Tracking en Vivo de Alertas:** Motor de seguimiento automático que registra y audita el resultado de cada alerta emitida (`TP1 +1.5R`, `TP2 +2.5R`, `SL -1.0R`, `Abierta ⏳` con PnL flotante en tiempo real) en función de las velas posteriores con expiración determinista basada en tiempo.
 * **Barra Ejecutiva de Rendimiento de Sesión:** Resumen en vivo en el historial de alertas que calcula el WinRate % del día y el retorno neto acumulado en unidades de riesgo ($+R$).
@@ -125,7 +127,11 @@ FinceptTerminal cuenta con un motor de backtesting optimizado a $O(n)$ integrado
 
 ## 📈 Tareas Pendientes / Mejoras Futuras
 
-- [ ] **Alertas Push/Webhooks:** Notificaciones proactivas cuando el *Scoring Multicapa* detecte oportunidades con alta probabilidad (90%+).
+- [x] **Deduplicación Persistente Atómica por Vela:** Registro persistente por estampa de tiempo de vela cerrada para prevenir duplicados. *(Completado v2026.08.21.1)*
+- [x] **Radar Multi-Activo / Screener en Tiempo Real:** Matriz cuantitativa en vivo con confluencias 3/3, Squeeze BB, RVOL y presets de mercado. *(Completado v2026.08.21.1)*
+- [ ] **Alertas Push/Webhooks (Telegram / Discord):** Notificaciones móviles automáticas ante señales de alta confluencia o confirmación QVE.
+- [ ] **Overlays e Indicadores en Gráfico (VWAP / EMAs / S&R):** Toggles visuales interactivos para ver medias y soporte/resistencia directamente en TradingView.
+- [ ] **Paper Trading & Diario de Operaciones:** Simulador de órdenes con 1 clic y seguimiento de rendimiento.
 - [ ] **Backtesting en la Nube / Historial Extendido:** Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 
 ---

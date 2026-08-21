@@ -90,7 +90,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Dependencias Stale**: Agregados `executionStyle` y `triggerMode` al array de dependencias del `useEffect` del scanner para evitar closures con valores obsoletos.
 - **Actualización v2026.07.22.2 — Quant Signal Engine v4 Upgrade**:
   - **Geometría de Velas Cuantitativa**: Integración de `closePosition`, `upperWickRatio` y `lowerWickRatio` en los 4 motores de señales para eliminar disparos en velas Doji o con mechas de rechazo adversas.
-  - **Standard Voting Mejora**: Exige `closePosition >= 0.55` para BUY y `<= 0.45` para SELL antes de emitir voto definitivo.
+  - **Standard Voting Mejora**: Exige `closePosition >= 0.45` para BUY y `<= 0.55` para SELL (descarta velas con cierre adverso `< 0.45` / `> 0.55`) antes de emitir voto definitivo.
   - **Confluencia (Signal 1) Mejora**: Incorporado filtro anti-extensiones VWAP/ATR (`|close - vwap| <= 2.2 * ATR`) y cuerpo decisivo (`closePosition >= 0.60`).
   - **Scoring Multicapa (Signal 2) Mejora**: Bonus por compresión de Bollinger (`bbWidthRatio < 0.05`) en Capa 3 y penalización por mecha de rechazo en Capa 5.
   - **VCME Sniper Engine v4**: Integración de acotamiento de riesgo ATR (`0.8 * ATR <= Risk <= 1.8 * ATR`), validación de mechas en calidad de vela y sincronización 1:1 con el motor de backtesting.
@@ -180,6 +180,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - `calculateSessionStats` actualizado para contabilizar `TP1_BE_CLOSED` como ganancia cerrada y mantener `TP1_HIT` como posición activa mientras continúa el trailing del 50% restante.
   - **Corrección de Timeframe Mismatch en Auditoría (`src/App.tsx`)**: Suministrado el mapa completo de temporalidades (`symbol:5m`, `symbol:1h`, `symbol:1d`) en `loadExtraData` evitando evaluar alertas de 5m con velas diarias al cambiar el gráfico.
 
+  - **Actualización v2026.08.21.1 — Deduplicación Persistente Atómica por Vela & Integridad de Alertas**:
+    - **Firma Canónica Inmutable (`dedupKey`)**: Se implementó `generateCandleAlertKey` (`${symbol}:${interval}:${candleTimestamp}:${strategy}:${signal}`) para identificar unívocamente cada disparo de señal por vela cerrada.
+    - **Registro Persistente en RAM y LocalStorage (`src/utils/alertTracker.ts`)**: Implementado `registerFiredCandleAlert`, `isCandleAlertFired`, `getFiredAlertsRegistry`, `pruneFiredAlertsRegistry` y `clearFiredAlertsRegistry`. Previene repetición de notificaciones y entradas de auditoría ante recargas de página, cambios de timeframe o throttling de pestañas en background.
+    - **Limpieza y Poda Automática**: Depuración automática de entradas en el registro con antigüedad mayor a 7 días y sincronización completa con el botón LIMPIAR del panel de alertas.
+    - **Suite de Pruebas Unitarias Ampliada**: Incorporadas 4 nuevas pruebas automáticas (15/15 pasando) validando generación determinista, bloqueo de duplicados en la misma vela, admisión de velas consecutivas y poda con TTL.
+  - **Market Radar / Screener Cuantitativo en Tiempo Real (`src/components/MarketRadar.tsx`)**:
+    - Vista panorámica multiactivo integrada en el área central con selector `[ 📈 GRÁFICO ]` / `[ 📡 RADAR ]`.
+    - Presets de universo (`Mi Watchlist`, `Top Cripto Volátiles`, `Mega Tech`, `Growth & High Beta`, `Índices & Futuros`).
+    - Matriz de Confluencia Multitemporal en vivo (5m · 1h · 1d), cálculo en paralelo de la Estrategia Líder QVE con Profit Factor, ratio RVOL de volumen institucional y detección de Squeeze/Expansión de Bandas de Bollinger.
+    - Filtros rápidos cuantitativos (`🔥 Confluencia 3/3`, `🟡 Squeeze BB`, `📈 Alto RVOL ≥ 1.5x`, `🎯 Señales Activas`) y navegación en 1 clic hacia el gráfico.
+
 ---
 
 ## 📌 Guía de Arquitectura para la Fase 2 (Proxy de Infraestructura Futuro)
@@ -204,10 +215,12 @@ En caso de requerir independencia total del plan gratuito de Vercel (1.000.000 E
 
 ## Cuestiones Pendientes y Futuras Mejoras
 
-- **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria.
-- **Costes y validación robusta**: Añadir comisiones, spread y slippage configurables; luego ejecutar walk-forward/out-of-sample y medir drawdown, Sharpe/Sortino y resultados por activo, dirección y régimen.
-- **Optimización de datos**: Usar endpoints de ticker para precios de watchlist, caché por `símbolo + timeframe + cierre de vela` y, si el perfilado lo justifica, mover backtests pesados a un Web Worker.
-- **Alertas Push/Webhooks**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia (ej. Telegram Bot).
-- **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
+- [x] **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria. (Completado v2026.08.21.1)
+- [x] **Radar / Screener Multi-Activo en Tiempo Real**: Escáner multiactivo con filtros de confluencia 3/3, Squeeze BB, RVOL y presets de mercado con 1-click chart navigation. (Completado v2026.08.21.1)
+- [ ] **Alertas Push/Webhooks (Telegram / Discord)**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia o confirmación QVE.
+- [ ] **Overlays e Indicadores en Gráfico (VWAP / EMAs / S&R)**: Toggles interactivos en la cabecera para proyectar VWAP intradía, EMAs 20/50/200 y niveles estructurales de S/R sobre TradingView.
+- [ ] **Costes y validación robusta (Fricción Realista)**: Añadir comisiones, spread y slippage configurables; luego medir drawdown, Sharpe/Sortino y resultados por activo, dirección y régimen.
+- [ ] **Paper Trading / Diario de Operaciones**: Simulador de ejecución con 1 clic y seguimiento de órdenes abiertas/cerradas.
+- [ ] **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.

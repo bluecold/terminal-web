@@ -20,6 +20,18 @@ export interface AuditAlertItem {
   realizedR: number;          // Risk multiplier: +1.5R, +2.5R, -1.0R, etc.
   pnlPercent: number;         // Floating or final PnL %
   timestamp: number;          // Unix ms timestamp when alert was fired
+  candleTimestamp?: number;   // Unix seconds timestamp of the closed candle that triggered the alert
+  dedupKey?: string;          // Canonical deduplication signature
+}
+
+export interface FiredAlertRegistryEntry {
+  key: string;
+  symbol: string;
+  interval: string;
+  candleTimestamp: number;
+  strategy: string;
+  signal: string;
+  firedAt: number;
 }
 
 export interface StrategyBreakdown {
@@ -322,4 +334,183 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
     totalR: Number(totalR.toFixed(1)),
     byStrategy,
   };
+}
+
+// ─── Atomic Candle Alert Deduplication Registry ────────────────────────────
+
+export const REGISTRY_STORAGE_KEY = 'terminal_fired_alerts_registry';
+let inMemoryRegistry: Record<string, FiredAlertRegistryEntry> = {};
+
+function safeGetStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    // Fallback if storage access is restricted or in Node.js
+  }
+  return null;
+}
+
+/**
+ * Generates an immutable canonical deduplication key for a candle alert.
+ */
+export function generateCandleAlertKey(
+  symbol: string,
+  interval: string,
+  candleTimestamp: number,
+  strategy: string,
+  signal: string
+): string {
+  const normSymbol = (symbol || '').toUpperCase().trim();
+  const normInterval = (interval || '').toLowerCase().trim();
+  const normStrat = (strategy || '').toLowerCase().trim();
+  const normSignal = (signal || '').toUpperCase().trim();
+  return `${normSymbol}:${normInterval}:${candleTimestamp}:${normStrat}:${normSignal}`;
+}
+
+/**
+ * Retrieves the fired alerts registry from localStorage or memory cache.
+ */
+export function getFiredAlertsRegistry(): Record<string, FiredAlertRegistryEntry> {
+  const storage = safeGetStorage();
+  if (storage) {
+    try {
+      const data = storage.getItem(REGISTRY_STORAGE_KEY);
+      if (data) {
+        const parsed = JSON.parse(data);
+        if (parsed && typeof parsed === 'object') {
+          inMemoryRegistry = parsed;
+          return inMemoryRegistry;
+        }
+      }
+    } catch (e) {
+      console.error('Error reading fired alerts registry from localStorage', e);
+    }
+  }
+  return inMemoryRegistry;
+}
+
+/**
+ * Checks if an alert has already fired for a specific closed candle timestamp.
+ */
+export function isCandleAlertFired(
+  symbol: string,
+  interval: string,
+  candleTimestamp: number,
+  strategy: string,
+  signal?: string
+): boolean {
+  if (!candleTimestamp || candleTimestamp <= 0) return false;
+  const registry = getFiredAlertsRegistry();
+  
+  if (signal) {
+    const key = generateCandleAlertKey(symbol, interval, candleTimestamp, strategy, signal);
+    if (registry[key]) return true;
+  }
+
+  // Also check if an alert for the same symbol, interval, and exact candle timestamp was already registered
+  const normSymbol = (symbol || '').toUpperCase().trim();
+  const normInterval = (interval || '').toLowerCase().trim();
+  const normStrat = (strategy || '').toLowerCase().trim();
+  const prefix = `${normSymbol}:${normInterval}:${candleTimestamp}:`;
+
+  for (const k in registry) {
+    if (k.startsWith(prefix)) {
+      const entry = registry[k];
+      if (entry && (entry.strategy.toLowerCase() === normStrat || (signal && entry.signal === signal))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Registers an alert emission in the persistent deduplication registry.
+ */
+export function registerFiredCandleAlert(entry: {
+  symbol: string;
+  interval: string;
+  candleTimestamp: number;
+  strategy: string;
+  signal: string;
+  firedAt?: number;
+}): string {
+  const firedAt = entry.firedAt || Date.now();
+  const key = generateCandleAlertKey(
+    entry.symbol,
+    entry.interval,
+    entry.candleTimestamp,
+    entry.strategy,
+    entry.signal
+  );
+
+  const registry = getFiredAlertsRegistry();
+  registry[key] = {
+    key,
+    symbol: (entry.symbol || '').toUpperCase().trim(),
+    interval: (entry.interval || '').toLowerCase().trim(),
+    candleTimestamp: entry.candleTimestamp,
+    strategy: entry.strategy,
+    signal: entry.signal,
+    firedAt
+  };
+
+  inMemoryRegistry = registry;
+  const storage = safeGetStorage();
+  if (storage) {
+    try {
+      storage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(registry));
+    } catch (e) {
+      console.error('Error saving fired alerts registry to localStorage', e);
+    }
+  }
+  return key;
+}
+
+/**
+ * Prunes entries older than maxAgeDays (default 7 days) from the registry.
+ */
+export function pruneFiredAlertsRegistry(maxAgeDays: number = 7): number {
+  const registry = getFiredAlertsRegistry();
+  const cutoffTime = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let prunedCount = 0;
+
+  const newRegistry: Record<string, FiredAlertRegistryEntry> = {};
+  for (const k in registry) {
+    const item = registry[k];
+    if (item && typeof item.firedAt === 'number' && item.firedAt >= cutoffTime) {
+      newRegistry[k] = item;
+    } else {
+      prunedCount++;
+    }
+  }
+
+  inMemoryRegistry = newRegistry;
+  const storage = safeGetStorage();
+  if (storage) {
+    try {
+      storage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(newRegistry));
+    } catch (e) {
+      console.error('Error saving pruned registry to localStorage', e);
+    }
+  }
+  return prunedCount;
+}
+
+/**
+ * Clears all registry entries (used during full log reset or testing).
+ */
+export function clearFiredAlertsRegistry(): void {
+  inMemoryRegistry = {};
+  const storage = safeGetStorage();
+  if (storage) {
+    try {
+      storage.removeItem(REGISTRY_STORAGE_KEY);
+    } catch (e) {
+      console.error('Error clearing fired alerts registry from localStorage', e);
+    }
+  }
 }

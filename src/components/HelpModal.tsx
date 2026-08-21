@@ -167,7 +167,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia · v2026.08.18.1
+              Motor de señales técnicas multiestrategia · v2026.08.21.1
             </div>
           </div>
           <button
@@ -200,10 +200,10 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             {/* Key concepts grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
+                { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de toda la watchlist o presets (Cripto, Tech, Growth) con detección de confluencias 3/3 y RVOL.' },
                 { icon: '🏆', title: 'Torneo QVE', text: 'Los 5 motores compiten por Profit Factor histórico. El ganador lidera la señal del activo.' },
                 { icon: '⚡', title: 'VCME v2.0 Engine', text: 'Fórmulas cuantitativas de 3 capas (1D/1H/5m), asimetría Long/Short y Score continuo (0.0-1.0).' },
-                { icon: '🎯', title: 'Live Tracking & Chart', text: 'Seguimiento en vivo de alertas (WinRate / +R) y proyección visual de líneas SL/TP sobre el gráfico.' },
-                { icon: '🔔', title: 'Alertas Background', text: 'El scanner revisa toda la watchlist cada 60s disparando notificaciones con niveles reales.' },
+                { icon: '🎯', title: 'Live Tracking & Chart', text: 'Seguimiento en vivo de alertas (+R) y proyección visual de líneas SL/TP sobre TradingView.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>
                   <div style={{ fontSize: '1.2rem', marginBottom: '6px' }}>{c.icon}</div>
