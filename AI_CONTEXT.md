@@ -5,11 +5,13 @@ FinceptTerminal es una aplicación web enfocada en proporcionar señales de trad
 
 ## Arquitectura y Estructura
 La aplicación separa claramente las responsabilidades:
-- **`src/services/api.ts`**: Encargado de la obtención de datos (klines/velas) y noticias. Las noticias de criptomonedas se obtienen mediante la API de CryptoCompare.
-- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos.
-- **`src/utils/backtester.ts`**: Lógica de simulación histórica para evaluar el rendimiento ("éxito") de los indicadores en ventanas de tiempo pasadas.
-- **`src/components/`**: Componentes de React para la UI (como `SignalPanel`, `Watchlist`, etc.).
-- **`src/App.tsx`**: Contenedor principal que maneja el estado global.
+- **`src/services/api.ts`**: Encargado de la obtención de datos (klines/velas Binance y Yahoo Finance), resúmenes de tickers, earnings y noticias con capa de deduplicación in-memory y colapso de peticiones en vuelo.
+- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator).
+- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento ("éxito") de las estrategias en ventanas de tiempo pasadas con caché por activo.
+- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que determina la estrategia líder en base a Profit Factor, Expectancy y WinRate.
+- **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas, deduplicación persistente atómica por vela (`dedupKey`), auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_BE_CLOSED`, `TP2_HIT`, `SL_HIT`, `EXPIRED`), y cálculo de rendimiento de sesión.
+- **`src/components/`**: Componentes de React para la UI (`MarketRadar`, `Chart`, `SignalPanel`, `Watchlist`, `MarketTicker`, `HelpModal`).
+- **`src/App.tsx`**: Contenedor principal que maneja el estado global, escaneo en background cada 60s, alertas del sistema operativo y selector de vistas (Gráfico / Radar).
 
 ## Indicadores Técnicos Implementados y Corregidos
 Recientemente se han realizado optimizaciones críticas en la matemática y lógica de los indicadores para operar de manera realista:
