@@ -530,14 +530,13 @@ function App() {
             }
           }
 
-          // ── Check transition & handle Cooldown ──────────────────────────
+          // ── Check signal validity & handle Cooldown ──────────────────────
           const signalKey = `${symbol}-${signalInterval}`;
           const prevSignal = lastSignalsRef.current[signalKey];
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
 
-          // Fix 1: Cold Start — on first scan, fire alert immediately if signal is actionable
           const isFirstScan = prevSignal === undefined;
-          const isTransition = prevSignal !== undefined && prevSignal !== overallSignal;
+          const isDirectionChange = prevSignal !== undefined && prevSignal !== overallSignal;
 
           // Identify closed trigger candle timestamp for persistent atomic deduplication
           const triggerCandle = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1] : null;
@@ -547,20 +546,20 @@ function App() {
           // If this exact closed candle has already generated an alert under this strategy or direction, skip firing!
           const alreadyFiredForCandle = candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal);
 
-          if (isActionableSignal && (isFirstScan || isTransition) && !alreadyFiredForCandle) {
-            const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
-            const cooldownMs = signalInterval === '5m'
-              ? 15 * 60 * 1000        // 15 min for 5m intraday day trading
-              : signalInterval === '1h'
-                ? 60 * 60 * 1000      // 1 hour for 1h swing trading
-                : 12 * 60 * 60 * 1000; // 12 hours for 1d position trading
-            
-            if (now - lastAlertTime < cooldownMs) {
-              // Skip alert but keep track of transition
-              lastSignalsRef.current[signalKey] = overallSignal;
-              return;
-            }
+          const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
+          const cooldownMs = signalInterval === '5m'
+            ? 15 * 60 * 1000        // 15 min for 5m intraday day trading
+            : signalInterval === '1h'
+              ? 60 * 60 * 1000      // 1 hour for 1h swing trading
+              : 12 * 60 * 60 * 1000; // 12 hours for 1d position trading
 
+          const isCooldownElapsed = (now - lastAlertTime) >= cooldownMs;
+
+          // Allow alert if:
+          // 1. Signal is actionable (BUY/SELL)
+          // 2. This closed candle has not already fired (atomic candle deduplication)
+          // 3. Direction has changed (instant reversal), cooldown has elapsed (continuation setup), or it's cold start
+          if (isActionableSignal && !alreadyFiredForCandle && (isDirectionChange || isCooldownElapsed || isFirstScan)) {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
