@@ -208,7 +208,11 @@ function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
   for (let i = 0; i < seriesList.length; i++) {
     const s = seriesList[i];
     if (s && s.length > 0) {
-      fp += `${s[s.length - 1].time}_${s.length}|`;
+      const last = s[s.length - 1];
+      const prev = s.length > 1 ? s[s.length - 2] : null;
+      const lastOhlcv = `${last.time}_${last.open}_${last.high}_${last.low}_${last.close}_${last.volume}`;
+      const prevMetrics = prev ? `${prev.close}_${prev.volume}` : '0_0';
+      fp += `${s.length}_${lastOhlcv}_${prevMetrics}|`;
     } else {
       fp += '0_0|';
     }

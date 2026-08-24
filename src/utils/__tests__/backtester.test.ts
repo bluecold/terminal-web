@@ -540,6 +540,31 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(updated[0].pnlPercent, -6, 'Loss should be capped at early exit price (-6% vs full SL -10%)');
   });
 
+  // Test 22: Cache Sensitivity to Intrabar OHLCV Revisions
+  test('backtestStandard cache invalidates on OHLCV revisions with same timestamp and length', () => {
+    const klines_v1 = generateSyntheticKlines(600, 300, 50000, 0.02);
+    
+    // Initial evaluation
+    const res1 = backtestStandard(klines_v1, '5m', 'REVISION_SYM');
+    
+    // Identical data -> must hit cache
+    const resCached = backtestStandard(klines_v1, '5m', 'REVISION_SYM');
+    assert.strictEqual(res1, resCached, 'Identical klines must return cached reference');
+
+    // Revise latest candle's close and volume (time and array length remain 100% identical)
+    const klines_v2 = [...klines_v1];
+    const last = klines_v1[klines_v1.length - 1];
+    klines_v2[klines_v2.length - 1] = {
+      ...last,
+      close: last.close * 1.05, // +5% revision
+      volume: last.volume * 3.0  // 3x volume revision
+    };
+
+    // Third evaluation -> must detect OHLCV revision and recompute
+    const resRevised = backtestStandard(klines_v2, '5m', 'REVISION_SYM');
+    assert.notStrictEqual(resRevised, resCached, 'Cache must invalidate when candle OHLCV is revised even with same timestamp and length');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
