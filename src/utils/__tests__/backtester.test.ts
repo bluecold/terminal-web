@@ -442,6 +442,30 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(updated[0].pnlPercent, 5, 'Floating PnL should be calculated from live close (105 vs 100 = +5%)');
   });
 
+  // Test 19: Multi-Timeframe Cache Invalidation via Auxiliary Timeframe Fingerprint
+  test('backtestMultitemporal cache invalidates when 1h or 1d updates even if 5m is unchanged', () => {
+    const klines5m = generateSyntheticKlines(900, 300, 50000, 0.02);
+    const klines1h_v1 = generateSyntheticKlines(120, 3600, 50000, 0.02);
+    const klines1d = generateSyntheticKlines(60, 86400, 50000, 0.02);
+
+    // Initial evaluation with 1h_v1
+    const res1 = backtestMultitemporal(klines5m, klines1h_v1, klines1d, '5m', 'TEST_MTF_SYM', 'dayTrading');
+
+    // Second evaluation with identical 5m, 1h, 1d -> must hit cache (same reference)
+    const resCached = backtestMultitemporal(klines5m, klines1h_v1, klines1d, '5m', 'TEST_MTF_SYM', 'dayTrading');
+    assert.strictEqual(res1, resCached, 'Identical multi-timeframe series must return cached result');
+
+    // Update 1H series by appending a new candle (5m remains completely identical)
+    const klines1h_v2 = [
+      ...klines1h_v1,
+      { time: klines1h_v1[klines1h_v1.length - 1].time + 3600, open: 51000, high: 52000, low: 50500, close: 51800, volume: 500 }
+    ];
+
+    // Third evaluation -> must detect changed 1H fingerprint and recompute (not return resCached)
+    const resUpdated = backtestMultitemporal(klines5m, klines1h_v2, klines1d, '5m', 'TEST_MTF_SYM', 'dayTrading');
+    assert.notStrictEqual(resUpdated, resCached, 'Cache must invalidate when auxiliary 1H series updates');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

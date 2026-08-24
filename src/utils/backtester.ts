@@ -201,26 +201,43 @@ function evaluateOutcome(
 }
 
 // ─── Cache Layer for Backtesting Performance ──────────────────────────────
-const backtestCache = new Map<string, { lastTime: number; length: number; result: BacktestResult }>();
+const backtestCache = new Map<string, { fingerprint: string; result: BacktestResult }>();
 
-function getBacktestCache(key: string, klines: Kline[]): BacktestResult | null {
+function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
+  let fp = '';
+  for (let i = 0; i < seriesList.length; i++) {
+    const s = seriesList[i];
+    if (s && s.length > 0) {
+      fp += `${s[s.length - 1].time}_${s.length}|`;
+    } else {
+      fp += '0_0|';
+    }
+  }
+  return fp;
+}
+
+function getBacktestCache(key: string, klines: Kline[], auxiliarySeries?: (Kline[] | undefined)[]): BacktestResult | null {
   if (!klines || klines.length === 0) return null;
   const cached = backtestCache.get(key);
-  const lastTime = klines[klines.length - 1].time;
-  if (cached && cached.lastTime === lastTime && cached.length === klines.length) {
+  if (!cached) return null;
+
+  const allSeries = auxiliarySeries ? [klines, ...auxiliarySeries] : [klines];
+  const fp = getKlinesFingerprint(allSeries);
+  if (cached.fingerprint === fp) {
     return cached.result;
   }
   return null;
 }
 
-function setBacktestCache(key: string, klines: Kline[], result: BacktestResult): BacktestResult {
+function setBacktestCache(key: string, klines: Kline[], result: BacktestResult, auxiliarySeries?: (Kline[] | undefined)[]): BacktestResult {
   if (klines && klines.length > 0 && result) {
-    if (backtestCache.size >= 150) {
+    if (backtestCache.size >= 250) {
       const oldestKey = backtestCache.keys().next().value;
       if (oldestKey) backtestCache.delete(oldestKey);
     }
-    const lastTime = klines[klines.length - 1].time;
-    backtestCache.set(key, { lastTime, length: klines.length, result });
+    const allSeries = auxiliarySeries ? [klines, ...auxiliarySeries] : [klines];
+    const fingerprint = getKlinesFingerprint(allSeries);
+    backtestCache.set(key, { fingerprint, result });
   }
   return result;
 }
@@ -266,7 +283,7 @@ export function backtestMultitemporal(
   triggerMode: 'agresivo' | 'conservador' = 'agresivo'
 ): BacktestResult {
   const cacheKey = `multitemporal:${symbol || 'any'}:${_interval}:${style}:${triggerMode}`;
-  const cached = getBacktestCache(cacheKey, klines5m);
+  const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
   const tf = style === 'swing' ? '1h' : '5m';
   const evalWindow = 576;
@@ -1072,7 +1089,7 @@ export function backtestMultitemporal(
     insufficient: false
   };
 
-  return setBacktestCache(cacheKey, klines5m, res);
+  return setBacktestCache(cacheKey, klines5m, res, [klines1h, klines1d]);
 }
 
 // ==========================================
@@ -1584,7 +1601,7 @@ export function backtestMultifractalMTF(
   _symbol: string = 'ASSET'
 ): BacktestResult {
   const cacheKey = `multifractal:${_symbol || 'any'}:${_interval}`;
-  const cached = getBacktestCache(cacheKey, klines5m);
+  const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
   const evalWindow = 576;
   const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
@@ -1829,5 +1846,5 @@ export function backtestMultifractalMTF(
     insufficient: false
   };
 
-  return setBacktestCache(cacheKey, klines5m, res);
+  return setBacktestCache(cacheKey, klines5m, res, [klines1h, klines1d]);
 }
