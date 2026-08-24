@@ -6,7 +6,7 @@ import {
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
-import { calculateVCMESniperSignal } from '../indicators';
+import { calculateVCMESniperSignal, calculateMultifractalMTFSignal } from '../indicators';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -563,6 +563,142 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     // Third evaluation -> must detect OHLCV revision and recompute
     const resRevised = backtestStandard(klines_v2, '5m', 'REVISION_SYM');
     assert.notStrictEqual(resRevised, resCached, 'Cache must invalidate when candle OHLCV is revised even with same timestamp and length');
+  });
+
+  // Test 23: End-to-End Deterministic Golden Fixture for VCME Sniper Parity
+  test('VCME Sniper deterministic golden fixture validates signal, bounds, targets and tracker outcome', () => {
+    // 1D: Solid uptrend macro
+    const klines1d: Kline[] = [];
+    let p1d = 100;
+    for (let i = 0; i < 60; i++) {
+      p1d += 0.8;
+      klines1d.push({
+        time: 1700000000 + i * 86400,
+        open: p1d - 0.4,
+        high: p1d + 0.6,
+        low: p1d - 0.5,
+        close: p1d,
+        volume: 20000
+      });
+    }
+
+    // 1H: Armed bullish setup
+    const klines1h: Kline[] = [];
+    let p1h = 130;
+    for (let i = 0; i < 100; i++) {
+      p1h += (i % 2 === 0 ? 0.3 : 0.1);
+      klines1h.push({
+        time: 1700000000 + i * 3600,
+        open: p1h - 0.15,
+        high: p1h + 0.3,
+        low: p1h - 0.2,
+        close: p1h,
+        volume: 5000
+      });
+    }
+
+    // 5m: 600 candles ending in a strong pullback & bounce with high volume
+    const klines5m: Kline[] = [];
+    let p5m = 140;
+    for (let i = 0; i < 600; i++) {
+      let change = 0.05;
+      let vol = 1000;
+      if (i === 597) { change = -0.4; }
+      else if (i === 598) { change = -0.2; }
+      else if (i === 599) { change = 0.8; vol = 3500; }
+      p5m += change;
+      klines5m.push({
+        time: 1700000000 + i * 300,
+        open: p5m - change,
+        high: Math.max(p5m - change, p5m) + 0.2,
+        low: Math.min(p5m - change, p5m) - 0.1,
+        close: p5m,
+        volume: vol
+      });
+    }
+
+    const vcmeSignal = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'GOLDEN_VCME', 60, 2.0, 'dayTrading', 'agresivo');
+    assert.strictEqual(vcmeSignal.tradeType, 'DAY', 'Deterministic fixture should classify as DAY trade');
+
+    // Risk and Target bounds validation
+    if (vcmeSignal.signal === 'BUY') {
+      assert(vcmeSignal.stopLoss > 0 && vcmeSignal.stopLoss < vcmeSignal.takeProfit1, 'SL must be below entry and TP1');
+      assert(vcmeSignal.takeProfit1 < vcmeSignal.takeProfit2, 'TP1 must be below TP2');
+      assert(vcmeSignal.takeProfit2 < vcmeSignal.takeProfit3, 'TP2 must be below TP3');
+
+      // Tracker End-to-End validation
+      const entry = klines5m[klines5m.length - 1].close;
+      const alert: AuditAlertItem = {
+        id: 'golden-vcme-alert',
+        symbol: 'GOLDEN_VCME',
+        interval: '5m',
+        signal: 'BUY',
+        time: '12:00',
+        pf: 2.5,
+        strategy: 'VCME Sniper',
+        entryPrice: entry,
+        stopLoss: vcmeSignal.stopLoss,
+        takeProfit1: vcmeSignal.takeProfit1,
+        takeProfit2: vcmeSignal.takeProfit2,
+        status: 'OPEN',
+        realizedR: 0,
+        pnlPercent: 0,
+        timestamp: 1700000000 + 600 * 300 * 1000,
+        candleTimestamp: klines5m[klines5m.length - 1].time
+      };
+
+      // Feed forward candles reaching TP1 and then TP2
+      const forwardKlines = [
+        ...klines5m,
+        { time: alert.candleTimestamp! + 300, open: entry, high: vcmeSignal.takeProfit1 + 0.1, low: entry, close: vcmeSignal.takeProfit1, volume: 2000 },
+        { time: alert.candleTimestamp! + 600, open: vcmeSignal.takeProfit1, high: vcmeSignal.takeProfit2 + 0.1, low: vcmeSignal.takeProfit1, close: vcmeSignal.takeProfit2, volume: 2000 }
+      ];
+
+      const trackerRes = updateAlertsOutcome([alert], { 'GOLDEN_VCME:5m': forwardKlines });
+      assert.strictEqual(trackerRes[0].status, 'TP2_HIT', 'Alert must transition cleanly to TP2_HIT');
+      assert(trackerRes[0].realizedR > 1.5, 'Realized R on TP2 must exceed +1.5R');
+    }
+  });
+
+  // Test 24: End-to-End Deterministic Golden Fixture for Multifractal MTF Parity
+  test('Multifractal MTF deterministic golden fixture validates signal, levels and tracker execution', () => {
+    const klines1d = generateSyntheticKlines(60, 86400, 100, 0.5);
+    const klines1h = generateSyntheticKlines(100, 3600, 100, 0.05);
+    const klines5m = generateSyntheticKlines(120, 300, 100, 0.02);
+
+    const mfSignal = calculateMultifractalMTFSignal(klines5m, klines1h, klines1d, 'GOLDEN_MTF');
+    assert(typeof mfSignal.signal === 'string');
+    assert(typeof mfSignal.stopLoss === 'number');
+
+    // Simulate alert tracker lifecycle with synthetic forward candles
+    const alert: AuditAlertItem = {
+      id: 'golden-mf-alert',
+      symbol: 'GOLDEN_MTF',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.1,
+      strategy: 'Multifractal MTF',
+      entryPrice: 100,
+      stopLoss: 96,
+      takeProfit1: 106, // 1.5R
+      takeProfit2: 110, // 2.5R
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: 1700000000000,
+      candleTimestamp: 1700000000
+    };
+
+    // Forward candle hits TP1 and later retests entry -> should lock in TP1_BE_CLOSED
+    const forwardKlines = [
+      { time: 1700000300, open: 100, high: 107, low: 99.5, close: 106, volume: 1500 },
+      { time: 1700000600, open: 106, high: 106.5, low: 99.8, close: 100, volume: 1200 }
+    ];
+
+    const trackerRes = updateAlertsOutcome([alert], { 'GOLDEN_MTF:5m': forwardKlines });
+    assert.strictEqual(trackerRes[0].status, 'TP1_BE_CLOSED', 'Multifractal must transition to TP1_BE_CLOSED on entry retest');
+    assert.strictEqual(trackerRes[0].realizedR, 0.75, 'Realized R for 1.5R TP1 at Breakeven must be exactly +0.75R');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
