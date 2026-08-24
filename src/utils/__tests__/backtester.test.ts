@@ -466,6 +466,80 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.notStrictEqual(resUpdated, resCached, 'Cache must invalidate when auxiliary 1H series updates');
   });
 
+  // Test 20: VCME 5m Inactivity Time-Stop Parity
+  test('updateAlertsOutcome triggers 8-candle Time-Stop for stagnant VCME 5m trades', () => {
+    const alertTime = 1700000000000;
+    const alert: AuditAlertItem = {
+      id: 'vcme-timestop-1',
+      symbol: 'BTCUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.5,
+      strategy: 'VCME Sniper',
+      entryPrice: 100,
+      stopLoss: 98,
+      takeProfit1: 104, // 2R
+      takeProfit2: 107, // 3.5R
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: alertTime
+    };
+
+    // 8 candles of 5m where price hovered near 100.2 (never reached TP1 104, never touched SL 98)
+    const klinesMap = {
+      'BTCUSDT:5m': [
+        { time: 1700000300, open: 100, high: 100.5, low: 99.5, close: 100.1, volume: 100 },
+        { time: 1700000600, open: 100.1, high: 100.6, low: 99.6, close: 100.2, volume: 100 },
+        { time: 1700000900, open: 100.2, high: 100.7, low: 99.7, close: 100.3, volume: 100 },
+        { time: 1700001200, open: 100.3, high: 100.8, low: 99.8, close: 100.2, volume: 100 },
+        { time: 1700001500, open: 100.2, high: 100.6, low: 99.6, close: 100.1, volume: 100 },
+        { time: 1700001800, open: 100.1, high: 100.5, low: 99.5, close: 100.2, volume: 100 },
+        { time: 1700002100, open: 100.2, high: 100.6, low: 99.6, close: 100.3, volume: 100 },
+        { time: 1700002400, open: 100.3, high: 100.5, low: 99.5, close: 100.2, volume: 100 }, // 8th candle
+      ]
+    };
+
+    const updated = updateAlertsOutcome([alert], klinesMap);
+    assert.strictEqual(updated[0].status, 'EXPIRED', 'Stagnant VCME 5m trade must close via 8-candle Time-Stop');
+    assert.strictEqual(updated[0].pnlPercent, 0.2, 'PnL must match gain at candle 8 (100.2 vs 100 = +0.2%)');
+  });
+
+  // Test 21: Multifractal Early Invalidation in candles 1..3
+  test('updateAlertsOutcome cuts loss early on adverse moves in Multifractal MTF', () => {
+    const alertTime = 1700000000000;
+    const alert: AuditAlertItem = {
+      id: 'mf-early-invalid-1',
+      symbol: 'ETHUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.2,
+      strategy: 'Multifractal MTF',
+      entryPrice: 100,
+      stopLoss: 90, // full SL at 90
+      takeProfit1: 115,
+      takeProfit2: 125,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: alertTime
+    };
+
+    // Candle 2 closes at 94 (adverse move > 0.5 * 10 = 5, but didn't touch full SL 90)
+    const klinesMap = {
+      'ETHUSDT:5m': [
+        { time: 1700000300, open: 100, high: 101, low: 99, close: 99.5, volume: 100 },
+        { time: 1700000600, open: 99.5, high: 99.8, low: 93.5, close: 94, volume: 100 }
+      ]
+    };
+
+    const updated = updateAlertsOutcome([alert], klinesMap);
+    assert.strictEqual(updated[0].status, 'SL_HIT', 'Multifractal must invalidate and cut loss early');
+    assert.strictEqual(updated[0].pnlPercent, -6, 'Loss should be capped at early exit price (-6% vs full SL -10%)');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
