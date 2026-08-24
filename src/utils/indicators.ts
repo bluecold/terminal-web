@@ -2135,7 +2135,6 @@ export function calculateVCMESniperSignal(
   }
 
   const close1h = closes1h[idx1h];
-  const ema200Val1h = ema200_1h[idx1h];
   const ema50Val1h = ema50_1h[idx1h];
   const ema20Val1h = ema20_1h[idx1h];
   const rsiVal1h = rsiSeries1h[idx1h];
@@ -2144,12 +2143,6 @@ export function calculateVCMESniperSignal(
   const vwapVal1h = vwapSeries1h[idx1h];
   const macdHist1h = macdData1h.histogram[idx1h];
   const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
-
-  // EMA200 1H Slope calculation (VCME v2.0 Sec 3.3)
-  const ema200Prev5_1h = idx1h >= 5 ? ema200_1h[idx1h - 5] : ema200Val1h;
-  const ema200Slope1h = ema200Prev5_1h > 0 ? (ema200Val1h - ema200Prev5_1h) / ema200Prev5_1h : 0;
-  const regimeOkLong = adxVal1h > 20 && ema200Slope1h > 0.0005;
-  const regimeOkShort = adxVal1h > 20 && ema200Slope1h < -0.0005;
 
   // Volatility average for regime
   const atrSma1hArr = new Array(klines1h.length).fill(0);
@@ -2164,11 +2157,18 @@ export function calculateVCMESniperSignal(
   }
   const atrSma1h = atrSma1hArr[idx1h] || 1;
 
-  // Evaluate if 1H Setup is armed within the 3-hour window
+  // Evaluate if 1H Setup is armed within the 3-hour window with local regime evaluation (1:1 with backtester.ts)
   const isSetupLongCandle = (hIdx: number) => {
     const hist = macdData1h.histogram[hIdx];
     const prevHist = macdData1h.histogram[hIdx - 1];
+    const ema200Val = ema200_1h[hIdx];
+    const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+    const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
+    const adxVal = adxSeries1h.adx[hIdx];
+    const regimeOkLong = adxVal > 20 && slope > 0.0005;
+
     return (
+      regimeOkLong &&
       closes1h[hIdx] > vwapSeries1h[hIdx] &&
       ema20_1h[hIdx] > ema50_1h[hIdx] &&
       rsiSeries1h[hIdx] >= 50 && rsiSeries1h[hIdx] <= 70 &&
@@ -2180,7 +2180,14 @@ export function calculateVCMESniperSignal(
   const isSetupShortCandle = (hIdx: number) => {
     const hist = macdData1h.histogram[hIdx];
     const prevHist = macdData1h.histogram[hIdx - 1];
+    const ema200Val = ema200_1h[hIdx];
+    const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+    const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
+    const adxVal = adxSeries1h.adx[hIdx];
+    const regimeOkShort = adxVal > 20 && slope < -0.0005;
+
     return (
+      regimeOkShort &&
       closes1h[hIdx] < vwapSeries1h[hIdx] &&
       ema20_1h[hIdx] < ema50_1h[hIdx] &&
       rsiSeries1h[hIdx] >= 30 && rsiSeries1h[hIdx] <= 50 &&
@@ -2207,7 +2214,6 @@ export function calculateVCMESniperSignal(
       break;
     }
   }
-  setupArmedLong = setupArmedLong && regimeOkLong;
 
   let setupArmedShort = false;
   for (let offset = 0; offset < 3; offset++) {
@@ -2219,7 +2225,6 @@ export function calculateVCMESniperSignal(
       break;
     }
   }
-  setupArmedShort = setupArmedShort && regimeOkShort;
 
   let momentum1H: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
   if (setupArmedLong) momentum1H = 'ALCISTA';
