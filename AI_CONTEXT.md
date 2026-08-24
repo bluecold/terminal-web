@@ -192,6 +192,25 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Presets de universo (`Mi Watchlist`, `Top Cripto Volátiles`, `Mega Tech`, `Growth & High Beta`, `Índices & Futuros`).
     - Matriz de Confluencia Multitemporal en vivo (5m · 1h · 1d), cálculo en paralelo de la Estrategia Líder QVE con Profit Factor, ratio RVOL de volumen institucional y detección de Squeeze/Expansión de Bandas de Bollinger.
     - Filtros rápidos cuantitativos (`🔥 Confluencia 3/3`, `🟡 Squeeze BB`, `📈 Alto RVOL ≥ 1.5x`, `🎯 Señales Activas`) y navegación en 1 clic hacia el gráfico.
+- **Actualización v2026.08.24 — Quantitative Parity & Execution Fidelity Overhaul**:
+  - **Paridad 1:1 VCME Sniper (Live vs Backtest)**:
+    - Sincronización del régimen ADX/pendiente EMA200 evaluado localmente en cada vela de setup dentro de la ventana de 3 horas.
+    - Implementación de salidas 3-tier en el tracker: TP1 (50% @ 2.0R) → Trailing Stop a Breakeven; TP2 (25% @ 3.5R) → Trailing a TP1; TP3 (25% @ 5.0R).
+    - **Time-Stop de Inactividad (Intradía 5m)**: Salida automática tras 8 velas (40 min) si $PnL < 0.5R$.
+  - **Paridad 1:1 Multifractal MTF**:
+    - Invalidación temprana en velas 1..3 si el precio sufre retroceso adverso $> 0.5R$ (corte anticipado de pérdidas sin asumir -1.0R total).
+    - Horizonte de expiración ajustado a 12 velas (1 hora en 5m).
+  - **Múltiplos R Ponderados Dinámicos**:
+    - Cálculo matemáticamente exacto de $R$ en base a distancias de niveles: TP1 = $+0.75R$ (o $+1.0R$ en VCME), TP2 = $+2.0R$ (o $+2.75R$ en VCME).
+  - **Inmunidad a Repintado en Velas Vivas (`alertTracker.ts`)**:
+    - Las transiciones de estado terminales (`TP1_HIT`, `TP2_HIT`, `SL_HIT`, `TP1_BE_CLOSED`) se evalúan exclusivamente sobre velas completamente cerradas `(time + duration) * 1000 <= nowMs`. La vela en formación se reserva únicamente para el cálculo de PnL flotante.
+  - **Caché Multi-Timeframe con Fingerprint Atómico OHLCV**:
+    - Inclusión de tupla completa `(length, time, open, high, low, close, volume)` de la última vela y `(close, volume)` de la penúltima para $5m, 1h, 1d$.
+    - Invalida y recalcula instantáneamente en $O(1)$ ante revisiones de datos intrabarra o correcciones del proveedor.
+  - **Eliminación de Notificaciones Fantasma**:
+    - Validación de trades activos (`OPEN` o `TP1_HIT`) antes de disparar notificaciones del SO o registrar la vela, garantizando coherencia 1:1 entre el alert popup y la tabla de auditoría.
+  - **Suite de Pruebas de Paridad End-to-End**:
+    - Inclusión de 24 tests unitarios automatizados que incluyen fixtures deterministas de oro (*Gold Master Fixtures*) para VCME y Multifractal.
 
 ---
 
