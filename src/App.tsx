@@ -42,6 +42,11 @@ function App() {
     return [];
   });
   const [selectedAlertOverlay, setSelectedAlertOverlay] = useState<AlertOverlay | null>(null);
+  const alertsLogRef = useRef<AuditAlertItem[]>(alertsLog);
+  useEffect(() => {
+    alertsLogRef.current = alertsLog;
+  }, [alertsLog]);
+
   const [mainView, setMainView] = useState<'chart' | 'radar'>('chart');
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
@@ -535,6 +540,18 @@ function App() {
           const prevSignal = lastSignalsRef.current[signalKey];
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
 
+          // Option A: Single position per symbol & timeframe
+          // Check if there is already an active (unresolved) position for this symbol + interval
+          const hasActiveTrade = alertsLogRef.current.some(
+            a => a.symbol === symbol && a.interval === signalInterval && (a.status === 'OPEN' || a.status === 'TP1_HIT')
+          );
+
+          if (hasActiveTrade) {
+            // Do not fire new notifications or burn candles while a position is already open.
+            lastSignalsRef.current[signalKey] = overallSignal;
+            return;
+          }
+
           const isFirstScan = prevSignal === undefined;
           const isDirectionChange = prevSignal !== undefined && prevSignal !== overallSignal;
 
@@ -663,18 +680,10 @@ function App() {
             }
 
             setAlertsLog(prev => {
-              const cooldownMs = signalInterval === '5m'
-                ? 15 * 60 * 1000
-                : signalInterval === '1h'
-                  ? 60 * 60 * 1000
-                  : 12 * 60 * 60 * 1000;
-
               const isDuplicate = prev.some(a => {
                 if (a.dedupKey && newAlert.dedupKey && a.dedupKey === newAlert.dedupKey) return true;
                 if (a.symbol === symbol && a.interval === signalInterval && a.candleTimestamp && candleTimestamp > 0 && a.candleTimestamp === candleTimestamp) return true;
-                if (a.symbol !== symbol || a.interval !== signalInterval) return false;
-                if (a.status === 'OPEN' || a.status === 'TP1_HIT') return true;
-                if (now - a.timestamp < cooldownMs) return true;
+                if (a.id === newAlert.id) return true;
                 return false;
               });
 
