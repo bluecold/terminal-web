@@ -2535,9 +2535,9 @@ export function calculateVCMESniperSignal(
     triggerDetail = `Confidence Score insuficiente: ${(confidenceScore * 100).toFixed(0)}% (requerido >= 65%)`;
   }
 
-  // Clasificación Trade Type (DAY vs SWING - Sec 8.3)
+  // Clasificación Trade Type (DAY vs SWING - Sec 8.3 sincronizado con backtester.ts)
   let tradeType: 'DAY' | 'SWING' = 'DAY';
-  if (adxVal1h > 30) {
+  if (lastAdx1d > 30) {
     if ((signal === 'BUY' && macdHist1h > macdHistPrev1h) ||
         (signal === 'SELL' && macdHist1h < macdHistPrev1h)) {
       tradeType = 'SWING';
@@ -2545,8 +2545,10 @@ export function calculateVCMESniperSignal(
   }
 
   let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
-  if (confidenceScore >= 0.75) confidence = 'ALTA';
-  else if (confidenceScore >= 0.65) confidence = 'MODERADA';
+  if (signal !== 'NEUTRAL') {
+    if (confidenceScore >= 0.75) confidence = 'ALTA';
+    else if (confidenceScore >= 0.65) confidence = 'MODERADA';
+  }
 
   // ═══════════════════════════════════════════════════════════
   // 8. GESTIÓN DE RIESGO ASIMÉTRICA Y CHANDELIER EXIT (VCME v2.0)
@@ -2572,6 +2574,8 @@ export function calculateVCMESniperSignal(
   const atrMultLong = 1.5;
   const atrMultShort = 1.8;
   const tp1Mult = 2.0;
+  const tp2Mult = 3.5;
+  const tp3Mult = 5.0;
 
   const chandelierLong = chandelierData.long[idx1h];
   const chandelierShort = chandelierData.short[idx1h];
@@ -2580,30 +2584,82 @@ export function calculateVCMESniperSignal(
     const slATR = entry - atrMultLong * atr5m;
     const slStruct = swingLow > 0 ? (swingLow - 0.20 * atr5m) : slATR;
     stopLoss = Math.min(slATR, slStruct);
+    let risk = entry - stopLoss;
+    if (risk <= 0) {
+      signal = 'NEUTRAL';
+      mode = 'NONE';
+      confidence = 'DESCARTAR';
+      triggerDetail = 'Descartado: Stop loss inválido (riesgo <= 0)';
+      stopLoss = 0;
+    } else {
+      const minRisk = 0.8 * atr5m;
+      const maxRisk = 1.8 * atr5m;
 
-    chandelierExit = !isNaN(chandelierLong) ? Number(chandelierLong.toFixed(2)) : Number((entry - 3.0 * atrVal1h).toFixed(2));
-    takeProfit1 = entry + tp1Mult * Math.abs(entry - stopLoss);
-    takeProfit2 = Math.max(ema20Val1h, chandelierExit); // Trailing method
-    takeProfit3 = entry + 3.5 * Math.abs(entry - stopLoss);
-    riskRewardRatio = tp1Mult;
+      if (risk < minRisk) {
+        stopLoss = entry - minRisk;
+        risk = minRisk;
+      }
+
+      const riskPercent = entry > 0 ? risk / entry : 0;
+      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
+      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
+        signal = 'NEUTRAL';
+        mode = 'NONE';
+        confidence = 'DESCARTAR';
+        triggerDetail = `Descartado por riesgo excesivo (${(riskPercent * 100).toFixed(2)}% vs máx ${(maxAllowedRisk * 100).toFixed(1)}% o ${(risk / (atr5m || 1)).toFixed(2)} ATR vs máx 1.8 ATR)`;
+        stopLoss = 0;
+      } else {
+        chandelierExit = !isNaN(chandelierLong) ? Number(chandelierLong.toFixed(2)) : Number((entry - 3.0 * atrVal1h).toFixed(2));
+        takeProfit1 = entry + tp1Mult * risk;
+        takeProfit2 = entry + tp2Mult * risk;
+        takeProfit3 = entry + tp3Mult * risk;
+        riskRewardRatio = tp1Mult;
+      }
+    }
   } else if (signal === 'SELL') {
     const slATR = entry + atrMultShort * atr5m;
     const slStruct = swingHigh > 0 ? (swingHigh + 0.20 * atr5m) : slATR;
     stopLoss = Math.max(slATR, slStruct);
+    let risk = stopLoss - entry;
+    if (risk <= 0) {
+      signal = 'NEUTRAL';
+      mode = 'NONE';
+      confidence = 'DESCARTAR';
+      triggerDetail = 'Descartado: Stop loss inválido (riesgo <= 0)';
+      stopLoss = 0;
+    } else {
+      const minRisk = 0.8 * atr5m;
+      const maxRisk = 1.8 * atr5m;
 
-    chandelierExit = !isNaN(chandelierShort) ? Number(chandelierShort.toFixed(2)) : Number((entry + 3.0 * atrVal1h).toFixed(2));
-    takeProfit1 = entry - tp1Mult * Math.abs(stopLoss - entry);
-    takeProfit2 = Math.min(ema20Val1h, chandelierExit); // Trailing method
-    takeProfit3 = entry - 3.5 * Math.abs(stopLoss - entry);
-    riskRewardRatio = tp1Mult;
+      if (risk < minRisk) {
+        stopLoss = entry + minRisk;
+        risk = minRisk;
+      }
+
+      const riskPercent = entry > 0 ? risk / entry : 0;
+      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
+      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
+        signal = 'NEUTRAL';
+        mode = 'NONE';
+        confidence = 'DESCARTAR';
+        triggerDetail = `Descartado por riesgo excesivo (${(riskPercent * 100).toFixed(2)}% vs máx ${(maxAllowedRisk * 100).toFixed(1)}% o ${(risk / (atr5m || 1)).toFixed(2)} ATR vs máx 1.8 ATR)`;
+        stopLoss = 0;
+      } else {
+        chandelierExit = !isNaN(chandelierShort) ? Number(chandelierShort.toFixed(2)) : Number((entry + 3.0 * atrVal1h).toFixed(2));
+        takeProfit1 = entry - tp1Mult * risk;
+        takeProfit2 = entry - tp2Mult * risk;
+        takeProfit3 = entry - tp3Mult * risk;
+        riskRewardRatio = tp1Mult;
+      }
+    }
   }
 
   // Position sizing (1% risk, max 20% position size limit - Sec 7)
   const accountEquity = 10000;
   const riskAmount = 100; // 1% of 10,000 USD
   const stopDistance = Math.abs(entry - stopLoss);
-  let positionSizeUnits = stopDistance > 0 ? riskAmount / stopDistance : 0;
-  const maxUnits = (0.20 * accountEquity) / entry;
+  let positionSizeUnits = (signal !== 'NEUTRAL' && stopDistance > 0) ? riskAmount / stopDistance : 0;
+  const maxUnits = entry > 0 ? (0.20 * accountEquity) / entry : 0;
   positionSizeUnits = Math.min(positionSizeUnits, maxUnits);
 
   const adaptiveFactor = 1.0;

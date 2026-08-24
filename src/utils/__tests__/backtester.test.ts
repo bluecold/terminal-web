@@ -6,6 +6,7 @@ import {
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
+import { calculateVCMESniperSignal } from '../indicators';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -170,7 +171,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([alert], klinesMap);
     assert.strictEqual(updated[0].status, 'TP1_BE_CLOSED', 'Alert should close in TP1_BE_CLOSED');
-    assert.strictEqual(updated[0].realizedR, 1.0, 'Realized R should be locked at +1.0R for TP1 + BE');
+    assert.strictEqual(updated[0].realizedR, 0.75, 'Realized R should be locked at +0.75R for 50% TP1 (1.5R) + BE');
     assert(updated[0].pnlPercent > 0, 'PnL should be positive from locked 50% TP1 gain');
 
     // Next pass: verify that subsequent candles cannot change the outcome of TP1_BE_CLOSED
@@ -198,7 +199,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const tp1Alert: AuditAlertItem = {
       id: '5', symbol: 'DOTUSDT', interval: '5m', signal: 'BUY', time: '12:00',
       pf: 1.5, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
-      status: 'TP1_HIT', realizedR: 1.5, pnlPercent: 1.5, timestamp: oldTimestamp
+      status: 'TP1_HIT', realizedR: 0.75, pnlPercent: 1.5, timestamp: oldTimestamp
     };
 
     const klinesMap = {
@@ -215,10 +216,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
   test('calculateSessionStats correctly tallies TP1_BE_CLOSED as a win and TP1_HIT as active', () => {
     const todayMs = Date.now();
     const alerts: AuditAlertItem[] = [
-      { id: '1', symbol: 'BTC', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_BE_CLOSED', realizedR: 1.0, pnlPercent: 1.5, timestamp: todayMs },
-      { id: '2', symbol: 'ETH', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP2_HIT', realizedR: 2.5, pnlPercent: 4.5, timestamp: todayMs },
+      { id: '1', symbol: 'BTC', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_BE_CLOSED', realizedR: 0.75, pnlPercent: 1.5, timestamp: todayMs },
+      { id: '2', symbol: 'ETH', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP2_HIT', realizedR: 2.0, pnlPercent: 4.5, timestamp: todayMs },
       { id: '3', symbol: 'SOL', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'SL_HIT', realizedR: -1.0, pnlPercent: -2.0, timestamp: todayMs },
-      { id: '4', symbol: 'BNB', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_HIT', realizedR: 1.5, pnlPercent: 2.0, timestamp: todayMs }
+      { id: '4', symbol: 'BNB', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_HIT', realizedR: 0.75, pnlPercent: 2.0, timestamp: todayMs }
     ];
 
     const stats = calculateSessionStats(alerts, false);
@@ -227,7 +228,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(stats.losses, 1, 'SL_HIT must count as loss');
     assert.strictEqual(stats.openCount, 1, 'TP1_HIT must be counted in openCount while trailing');
     assert.strictEqual(stats.winRate, 66.7);
-    assert.strictEqual(stats.totalR, 2.5);
+    assert.strictEqual(stats.totalR, 1.8, 'Net totalR should be 0.75 + 2.0 - 1.0 = 1.75 rounded to 1.8');
   });
 
   // Test 12: Atomic Candle Deduplication Key Generation
@@ -309,6 +310,136 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     
     clearFiredAlertsRegistry();
     assert.strictEqual(isCandleAlertFired('SOLUSDT', '5m', 1700000900, 'VCME', 'SELL'), false);
+  });
+
+  // Test 16: calculateVCMESniperSignal returns valid risk structure and synchronizes with backtester rules
+  test('calculateVCMESniperSignal enforces risk bounds and returns consistent structure', () => {
+    const klines5m = generateSyntheticKlines(60, 300, 100);
+    const klines1h = generateSyntheticKlines(80, 3600, 100);
+    const klines1d = generateSyntheticKlines(60, 86400, 100);
+
+    const result = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'BTCUSDT');
+    assert(['BUY', 'SELL', 'NEUTRAL'].includes(result.signal));
+    assert(['DAY', 'SWING'].includes(result.tradeType));
+    if (result.signal !== 'NEUTRAL') {
+      assert(result.stopLoss > 0, 'Stop loss must be > 0 for active signals');
+      assert(result.takeProfit1 > 0, 'TP1 must be > 0 for active signals');
+      assert(result.takeProfit2 > 0, 'TP2 must be > 0 for active signals');
+      assert(result.takeProfit3 > 0, 'TP3 must be > 0 for active signals');
+      assert(result.riskRewardRatio >= 2.0, 'R/R must be >= 2.0');
+      if (result.signal === 'BUY') {
+        assert(result.takeProfit1 > result.stopLoss, 'TP1 must be > SL for BUY');
+        assert(result.takeProfit2 > result.takeProfit1, 'TP2 must be > TP1 for BUY');
+        assert(result.takeProfit3 > result.takeProfit2, 'TP3 must be > TP2 for BUY');
+      } else if (result.signal === 'SELL') {
+        assert(result.takeProfit1 < result.stopLoss, 'TP1 must be < SL for SELL');
+        assert(result.takeProfit2 < result.takeProfit1, 'TP2 must be < TP1 for SELL');
+        assert(result.takeProfit3 < result.takeProfit2, 'TP3 must be < TP2 for SELL');
+      }
+    } else {
+      assert.strictEqual(result.stopLoss, 0, 'Stop loss must be 0 for NEUTRAL signal');
+    }
+  });
+
+  // Test 17: Chronological Causality in Alert State Machine (No retrograde BE on pre-TP1 candles)
+  test('updateAlertsOutcome preserves chronological causality without retrograde BE triggers', () => {
+    const alert: AuditAlertItem = {
+      id: 'causal-test-1',
+      symbol: 'BTCUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.0,
+      strategy: 'VCME',
+      entryPrice: 100,
+      stopLoss: 95,
+      takeProfit1: 105,
+      takeProfit2: 110,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: 1700000000000
+    };
+
+    // Step 1: Candle 1 dips to entryPrice (100) before reaching TP1 (high is 102).
+    // Candle 2 surges and hits TP1 (high 106).
+    const klinesMapPass1 = {
+      'BTCUSDT:5m': [
+        { time: 1700000300, open: 100, high: 102, low: 100, close: 101, volume: 100 },
+        { time: 1700000600, open: 101, high: 106, low: 101, close: 106, volume: 100 }
+      ]
+    };
+
+    const pass1 = updateAlertsOutcome([alert], klinesMapPass1);
+    assert.strictEqual(pass1[0].status, 'TP1_HIT', 'Alert should transition to TP1_HIT on Candle 2');
+
+    // Step 2: Candle 3 arrives with high=108, low=104 (well above entry).
+    // In buggy code, re-evaluating would read Candle 1 with activeSL=100 and falsely turn into TP1_BE_CLOSED.
+    // In correct causal replay, it remains TP1_HIT.
+    const klinesMapPass2 = {
+      'BTCUSDT:5m': [
+        { time: 1700000300, open: 100, high: 102, low: 100, close: 101, volume: 100 },
+        { time: 1700000600, open: 101, high: 106, low: 101, close: 106, volume: 100 },
+        { time: 1700000900, open: 106, high: 108, low: 104, close: 107, volume: 100 }
+      ]
+    };
+
+    const pass2 = updateAlertsOutcome(pass1, klinesMapPass2);
+    assert.strictEqual(pass2[0].status, 'TP1_HIT', 'Alert must stay TP1_HIT and NOT trigger false retrograde BE from Candle 1');
+
+    // Step 3: Candle 4 actually falls back to entry AFTER TP1 (low=99.8).
+    // NOW it must transition to TP1_BE_CLOSED.
+    const klinesMapPass3 = {
+      'BTCUSDT:5m': [
+        { time: 1700000300, open: 100, high: 102, low: 100, close: 101, volume: 100 },
+        { time: 1700000600, open: 101, high: 106, low: 101, close: 106, volume: 100 },
+        { time: 1700000900, open: 106, high: 108, low: 104, close: 107, volume: 100 },
+        { time: 1700001200, open: 107, high: 107.5, low: 99.8, close: 100.1, volume: 100 }
+      ]
+    };
+
+    const pass3 = updateAlertsOutcome(pass2, klinesMapPass3);
+    assert.strictEqual(pass3[0].status, 'TP1_BE_CLOSED', 'Alert should transition to TP1_BE_CLOSED only when post-TP1 candle hits entry price');
+  });
+
+  // Test 18: Unclosed live candle repainting immunity
+  test('updateAlertsOutcome ignores unclosed live candle extremes for terminal status and updates floating PnL', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const alertTime = Date.now() - 60000; // fired 1 minute ago
+
+    const alert: AuditAlertItem = {
+      id: 'repainting-test-1',
+      symbol: 'BTCUSDT',
+      interval: '1h',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.0,
+      strategy: 'VCME',
+      entryPrice: 100,
+      stopLoss: 90,
+      takeProfit1: 110,
+      takeProfit2: 120,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: alertTime
+    };
+
+    // The live 1H candle started 10 minutes ago and is currently in formation (ends in 50 minutes)
+    // It has a spike to 125 (would hit TP2 if evaluated), but it is NOT closed yet!
+    const liveCandleTime = nowSec - 600;
+    const klinesMap = {
+      'BTCUSDT:1h': [
+        // Previous closed candle from yesterday
+        { time: liveCandleTime - 3600, open: 98, high: 101, low: 97, close: 100, volume: 100 },
+        // Current forming 1H candle (open now)
+        { time: liveCandleTime, open: 100, high: 125, low: 99, close: 105, volume: 100 }
+      ]
+    };
+
+    const updated = updateAlertsOutcome([alert], klinesMap);
+    assert.strictEqual(updated[0].status, 'OPEN', 'Alert must stay OPEN and NOT freeze as TP2_HIT from an unclosed candle');
+    assert.strictEqual(updated[0].pnlPercent, 5, 'Floating PnL should be calculated from live close (105 vs 100 = +5%)');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

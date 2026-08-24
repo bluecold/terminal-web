@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { fetchTickerSummary } from '../services/api';
+import { fetchTickerSummary, fetchKlines } from '../services/api';
 import { X } from 'lucide-react';
 
 interface WatchlistProps {
@@ -43,7 +43,6 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
           try {
             // For crypto use the Binance klines fallback (fetchTickerSummary is Yahoo-only)
             if (sym.endsWith('USDT') || sym.endsWith('BTC')) {
-              const { fetchKlines } = await import('../services/api');
               const klines = await fetchKlines(sym, '1d');
               if (!isMounted) return;
               if (klines.length >= 2) {

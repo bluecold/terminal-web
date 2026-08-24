@@ -366,6 +366,9 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
 
     const { entryPrice, stopLoss, takeProfit1, takeProfit2, signal } = activeAlertOverlay;
     const isBuy = signal.includes('BUY');
+    const riskDist = Math.abs(entryPrice - stopLoss);
+    const r1 = riskDist > 0 ? Math.abs(takeProfit1 - entryPrice) / riskDist : 1.5;
+    const r2 = riskDist > 0 ? Math.abs(takeProfit2 - entryPrice) / riskDist : 2.5;
 
     const entryLine = series.createPriceLine({
       price: entryPrice,
@@ -391,7 +394,7 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       lineWidth: 1,
       lineStyle: LineStyle.Dotted,
       axisLabelVisible: true,
-      title: `TP1 (+1.5R)`,
+      title: `TP1 (+${r1.toFixed(1)}R)`,
     });
 
     const tp2Line = series.createPriceLine({
@@ -400,7 +403,7 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       axisLabelVisible: true,
-      title: `TP2 (+2.5R)`,
+      title: `TP2 (+${r2.toFixed(1)}R)`,
     });
 
     priceLinesRef.current = [entryLine, slLine, tp1Line, tp2Line];

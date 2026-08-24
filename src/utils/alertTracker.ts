@@ -104,6 +104,26 @@ export function isAlertFromToday(timestamp: number): boolean {
   );
 }
 
+export function getIntervalDurationSec(interval: string): number {
+  switch (interval?.toLowerCase()) {
+    case '1m': return 60;
+    case '3m': return 180;
+    case '5m': return 300;
+    case '15m': return 900;
+    case '30m': return 1800;
+    case '1h': return 3600;
+    case '2h': return 7200;
+    case '4h': return 14400;
+    case '6h': return 21600;
+    case '8h': return 28800;
+    case '12h': return 43200;
+    case '1d': return 86400;
+    case '3d': return 259200;
+    case '1w': return 604800;
+    default: return 300;
+  }
+}
+
 /**
  * Evaluates open alerts against latest klines for each symbol.
  * Updates alert status (TP1_HIT, TP2_HIT, SL_HIT, TP1_BE_CLOSED, EXPIRED) and floating PnL.
@@ -127,16 +147,31 @@ export function updateAlertsOutcome(
     const latestPrice = latestCandle.close;
     const isBuy = alert.signal.includes('BUY');
 
-    // Evaluate candles that arrived after alert timestamp
-    const futureCandles = symbolKlines.filter(k => k.time * 1000 >= alert.timestamp);
-    const candlesToEvaluate = futureCandles.length > 0 ? futureCandles : [latestCandle];
+    const durationSec = getIntervalDurationSec(alert.interval);
+    const nowMs = Date.now();
 
-    let currentStatus: AlertStatus = alert.status;
-    let realizedR = alert.realizedR || 0;
-    let currentPnl = alert.pnlPercent;
+    // A candle is confirmed closed only if its close boundary has passed in time
+    const isCandleClosed = (k: Kline) => (k.time + durationSec) * 1000 <= nowMs;
 
-    const initialRiskPct = Math.abs((alert.stopLoss - alert.entryPrice) / alert.entryPrice);
-    let activeSL = currentStatus === 'TP1_HIT' ? alert.entryPrice : alert.stopLoss;
+    // Filter only CLOSED candles that finished AFTER the alert was fired
+    const candlesToEvaluate = symbolKlines.filter(k => {
+      const isAfterAlert = alert.candleTimestamp && alert.candleTimestamp > 0
+        ? k.time > alert.candleTimestamp
+        : (k.time + durationSec) * 1000 > alert.timestamp;
+
+      return isAfterAlert && isCandleClosed(k);
+    });
+
+    // Strictly causal deterministic evaluation: Always replay forward chronologically from inception
+    let currentStatus: AlertStatus = 'OPEN';
+    let realizedR = 0;
+    let currentPnl = 0;
+
+    const initialRiskDist = Math.abs(alert.entryPrice - alert.stopLoss);
+    const initialRiskPct = alert.entryPrice > 0 ? initialRiskDist / alert.entryPrice : 0.02;
+    const r1 = initialRiskDist > 0 ? Math.abs(alert.takeProfit1 - alert.entryPrice) / initialRiskDist : 1.5;
+    const r2 = initialRiskDist > 0 ? Math.abs(alert.takeProfit2 - alert.entryPrice) / initialRiskDist : 2.5;
+    let activeSL = alert.stopLoss;
 
     for (const candle of candlesToEvaluate) {
       if (isBuy) {
@@ -146,7 +181,7 @@ export function updateAlertsOutcome(
             // SL at Breakeven after TP1: lock in 0.50 * TP1 gain
             const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
             currentPnl = Number(tp1Gain.toFixed(2));
-            realizedR = 1.0;
+            realizedR = Number((0.50 * r1).toFixed(2));
             currentStatus = 'TP1_BE_CLOSED';
             break;
           } else {
@@ -163,7 +198,7 @@ export function updateAlertsOutcome(
           const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
           const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 50;
           currentPnl = Number((tp1Gain + tp2Gain).toFixed(2));
-          realizedR = initialRiskPct > 0 ? Number((((alert.takeProfit1 + alert.takeProfit2) / 2 - alert.entryPrice) / (alert.entryPrice * initialRiskPct)).toFixed(2)) : 2.5;
+          realizedR = Number(((r1 + r2) / 2).toFixed(2));
           break;
         }
 
@@ -174,7 +209,7 @@ export function updateAlertsOutcome(
           const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
           const openFloating = ((candle.close - alert.entryPrice) / alert.entryPrice) * 50;
           currentPnl = Number((tp1Gain + openFloating).toFixed(2));
-          realizedR = 1.5;
+          realizedR = Number((0.50 * r1).toFixed(2));
         }
       } else {
         // Sell signal
@@ -182,7 +217,7 @@ export function updateAlertsOutcome(
           if (currentStatus === 'TP1_HIT') {
             const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
             currentPnl = Number(tp1Gain.toFixed(2));
-            realizedR = 1.0;
+            realizedR = Number((0.50 * r1).toFixed(2));
             currentStatus = 'TP1_BE_CLOSED';
             break;
           } else {
@@ -198,7 +233,7 @@ export function updateAlertsOutcome(
           const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
           const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 50;
           currentPnl = Number((tp1Gain + tp2Gain).toFixed(2));
-          realizedR = initialRiskPct > 0 ? Number(((alert.entryPrice - (alert.takeProfit1 + alert.takeProfit2) / 2) / (alert.entryPrice * initialRiskPct)).toFixed(2)) : 2.5;
+          realizedR = Number(((r1 + r2) / 2).toFixed(2));
           break;
         }
 
@@ -208,13 +243,13 @@ export function updateAlertsOutcome(
           const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
           const openFloating = ((alert.entryPrice - candle.close) / alert.entryPrice) * 50;
           currentPnl = Number((tp1Gain + openFloating).toFixed(2));
-          realizedR = 1.5;
+          realizedR = Number((0.50 * r1).toFixed(2));
         }
       }
     }
 
     // Expiration check (24 candles of alert timeframe without SL, TP2 or TP1_BE)
-    const intervalMs = alert.interval === '1h' ? 3600000 : alert.interval === '1d' ? 86400000 : 300000;
+    const intervalMs = durationSec * 1000;
     const expiryTime = alert.timestamp + 24 * intervalMs;
     const isExpiredByTime = latestCandle.time * 1000 >= expiryTime;
 

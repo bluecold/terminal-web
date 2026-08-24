@@ -809,7 +809,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.21.1
+            v2026.08.24.1
           </span>
         </div>
       </header>
@@ -1016,20 +1016,25 @@ function App() {
                   const signalBg = isBuy ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
                   const isStrong = alert.signal.includes('STRONG');
 
+                  const riskDist = Math.abs(alert.entryPrice - alert.stopLoss);
+                  const r1 = riskDist > 0 ? Math.abs(alert.takeProfit1 - alert.entryPrice) / riskDist : 1.5;
+
                   let statusLabel = 'EN VIVO';
                   let statusBg = 'rgba(59, 130, 246, 0.15)';
                   let statusColor = 'var(--accent-blue)';
 
                   if (alert.status === 'TP2_HIT') {
-                    statusLabel = 'TP2 (+2.5R) ✅';
+                    const rVal = alert.realizedR || 0;
+                    statusLabel = `TP2 (+${rVal > 0 ? rVal.toFixed(2) : '2.00'}R) ✅`;
                     statusBg = 'rgba(16, 185, 129, 0.2)';
                     statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'TP1_BE_CLOSED') {
-                    statusLabel = 'TP1/BE (+1.0R) ✅';
+                    const rVal = alert.realizedR || 0;
+                    statusLabel = `TP1/BE (+${rVal > 0 ? rVal.toFixed(2) : (0.5 * r1).toFixed(2)}R) ✅`;
                     statusBg = 'rgba(16, 185, 129, 0.15)';
                     statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'TP1_HIT') {
-                    statusLabel = 'TP1 (+1.5R) 🎯';
+                    statusLabel = `TP1 (+${r1.toFixed(1)}R) 🎯`;
                     statusBg = 'rgba(16, 185, 129, 0.15)';
                     statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'SL_HIT') {
