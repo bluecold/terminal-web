@@ -211,6 +211,22 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Validación de trades activos (`OPEN` o `TP1_HIT`) antes de disparar notificaciones del SO o registrar la vela, garantizando coherencia 1:1 entre el alert popup y la tabla de auditoría.
   - **Suite de Pruebas de Paridad End-to-End**:
     - Inclusión de 24 tests unitarios automatizados que incluyen fixtures deterministas de oro (*Gold Master Fixtures*) para VCME y Multifractal.
+- **Actualización v2026.08.25.1 — MarketRadar Resilience, Adaptive Volatility & Profile Synchronization**:
+  - **Sincronización Total de Perfiles (Day Trading / Swing & Agresivo / Conservador)**:
+    - Vinculación de `executionStyle` y `triggerMode` entre `App.tsx`, `SignalPanel.tsx` y `MarketRadar.tsx`.
+    - Eliminación de hardcodes en VCME Sniper dentro del Radar y unificación del sesgo de tendencia macro.
+  - **Volatilidad Autoadaptativa (Percentil Histórico de Bollinger BandWidth)**:
+    - Reemplazo de umbrales estáticos por percentil histórico (P15 para `SQUEEZE`, P85 para `EXPANSION`), adaptándose a la volatilidad intrínseca de cada activo.
+  - **RVOL Time-of-Day Estacional**:
+    - Integración de `calculateTimeOfDayVolumeAvg` para comparar el volumen de 5m contra la media histórica de la misma hora/minuto.
+  - **Confluencia MTF Ponderada**:
+    - Matriz de confluencia graduada con ponderación temporal 1D (45%), 1H (35%), 5m (20%) y fuerza de votos.
+  - **Normalización de Expectancy en Torneo QVE**:
+    - Normalización suave con $\tanh$ para equilibrar retornos porcentuales frente a Profit Factor y Win Rate.
+  - **Rendimiento y Circuit Breaker**:
+    - Caché por hash de timestamps de velas para evitar recalcular 55 backtests cada minuto.
+    - Pausas asíncronas no bloqueantes entre lotes para garantizar 60 FPS continuos en la UI.
+    - Backoff de 10 minutos para símbolos caídos o con errores repetidos de API con estado `OFFLINE` y botón de reintento manual.
 
 ---
 

@@ -45,11 +45,13 @@ export function evaluateStrategyTournament(
   const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
   const idealMin = Math.round(minHighResolved * 1.5);
 
-  // Helper to calculate composite score with sigmoid sample penalty
+  // Helper to calculate composite score with sigmoid sample penalty and normalized expectancy
   const calcScore = (c: StrategyCandidate): number => {
     const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
-    const cappedPF = Math.min(c.profitFactor, 5.0);
-    const baseScore = cappedPF * 0.45 + Math.max(0, c.expectancy) * 0.35 + c.winRate * 0.20;
+    const cappedPF = Math.min(Math.max(0, c.profitFactor), 5.0);
+    // Normalize expectancy smoothly: maps [0, +inf) to [0, 3.0] so it aligns cleanly with cappedPF (0-5.0) and winRate (0-1.0)
+    const normalizedExp = Math.max(0, Math.tanh(Math.max(0, c.expectancy) / 2.0)) * 3.0;
+    const baseScore = (cappedPF * 0.45) + (normalizedExp * 0.35) + (c.winRate * 0.20);
     return baseScore * sampleConfidence;
   };
 

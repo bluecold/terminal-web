@@ -62,7 +62,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.08.24.9';
+    const APP_VERSION = 'v2026.08.25.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -344,7 +344,7 @@ export default function SignalPanel({
   let isFiltered = false;
   let filterReason = '';
 
-  if (bestStrategy !== 'multitemporal') {
+  if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
     if (trend === 'UP' && (rawOverallSignal === 'SELL' || rawOverallSignal === 'STRONG SELL')) {
       overallSignal = 'NEUTRAL';
       overallColor = 'var(--text-secondary)';

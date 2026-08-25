@@ -233,6 +233,42 @@ export function calculateBollingerBandsSeries(klines: Kline[], period: number = 
   return results;
 }
 
+export interface BollingerVolatilityStatusResult {
+  status: 'SQUEEZE' | 'EXPANSION' | 'NORMAL';
+  percentile: number;
+  widthPercent: number;
+}
+
+export function calculateBollingerVolatilityStatus(
+  bbSeries: BollingerBandsSeriesResult[],
+  lookback: number = 50
+): BollingerVolatilityStatusResult {
+  if (!bbSeries || bbSeries.length === 0) {
+    return { status: 'NORMAL', percentile: 50, widthPercent: 0 };
+  }
+  const lastBB = bbSeries[bbSeries.length - 1];
+  const currentWidth = lastBB.widthPercent;
+
+  const windowSeries = bbSeries.slice(-lookback);
+  const sampleSize = windowSeries.length;
+  if (sampleSize < 10) {
+    return { status: 'NORMAL', percentile: 50, widthPercent: currentWidth };
+  }
+
+  // Calculate percentile rank of current widthPercent within historical window
+  const lowerCount = windowSeries.filter(b => b.widthPercent < currentWidth).length;
+  const percentile = Number(((lowerCount / sampleSize) * 100).toFixed(1));
+
+  let status: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
+  if (percentile <= 15) {
+    status = 'SQUEEZE';
+  } else if (percentile >= 85) {
+    status = 'EXPANSION';
+  }
+
+  return { status, percentile, widthPercent: currentWidth };
+}
+
 // ==========================================
 // EXPERIMENTAL CUSTOM ALGO
 // ==========================================

@@ -817,7 +817,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.24.9
+            v2026.08.25.1
           </span>
         </div>
       </header>
@@ -1264,6 +1264,8 @@ function App() {
                   setMainView('chart');
                 }}
                 activeSignals={activeSignals}
+                executionStyle={executionStyle}
+                triggerMode={triggerMode}
               />
             )}
           </div>

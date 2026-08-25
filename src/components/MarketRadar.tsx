@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Eye } from 'lucide-react';
+import { Search, RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Eye, AlertTriangle, ShieldCheck, Zap } from 'lucide-react';
 import { fetchKlines } from '../services/api';
 import {
   calculateStandardVoting,
@@ -8,7 +8,8 @@ import {
   calculateVCMESniperSignal,
   calculateMultifractalMTFSignal,
   calculateBollingerBandsSeries,
-  calculateSMA
+  calculateBollingerVolatilityStatus,
+  calculateTimeOfDayVolumeAvg,
 } from '../utils/indicators';
 import {
   backtestStandard,
@@ -32,6 +33,7 @@ export interface RadarRowData {
   overallSignal: string;
   isFullConfluence: boolean;
   confluenceType: 'BUY_3' | 'SELL_3' | 'PARTIAL' | 'NEUTRAL';
+  confluenceScore: number;
   qveStrategy: string;
   qveProfitFactor: number;
   qveConfidence: ConfidenceLevel;
@@ -39,10 +41,12 @@ export interface RadarRowData {
   volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL';
   bbWidthPercent: number;
   loading: boolean;
+  isOffline?: boolean;
+  offlineReason?: string;
 }
 
 export type RadarFilter = 'all' | 'confluence' | 'squeeze' | 'rvol' | 'active';
-export type SortColumn = 'symbol' | 'price' | 'changePercent' | 'qveProfitFactor' | 'rvol' | 'bbWidthPercent';
+export type SortColumn = 'symbol' | 'price' | 'changePercent' | 'qveProfitFactor' | 'rvol' | 'bbWidthPercent' | 'confluenceScore';
 
 interface MarketRadarProps {
   watchlistSymbols: string[];
@@ -50,6 +54,8 @@ interface MarketRadarProps {
   onSelectAsset: (symbol: string) => void;
   onNavigateToChart: (symbol: string) => void;
   activeSignals?: Record<string, string>;
+  executionStyle?: 'dayTrading' | 'swing';
+  triggerMode?: 'agresivo' | 'conservador';
 }
 
 const PRESET_POOLS: Record<string, string[]> = {
@@ -64,7 +70,9 @@ export default function MarketRadar({
   currentAsset: _currentAsset,
   onSelectAsset,
   onNavigateToChart,
-  activeSignals = {}
+  activeSignals = {},
+  executionStyle = 'dayTrading',
+  triggerMode = 'agresivo',
 }: MarketRadarProps) {
   const [activePreset, setActivePreset] = useState<'watchlist' | 'crypto' | 'tech' | 'growth' | 'macro'>('watchlist');
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('all');
@@ -75,6 +83,12 @@ export default function MarketRadar({
   const [isScanning, setIsScanning] = useState(false);
   const isMountedRef = useRef(true);
 
+  // Circuit breaker: track consecutive errors per symbol to avoid repeated failing requests (10 min backoff)
+  const failureMapRef = useRef<Map<string, { count: number; lastFailed: number }>>(new Map());
+
+  // Smart calculation cache: avoid recalculating 55 backtests if candles & profile haven't changed
+  const calcCacheRef = useRef<Map<string, { hash: string; data: RadarRowData }>>(new Map());
+
   const symbolsToScan = useMemo(() => {
     if (activePreset === 'watchlist') {
       return watchlistSymbols.length > 0 ? watchlistSymbols : ['BTCUSDT', 'ETHUSDT', 'TSLA', 'MSFT'];
@@ -83,8 +97,37 @@ export default function MarketRadar({
   }, [activePreset, watchlistSymbols]);
 
   // Scan single symbol multitemporal data
-  const scanSymbol = async (symbol: string): Promise<RadarRowData> => {
+  const scanSymbol = async (symbol: string, forceFresh: boolean = false): Promise<RadarRowData> => {
     const isCrypto = symbol.endsWith('USDT') || symbol.endsWith('BTC');
+
+    // 1. Circuit breaker check
+    const failInfo = failureMapRef.current.get(symbol);
+    if (!forceFresh && failInfo && failInfo.count >= 2 && Date.now() - failInfo.lastFailed < 10 * 60 * 1000) {
+      return {
+        symbol,
+        name: symbol,
+        isCrypto,
+        price: 0,
+        changePercent: 0,
+        signal5m: 'OFFLINE',
+        signal1h: 'OFFLINE',
+        signal1d: 'OFFLINE',
+        overallSignal: 'NEUTRAL',
+        isFullConfluence: false,
+        confluenceType: 'NEUTRAL',
+        confluenceScore: 0,
+        qveStrategy: 'Standard',
+        qveProfitFactor: 1.0,
+        qveConfidence: 'NONE',
+        rvol: 1.0,
+        volatilityStatus: 'NORMAL',
+        bbWidthPercent: 0,
+        loading: false,
+        isOffline: true,
+        offlineReason: 'Pausado por fallos continuos de API (10 min backoff)',
+      };
+    }
+
     try {
       const [k5m, k1h, k1d] = await Promise.all([
         fetchKlines(symbol, '5m'),
@@ -93,6 +136,9 @@ export default function MarketRadar({
       ]);
 
       if (k5m.length === 0 && k1h.length === 0 && k1d.length === 0) {
+        const prevCount = failureMapRef.current.get(symbol)?.count || 0;
+        failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: Date.now() });
+
         return {
           symbol,
           name: symbol,
@@ -105,6 +151,7 @@ export default function MarketRadar({
           overallSignal: 'NEUTRAL',
           isFullConfluence: false,
           confluenceType: 'NEUTRAL',
+          confluenceScore: 0,
           qveStrategy: 'Standard',
           qveProfitFactor: 1.0,
           qveConfidence: 'NONE',
@@ -112,8 +159,13 @@ export default function MarketRadar({
           volatilityStatus: 'NORMAL',
           bbWidthPercent: 0,
           loading: false,
+          isOffline: true,
+          offlineReason: 'Sin datos disponibles para este ticker',
         };
       }
+
+      // Success: reset failure count
+      failureMapRef.current.delete(symbol);
 
       // Latest price & daily change
       let price = 0;
@@ -131,10 +183,32 @@ export default function MarketRadar({
       const closed1h = k1h.length > 1 ? k1h.slice(0, -1) : k1h;
       const closed1d = k1d.length > 1 ? k1d.slice(0, -1) : k1d;
 
-      // ── 1. Multitemporal Signals ─────────────────────────────
-      const sig5m = closed5m.length >= 35 ? calculateStandardVoting(closed5m).rawSignal : 'NEUTRAL';
-      const sig1h = closed1h.length >= 35 ? calculateStandardVoting(closed1h).rawSignal : 'NEUTRAL';
-      const sig1d = closed1d.length >= 30 ? calculateStandardVoting(closed1d).rawSignal : 'NEUTRAL';
+      // Smart cache check by candle timestamps and user profile
+      const last5mTime = closed5m.length > 0 ? closed5m[closed5m.length - 1].time : 0;
+      const last1hTime = closed1h.length > 0 ? closed1h[closed1h.length - 1].time : 0;
+      const last1dTime = closed1d.length > 0 ? closed1d[closed1d.length - 1].time : 0;
+      const cacheHash = `${symbol}_${last5mTime}_${last1hTime}_${last1dTime}_${executionStyle}_${triggerMode}`;
+
+      if (!forceFresh) {
+        const cached = calcCacheRef.current.get(symbol);
+        if (cached && cached.hash === cacheHash) {
+          return {
+            ...cached.data,
+            price,
+            changePercent,
+            loading: false,
+          };
+        }
+      }
+
+      // ── 1. Multitemporal Signals & Weighted Confluence ────────
+      const voting5m = closed5m.length >= 35 ? calculateStandardVoting(closed5m) : null;
+      const voting1h = closed1h.length >= 35 ? calculateStandardVoting(closed1h) : null;
+      const voting1d = closed1d.length >= 30 ? calculateStandardVoting(closed1d) : null;
+
+      const sig5m = voting5m ? voting5m.rawSignal : 'NEUTRAL';
+      const sig1h = voting1h ? voting1h.rawSignal : 'NEUTRAL';
+      const sig1d = voting1d ? voting1d.rawSignal : 'NEUTRAL';
 
       const isBuy5m = sig5m.includes('BUY');
       const isBuy1h = sig1h.includes('BUY');
@@ -144,25 +218,44 @@ export default function MarketRadar({
       const isSell1h = sig1h.includes('SELL');
       const isSell1d = sig1d.includes('SELL');
 
+      // Helper to assign signal score (-1.0 to +1.0)
+      const getSigScore = (sig: string) => {
+        if (sig === 'STRONG BUY') return 1.0;
+        if (sig === 'BUY') return 0.6;
+        if (sig === 'STRONG SELL') return -1.0;
+        if (sig === 'SELL') return -0.6;
+        return 0;
+      };
+
+      const score5m = getSigScore(sig5m);
+      const score1h = getSigScore(sig1h);
+      const score1d = getSigScore(sig1d);
+
+      // Weighted multitemporal score (1D: 45%, 1H: 35%, 5m: 20%)
+      const weightedScore = (score1d * 0.45) + (score1h * 0.35) + (score5m * 0.20);
+      const confluenceScore = Math.round(Math.abs(weightedScore) * 100);
+
       let isFullConfluence = false;
       let confluenceType: 'BUY_3' | 'SELL_3' | 'PARTIAL' | 'NEUTRAL' = 'NEUTRAL';
 
-      if (isBuy5m && isBuy1h && isBuy1d) {
+      if ((isBuy5m && isBuy1h && isBuy1d) || weightedScore >= 0.70) {
         isFullConfluence = true;
         confluenceType = 'BUY_3';
-      } else if (isSell5m && isSell1h && isSell1d) {
+      } else if ((isSell5m && isSell1h && isSell1d) || weightedScore <= -0.70) {
         isFullConfluence = true;
         confluenceType = 'SELL_3';
-      } else if ((isBuy5m && isBuy1h) || (isSell5m && isSell1h)) {
+      } else if ((isBuy5m && isBuy1h) || (isSell5m && isSell1h) || Math.abs(weightedScore) >= 0.40) {
         confluenceType = 'PARTIAL';
       }
 
-      // ── 2. QVE Tournament & Overall Signal ───────────────────
+      // ── 2. QVE Tournament & Overall Signal (Synced with Profile) ──
+      const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
+
       const btStd = closed5m.length > 20 ? backtestStandard(closed5m, '5m', symbol) : null;
       const btConf = closed5m.length > 20 ? backtestConfluencia(closed5m, '5m', symbol) : null;
       const btScore = closed5m.length > 20 ? backtestScoring(closed5m, '5m', undefined, symbol) : null;
-      const btMulti = closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30
-        ? backtestMultitemporal(closed5m, closed1h, closed1d, '5m', symbol, 'dayTrading', 'agresivo')
+      const btMulti = triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30
+        ? backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode)
         : null;
       const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : null;
 
@@ -182,7 +275,7 @@ export default function MarketRadar({
       } else if (tourney.bestStrategy === 'scoring') {
         overallSig = calculateScoringSignal(closed5m, '5m').signal;
       } else if (tourney.bestStrategy === 'multitemporal' && btMulti) {
-        overallSig = calculateVCMESniperSignal(closed5m, closed1h, closed1d, symbol, btMulti.winRate, btMulti.profitFactor, 'dayTrading', 'agresivo').signal;
+        overallSig = calculateVCMESniperSignal(triggerKlines, closed1h, closed1d, symbol, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode).signal;
       } else if (tourney.bestStrategy === 'multifractal') {
         overallSig = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol).signal;
       } else {
@@ -199,15 +292,14 @@ export default function MarketRadar({
         }
       }
 
-      // ── 3. RVOL & Bollinger Volatility Status ────────────────
+      // ── 3. RVOL (Time-of-Day Seasonality) & Bollinger Volatility ──
       let rvol = 1.0;
-      if (closed5m.length >= 21) {
-        const volumes = closed5m.map(k => k.volume);
-        const smaVol = calculateSMA(volumes, 20);
-        const lastVol = volumes[volumes.length - 1];
-        const lastSmaVol = smaVol[smaVol.length - 1];
-        if (lastSmaVol > 0) {
-          rvol = Number((lastVol / lastSmaVol).toFixed(2));
+      if (closed5m.length >= 20) {
+        const lastIdx = closed5m.length - 1;
+        const lastVol = closed5m[lastIdx].volume;
+        const todVolAvg = calculateTimeOfDayVolumeAvg(closed5m, lastIdx, 20);
+        if (todVolAvg > 0) {
+          rvol = Number((lastVol / todVolAvg).toFixed(2));
         }
       }
 
@@ -217,17 +309,13 @@ export default function MarketRadar({
       if (closed5m.length >= 20) {
         const bbSeries = calculateBollingerBandsSeries(closed5m, 20, 2);
         if (bbSeries.length > 0) {
-          const lastBB = bbSeries[bbSeries.length - 1];
-          bbWidthPercent = lastBB.widthPercent;
-          if (bbWidthPercent < 1.2) {
-            volatilityStatus = 'SQUEEZE';
-          } else if (bbWidthPercent > 3.0) {
-            volatilityStatus = 'EXPANSION';
-          }
+          const volStatus = calculateBollingerVolatilityStatus(bbSeries, 50);
+          volatilityStatus = volStatus.status;
+          bbWidthPercent = volStatus.widthPercent;
         }
       }
 
-      return {
+      const rowResult: RadarRowData = {
         symbol,
         name: symbol,
         isCrypto,
@@ -239,6 +327,7 @@ export default function MarketRadar({
         overallSignal: overallSig,
         isFullConfluence,
         confluenceType,
+        confluenceScore,
         qveStrategy: tourney.strategyLabel,
         qveProfitFactor: tourney.profitFactor,
         qveConfidence: tourney.confidence,
@@ -246,9 +335,16 @@ export default function MarketRadar({
         volatilityStatus,
         bbWidthPercent,
         loading: false,
+        isOffline: false,
       };
+
+      calcCacheRef.current.set(symbol, { hash: cacheHash, data: rowResult });
+      return rowResult;
     } catch (e) {
       console.error(`Error scanning radar for ${symbol}`, e);
+      const prevCount = failureMapRef.current.get(symbol)?.count || 0;
+      failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: Date.now() });
+
       return {
         symbol,
         name: symbol,
@@ -261,6 +357,7 @@ export default function MarketRadar({
         overallSignal: 'NEUTRAL',
         isFullConfluence: false,
         confluenceType: 'NEUTRAL',
+        confluenceScore: 0,
         qveStrategy: 'Standard',
         qveProfitFactor: 1.0,
         qveConfidence: 'NONE',
@@ -268,11 +365,13 @@ export default function MarketRadar({
         volatilityStatus: 'NORMAL',
         bbWidthPercent: 0,
         loading: false,
+        isOffline: true,
+        offlineReason: 'Error al consultar datos de mercado',
       };
     }
   };
 
-  // Run batch scan with concurrency limit
+  // Run batch scan with concurrency limit and micro-pauses
   const runFullScan = async () => {
     if (isScanning) return;
     setIsScanning(true);
@@ -294,6 +393,7 @@ export default function MarketRadar({
             overallSignal: '...',
             isFullConfluence: false,
             confluenceType: 'NEUTRAL',
+            confluenceScore: 0,
             qveStrategy: '...',
             qveProfitFactor: 0,
             qveConfidence: 'NONE',
@@ -323,6 +423,10 @@ export default function MarketRadar({
           return next;
         });
       }
+      // Micro-pause (yield to event loop) to ensure 60 FPS UI responsiveness
+      if (i + batchSize < symbolsToScan.length) {
+        await new Promise(resolve => setTimeout(resolve, 35));
+      }
     }
 
     if (isMountedRef.current) {
@@ -330,17 +434,32 @@ export default function MarketRadar({
     }
   };
 
+  // Manual retry for a single symbol
+  const handleRetrySymbol = async (e: React.MouseEvent, sym: string) => {
+    e.stopPropagation();
+    failureMapRef.current.delete(sym);
+    calcCacheRef.current.delete(sym);
+    setRadarData(prev => ({
+      ...prev,
+      [sym]: { ...(prev[sym] || { symbol: sym }), loading: true } as RadarRowData
+    }));
+    const res = await scanSymbol(sym, true);
+    if (isMountedRef.current) {
+      setRadarData(prev => ({ ...prev, [sym]: res }));
+    }
+  };
+
   useEffect(() => {
     isMountedRef.current = true;
-    /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional data fetch on preset or watchlist change */
+    /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional data fetch on preset or profile change */
     runFullScan();
     const timer = setInterval(runFullScan, 60000);
     return () => {
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- symbolsToScan changes trigger scan
-  }, [symbolsToScan]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbolsToScan, executionStyle, triggerMode]);
 
   // Filter & Sort table items
   const processedRows = useMemo(() => {
@@ -356,6 +475,7 @@ export default function MarketRadar({
       overallSignal: '...',
       isFullConfluence: false,
       confluenceType: 'NEUTRAL' as const,
+      confluenceScore: 0,
       qveStrategy: '...',
       qveProfitFactor: 0,
       qveConfidence: 'NONE' as ConfidenceLevel,
@@ -385,8 +505,8 @@ export default function MarketRadar({
 
     // 3. Sorting
     return [...filtered].sort((a, b) => {
-      const valA: string | number = a[sortCol];
-      const valB: string | number = b[sortCol];
+      const valA: string | number = a[sortCol] ?? 0;
+      const valB: string | number = b[sortCol] ?? 0;
 
       if (typeof valA === 'string') {
         return sortAsc ? valA.localeCompare(valB as string) : (valB as string).localeCompare(valA);
@@ -450,8 +570,25 @@ export default function MarketRadar({
           ))}
         </div>
 
-        {/* Refresh & Live Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        {/* Profile Badge & Refresh Controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {/* Active Profile Sync Indicator */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.25)',
+            padding: '4px 10px',
+            borderRadius: '6px',
+            fontSize: '0.68rem',
+            color: 'var(--accent-blue)',
+            fontWeight: '600'
+          }}>
+            <Zap size={12} />
+            <span>Perfil: {executionStyle === 'swing' ? 'Swing (1H)' : 'Intradía (5m)'} · {triggerMode === 'conservador' ? 'Conservador' : 'Agresivo'}</span>
+          </div>
+
           <button
             onClick={runFullScan}
             disabled={isScanning}
@@ -484,9 +621,9 @@ export default function MarketRadar({
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {[
             { id: 'all', label: 'Todos' },
-            { id: 'confluence', label: '🔥 Confluencia 3/3' },
-            { id: 'squeeze', label: '🟡 Squeeze BB' },
-            { id: 'rvol', label: '📈 Alto RVOL (≥1.5x)' },
+            { id: 'confluence', label: '🔥 Confluencia MTF' },
+            { id: 'squeeze', label: '🟡 Squeeze Adaptativo' },
+            { id: 'rvol', label: '📈 Alto RVOL (ToD ≥1.5x)' },
             { id: 'active', label: '🎯 Señales Activas' },
           ].map(f => (
             <button
@@ -566,7 +703,12 @@ export default function MarketRadar({
                     {sortCol === 'changePercent' ? (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ArrowUpDown size={11} opacity={0.4} />}
                   </div>
                 </th>
-                <th style={{ padding: '10px 14px' }}>CONFLUENCIA MTF (5m · 1h · 1d)</th>
+                <th style={{ padding: '10px 14px', cursor: 'pointer' }} onClick={() => handleSort('confluenceScore')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span>CONFLUENCIA MTF (5m · 1h · 1d)</span>
+                    {sortCol === 'confluenceScore' ? (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ArrowUpDown size={11} opacity={0.4} />}
+                  </div>
+                </th>
                 <th style={{ padding: '10px 14px', cursor: 'pointer' }} onClick={() => handleSort('qveProfitFactor')}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <span>ESTRATEGIA LÍDER QVE</span>
@@ -575,7 +717,7 @@ export default function MarketRadar({
                 </th>
                 <th style={{ padding: '10px 14px', cursor: 'pointer' }} onClick={() => handleSort('rvol')}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <span>RVOL (VOLUMEN)</span>
+                    <span>RVOL (ToD)</span>
                     {sortCol === 'rvol' ? (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ArrowUpDown size={11} opacity={0.4} />}
                   </div>
                 </th>
@@ -608,12 +750,15 @@ export default function MarketRadar({
                       style={{
                         borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
                         transition: 'background-color 0.15s ease',
-                        cursor: 'pointer',
+                        cursor: row.isOffline ? 'default' : 'pointer',
+                        opacity: row.isOffline ? 0.7 : 1,
                       }}
                       className="radar-row"
                       onClick={() => {
-                        onSelectAsset(row.symbol);
-                        onNavigateToChart(row.symbol);
+                        if (!row.isOffline) {
+                          onSelectAsset(row.symbol);
+                          onNavigateToChart(row.symbol);
+                        }
                       }}
                     >
                       {/* 1. Symbol & Market Tag */}
@@ -633,6 +778,26 @@ export default function MarketRadar({
                           }}>
                             {row.isCrypto ? 'CRIPTO' : 'STOCK'}
                           </span>
+                          {row.isOffline && (
+                            <span
+                              title={row.offlineReason || 'Sin conexión o datos'}
+                              style={{
+                                fontSize: '0.52rem',
+                                fontWeight: '700',
+                                padding: '1px 4px',
+                                borderRadius: '3px',
+                                background: 'rgba(239, 68, 68, 0.15)',
+                                color: 'var(--accent-red)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                              }}
+                            >
+                              <AlertTriangle size={10} />
+                              <span>OFFLINE</span>
+                            </span>
+                          )}
                           {activeSig && (
                             <span style={{
                               fontSize: '0.52rem',
@@ -650,13 +815,15 @@ export default function MarketRadar({
 
                       {/* 2. Price */}
                       <td style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)', fontWeight: '600', color: 'var(--text-primary)' }}>
-                        {row.loading ? <span className="radar-skeleton">Cargando...</span> : formatP(row.price)}
+                        {row.loading ? <span className="radar-skeleton">Cargando...</span> : row.isOffline ? '—' : formatP(row.price)}
                       </td>
 
                       {/* 3. 24h Change % */}
                       <td style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)', fontWeight: '700' }}>
                         {row.loading ? (
                           <span className="radar-skeleton">—</span>
+                        ) : row.isOffline ? (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
                         ) : (
                           <span style={{ color: isPositive ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                             {isPositive ? '+' : ''}{row.changePercent.toFixed(2)}%
@@ -668,6 +835,8 @@ export default function MarketRadar({
                       <td style={{ padding: '12px 14px' }}>
                         {row.loading ? (
                           <span className="radar-skeleton">Evaluando confluencia...</span>
+                        ) : row.isOffline ? (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>{row.offlineReason || 'Sin datos'}</span>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             {/* 5m */}
@@ -719,7 +888,7 @@ export default function MarketRadar({
                                 color: row.confluenceType === 'BUY_3' ? 'var(--accent-green)' : 'var(--accent-red)',
                                 border: `1px solid ${row.confluenceType === 'BUY_3' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'}`,
                               }}>
-                                🎯 3/3
+                                🎯 3/3 ({row.confluenceScore}%)
                               </span>
                             )}
                           </div>
@@ -730,6 +899,8 @@ export default function MarketRadar({
                       <td style={{ padding: '12px 14px' }}>
                         {row.loading ? (
                           <span className="radar-skeleton">—</span>
+                        ) : row.isOffline ? (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -743,16 +914,22 @@ export default function MarketRadar({
                             }}>
                               PF {row.qveProfitFactor.toFixed(1)}
                             </span>
-                            {row.qveConfidence === 'HIGH' && <span title="Alta Confianza">✅</span>}
+                            {row.qveConfidence === 'HIGH' && (
+                              <span title="Alta Confianza (Muestra representativa)">
+                                <ShieldCheck size={12} color="var(--accent-green)" />
+                              </span>
+                            )}
                             {row.qveConfidence === 'LIMITED' && <span title="Muestra Limitada">⚠️</span>}
                           </div>
                         )}
                       </td>
 
-                      {/* 6. RVOL Volume Surge */}
+                      {/* 6. RVOL Volume Surge (Time-of-Day) */}
                       <td style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)' }}>
                         {row.loading ? (
                           <span className="radar-skeleton">—</span>
+                        ) : row.isOffline ? (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
                         ) : (
                           <span style={{
                             fontWeight: '700',
@@ -763,10 +940,12 @@ export default function MarketRadar({
                         )}
                       </td>
 
-                      {/* 7. Volatility Status (BB) */}
+                      {/* 7. Volatility Status (BB Adaptive Percentile) */}
                       <td style={{ padding: '12px 14px' }}>
                         {row.loading ? (
                           <span className="radar-skeleton">—</span>
+                        ) : row.isOffline ? (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
                         ) : (
                           <span style={{
                             fontSize: '0.6rem',
@@ -793,30 +972,54 @@ export default function MarketRadar({
                       {/* 8. Action Buttons */}
                       <td style={{ padding: '12px 14px', textAlign: 'right' }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
-                          <button
-                            onClick={() => {
-                              onSelectAsset(row.symbol);
-                              onNavigateToChart(row.symbol);
-                            }}
-                            style={{
-                              background: isBuy ? 'rgba(16, 185, 129, 0.12)' : isSell ? 'rgba(244, 63, 94, 0.12)' : 'rgba(59, 130, 246, 0.12)',
-                              border: `1px solid ${isBuy ? 'rgba(16, 185, 129, 0.3)' : isSell ? 'rgba(244, 63, 94, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
-                              color: isBuy ? 'var(--accent-green)' : isSell ? 'var(--accent-red)' : 'var(--accent-blue)',
-                              padding: '3px 8px',
-                              borderRadius: '4px',
-                              fontSize: '0.62rem',
-                              fontWeight: '700',
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              transition: 'all 0.2s',
-                            }}
-                            title="Abrir en Gráfico de TradingView"
-                          >
-                            <Eye size={11} />
-                            <span>GRÁFICO</span>
-                          </button>
+                          {row.isOffline ? (
+                            <button
+                              onClick={(e) => handleRetrySymbol(e, row.symbol)}
+                              style={{
+                                background: 'rgba(255, 255, 255, 0.05)',
+                                border: '1px solid var(--border-color)',
+                                color: 'var(--text-secondary)',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontSize: '0.62rem',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                transition: 'all 0.2s',
+                              }}
+                              title="Reintentar consultar este activo"
+                            >
+                              <RefreshCw size={10} />
+                              <span>REINTENTAR</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                onSelectAsset(row.symbol);
+                                onNavigateToChart(row.symbol);
+                              }}
+                              style={{
+                                background: isBuy ? 'rgba(16, 185, 129, 0.12)' : isSell ? 'rgba(244, 63, 94, 0.12)' : 'rgba(59, 130, 246, 0.12)',
+                                border: `1px solid ${isBuy ? 'rgba(16, 185, 129, 0.3)' : isSell ? 'rgba(244, 63, 94, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
+                                color: isBuy ? 'var(--accent-green)' : isSell ? 'var(--accent-red)' : 'var(--accent-blue)',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontSize: '0.62rem',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                transition: 'all 0.2s',
+                              }}
+                              title="Abrir en Gráfico de TradingView"
+                            >
+                              <Eye size={11} />
+                              <span>GRÁFICO</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
