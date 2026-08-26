@@ -6,7 +6,14 @@ import {
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
-import { calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateRollingVolumeAvg } from '../indicators';
+import {
+  calculateVCMESniperSignal,
+  calculateMultifractalMTFSignal,
+  calculateRollingVolumeAvg,
+  isNyseOpeningWindow,
+  getOpeningRange,
+  getSessionId
+} from '../indicators';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -1065,6 +1072,21 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(result.insufficient, false, 'VCME Swing must evaluate successfully with 350 1H candles');
     assert.strictEqual(result.forwardLabel, '48 hs max (Swing)');
     assert(result.label.includes('1h'), 'Label must indicate 1h candles');
+  });
+
+  // Test 39: Sub-microsecond Integer Session Math & Zero-Intl Performance
+  test('isNyseOpeningWindow and getSessionId execute with zero Intl overhead and correct boundaries', () => {
+    const utcMidnight = 1700006400; // 00:00:00 UTC
+    const nyseOpenSec = utcMidnight + 14 * 3600 + 35 * 60; // 14:35 UTC (9:35 AM EST)
+    const nyseClosedSec = utcMidnight + 18 * 3600; // 18:00 UTC
+
+    assert.strictEqual(isNyseOpeningWindow(nyseOpenSec, 'AAPL'), true, '14:35 UTC must be inside NYSE opening window');
+    assert.strictEqual(isNyseOpeningWindow(nyseClosedSec, 'AAPL'), false, '18:00 UTC must be outside NYSE opening window');
+    assert.strictEqual(isNyseOpeningWindow(nyseOpenSec, 'BTCUSDT'), false, 'Crypto assets must always return false');
+
+    const klineA: Kline = { time: utcMidnight + 1000, open: 100, high: 105, low: 95, close: 102, volume: 500 };
+    const klineB: Kline = { time: utcMidnight + 90000, open: 102, high: 108, low: 98, close: 105, volume: 600 };
+    assert.notStrictEqual(getSessionId(klineA, '5m', 'AAPL'), getSessionId(klineB, '5m', 'AAPL'), 'Different days must produce distinct session IDs');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

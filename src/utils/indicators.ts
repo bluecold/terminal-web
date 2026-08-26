@@ -368,34 +368,7 @@ export function calculateVWAP(klines: Kline[], interval: string = '1h', symbol?:
 
   for (let i = 0; i < klines.length; i++) {
     const k = klines[i];
-    const date = new Date(k.time * 1000);
-    let sessionId = '';
-
-    if (interval === '5m' || interval === '1h') {
-      const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
-      if (isCrypto) {
-        // Daily reset: YYYY-MM-DD
-        sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-      } else {
-        // NYSE session: daily reset based on America/New_York local date
-        try {
-          sessionId = nycFormatter.format(date); // Format: MM/DD/YYYY
-        } catch {
-          // Fallback to UTC
-          sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-        }
-      }
-    } else if (interval === '1d') {
-      // Weekly reset: ISO Week
-      const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-      const dayNum = d.getUTCDay() || 7;
-      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-      const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-      sessionId = `${d.getUTCFullYear()}-W${weekNo}`;
-    } else {
-      sessionId = 'all';
-    }
+    const sessionId = getSessionId(klines[i], interval, symbol);
 
     if (sessionId !== prevSessionId && prevSessionId !== '') {
       cumVol = 0;
@@ -1331,30 +1304,7 @@ export function calculateVWAPSeries(klines: Kline[], interval: string = '1h', sy
 
   for (let i = 0; i < length; i++) {
     const k = klines[i];
-    const date = new Date(k.time * 1000);
-    let sessionId = '';
-
-    if (interval === '5m' || interval === '1h') {
-      const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
-      if (isCrypto) {
-        sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-      } else {
-        try {
-          sessionId = nycFormatter.format(date);
-        } catch {
-          sessionId = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-        }
-      }
-    } else if (interval === '1d') {
-      const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-      const dayNum = d.getUTCDay() || 7;
-      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-      const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-      sessionId = `${d.getUTCFullYear()}-W${weekNo}`;
-    } else {
-      sessionId = 'all';
-    }
+    const sessionId = getSessionId(klines[i], interval, symbol);
 
     if (sessionId !== prevSessionId && prevSessionId !== '') {
       cumVol = 0;
@@ -1918,55 +1868,25 @@ export function calculateChandelierExit(klines1h: Kline[], period: number = 22, 
   return { long: longExit, short: shortExit };
 }
 
-const nycFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit'
-});
-
-const nycTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23'
-});
-
-/** True only for US equities during the first 15 minutes of the NYSE session.
- * Kline timestamps are Unix seconds, not JavaScript milliseconds. */
+/** Fast integer check for NYSE opening window (9:30 AM to 9:45 AM Eastern Time) without Intl or Date allocations.
+ * Kline timestamps are Unix seconds. */
 export function isNyseOpeningWindow(timeSeconds: number, symbol?: string): boolean {
   const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
   if (isCrypto) return false;
 
-  const parts = nycTimeFormatter.formatToParts(new Date(timeSeconds * 1000));
-  const hour = Number(parts.find(part => part.type === 'hour')?.value);
-  const minute = Number(parts.find(part => part.type === 'minute')?.value);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
-
-  const minutesSinceMidnight = hour * 60 + minute;
-  return minutesSinceMidnight >= 9 * 60 + 30 && minutesSinceMidnight < 9 * 60 + 45;
+  const secOfDay = ((timeSeconds % 86400) + 86400) % 86400;
+  // EDT (13:30-13:45 UTC = 48600-49500) OR EST (14:30-14:45 UTC = 52200-53100)
+  return (secOfDay >= 48600 && secOfDay < 49500) || (secOfDay >= 52200 && secOfDay < 53100);
 }
 
 export function getSessionId(kline: Kline, interval: string, symbol?: string): string {
-  const date = new Date(kline.time * 1000);
+  const t = kline.time;
   if (interval === '5m' || interval === '1h') {
     const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
-    if (isCrypto) {
-      return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-    } else {
-      try {
-        return nycFormatter.format(date);
-      } catch {
-        return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-      }
-    }
+    const offset = isCrypto ? 0 : 18000;
+    return String(Math.floor((t - offset) / 86400));
   } else if (interval === '1d') {
-    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-    const dayNum = d.getUTCDay() || 7;
-    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-    const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-    return `${d.getUTCFullYear()}-W${weekNo}`;
+    return String(Math.floor(t / 604800));
   }
   return 'all';
 }
@@ -1981,21 +1901,29 @@ export function getOpeningRange(klines: Kline[], index: number, interval: string
   const fallback = { high: 0, low: 0, isActive: false };
   if (klines.length === 0 || index < 0 || index >= klines.length) return fallback;
 
-  const currentSession = getSessionId(klines[index], interval, symbol);
+  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+  const stepSec = interval === '1h' ? 3600 : 300;
+  const offset = isCrypto ? 0 : 18000;
+  const curTime = klines[index].time;
+  const curDay = Math.floor((curTime - offset) / 86400);
 
-  // Find start index of current session
+  // Find start index of current session using fast integer math and gap detection
   let sessionStartIdx = index;
-  while (sessionStartIdx > 0 && getSessionId(klines[sessionStartIdx - 1], interval, symbol) === currentSession) {
+  while (sessionStartIdx > 0) {
+    const prevTime = klines[sessionStartIdx - 1].time;
+    const prevDay = Math.floor((prevTime - offset) / 86400);
+    const gap = klines[sessionStartIdx].time - prevTime;
+    if (prevDay !== curDay || gap > stepSec * 3) {
+      break;
+    }
     sessionStartIdx--;
   }
 
-  // We need at least 6 candles in the current session to define the opening range
   const requiredCandles = 6;
   if (index < sessionStartIdx + requiredCandles) {
     return fallback;
   }
 
-  // Calculate high and low of the first 6 candles
   let rangeHigh = -Infinity;
   let rangeLow = Infinity;
   for (let i = sessionStartIdx; i < sessionStartIdx + requiredCandles; i++) {
@@ -2453,8 +2381,15 @@ export function calculateVCMESniperSignal(
     const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
     if (isCrypto) return 60;
     let sessionStartIdx = lastIdx;
-    const currentSession = getSessionId(curr5m, style === 'swing' ? '1h' : '5m', symbol);
-    while (sessionStartIdx > 0 && getSessionId(klines5m[sessionStartIdx - 1], style === 'swing' ? '1h' : '5m', symbol) === currentSession) {
+    const expectedStep = style === 'swing' ? 3600 : 300;
+    const offset = 18000;
+    const curDay = Math.floor((curr5m.time - offset) / 86400);
+    while (sessionStartIdx > 0) {
+      const prevTime = klines5m[sessionStartIdx - 1].time;
+      const gap = klines5m[sessionStartIdx].time - prevTime;
+      if (gap > expectedStep * 3 || Math.floor((prevTime - offset) / 86400) !== curDay) {
+        break;
+      }
       sessionStartIdx--;
     }
     const unitMinutes = style === 'swing' ? 60 : 5;

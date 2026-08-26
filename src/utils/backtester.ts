@@ -16,14 +16,12 @@ import {
   calculateSupportResistance,
   calculateATRSeries,
   calculateADXSeries,
-  getOpeningRange,
   checkBullishDivergence,
   checkBearishDivergence,
   candleBodyRatio,
   closePosition,
   upperWickRatio,
   lowerWickRatio,
-  getSessionId,
   calculateRevolutionVolatilityBand,
   calculateVolumeComposition,
   calculateAndianOscillator,
@@ -400,6 +398,41 @@ export function backtestMultitemporal(
     idx1hMap[i] = hPtr - 1;
   }
 
+  // ── Pre-calculate Session Boundaries & Opening Range Map O(N) ───────
+  const sessionStartMap = new Int32Array(klines5m.length);
+  const openingRangeMap: Array<{ high: number; low: number; isActive: boolean }> = new Array(klines5m.length);
+  let curStart = 0;
+  let curHigh = -Infinity;
+  let curLow = Infinity;
+  let curCount = 0;
+  const isCryptoAsset = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+  const offsetSec = isCryptoAsset ? 0 : 18000;
+  const expectedStepSec = tf === '5m' ? 300 : 3600;
+
+  for (let i = 0; i < klines5m.length; i++) {
+    const isNew = i === 0 || (isSessionBased
+      ? (klines5m[i].time - klines5m[i - 1].time > expectedStepSec * 3)
+      : (Math.floor((klines5m[i].time - offsetSec) / 86400) !== Math.floor((klines5m[i - 1].time - offsetSec) / 86400)));
+
+    if (isNew) {
+      curStart = i;
+      curHigh = -Infinity;
+      curLow = Infinity;
+      curCount = 0;
+    }
+    sessionStartMap[i] = curStart;
+
+    if (curCount < 6) {
+      if (klines5m[i].high > curHigh) curHigh = klines5m[i].high;
+      if (klines5m[i].low < curLow) curLow = klines5m[i].low;
+      curCount++;
+    }
+
+    openingRangeMap[i] = curCount >= 6
+      ? { high: curHigh, low: curLow, isActive: true }
+      : { high: 0, low: 0, isActive: false };
+  }
+
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
       neutrals++;
@@ -663,8 +696,8 @@ export function backtestMultitemporal(
         }
       }
     } else {
-      const orb = getOpeningRange(klines5m, i, style === 'swing' ? '1h' : '5m', symbol);
-      const prevOrb = getOpeningRange(klines5m, i - 1, style === 'swing' ? '1h' : '5m', symbol);
+      const orb = openingRangeMap[i];
+      const prevOrb = i > 0 ? openingRangeMap[i - 1] : orb;
 
       const breakoutLongPrev = prevOrb.isActive &&
                                prev.close > prevOrb.high + 0.10 * atrSeries5m[i - 1] &&
@@ -703,11 +736,7 @@ export function backtestMultitemporal(
     const minutesSinceOpen = (() => {
       const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
       if (isCrypto) return 60;
-      let sessionStartIdx = i;
-      const currentSession = getSessionId(curr, style === 'swing' ? '1h' : '5m', symbol);
-      while (sessionStartIdx > 0 && getSessionId(klines5m[sessionStartIdx - 1], style === 'swing' ? '1h' : '5m', symbol) === currentSession) {
-        sessionStartIdx--;
-      }
+      const sessionStartIdx = sessionStartMap[i];
       const unitMinutes = style === 'swing' ? 60 : 5;
       return (i - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
     })();
