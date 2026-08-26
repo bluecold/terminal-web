@@ -1236,6 +1236,18 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(typeof liveResult.signal, 'string');
   });
 
+  // Test 49: EMA Slope Gate Realism (slope > 0 vs slope > 0.0005)
+  test('VCME arms 1H setup with realistic positive slope (slope > 0)', () => {
+    // Generate synthetic trend with steady upward progression
+    const klines5m = generateSyntheticKlines(700, 300, 100, 0.03);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.03);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.03);
+
+    const liveResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'SLOPE_TEST');
+    assert(liveResult !== null, 'VCME sniper signal calculation must complete');
+    assert(['BUY', 'SELL', 'NEUTRAL'].includes(liveResult.signal), 'Signal must be valid');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

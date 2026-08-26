@@ -496,7 +496,7 @@ export function backtestMultitemporal(
       const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
       const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
       const adxVal = adxSeries1h.adx[hIdx];
-      const regimeOkLong = adxVal > 20 && slope > 0.0005;
+      const regimeOkLong = adxVal > 20 && slope > 0;
 
       return (
         regimeOkLong &&
@@ -515,7 +515,7 @@ export function backtestMultitemporal(
       const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
       const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
       const adxVal = adxSeries1h.adx[hIdx];
-      const regimeOkShort = adxVal > 20 && slope < -0.0005;
+      const regimeOkShort = adxVal > 20 && slope < 0;
 
       return (
         regimeOkShort &&
