@@ -78,6 +78,26 @@ export interface RecordedTrade {
   pnlPct: number;
   adxAtEntry?: number;
   outcome: 'win' | 'loss' | 'neutral' | 'timeout';
+  entryIdx?: number;
+}
+
+export interface SplitStats {
+  signals: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  expectancyR: number;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+}
+
+export interface WalkForwardResult {
+  isWindow: number;          // In-Sample window candle count (70%)
+  oosWindow: number;         // Out-of-Sample window candle count (30%)
+  inSample: SplitStats;      // Performance in historical 70%
+  outOfSample: SplitStats;   // Performance in validation 30%
+  passed: boolean;           // True if OOS E[R] >= 0 or no trades
+  status: 'PASS' | 'FAIL' | 'NO_OOS_TRADES';
 }
 
 export function createEmptyDirectionalStats(): DirectionalStats {
@@ -88,6 +108,106 @@ export function createEmptyRegimeStats(): RegimeStats {
   return {
     trending: { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0 },
     ranging:  { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0 },
+  };
+}
+
+export function createEmptySplitStats(): SplitStats {
+  return { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0, profitFactor: null, maxDrawdownR: 0 };
+}
+
+export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: number = 0): WalkForwardResult {
+  return {
+    isWindow,
+    oosWindow,
+    inSample: createEmptySplitStats(),
+    outOfSample: createEmptySplitStats(),
+    passed: true,
+    status: 'NO_OOS_TRADES',
+  };
+}
+
+function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
+  if (trades.length === 0) return createEmptySplitStats();
+
+  let wins = 0;
+  let losses = 0;
+  let totalGainPct = 0;
+  let totalLossPct = 0;
+  let totalR = 0;
+  let cumR = 0;
+  let peakR = 0;
+  let maxDrawdownR = 0;
+
+  for (const trade of trades) {
+    totalR += trade.realizedR;
+    cumR += trade.realizedR;
+    if (cumR > peakR) peakR = cumR;
+    const dd = peakR - cumR;
+    if (dd > maxDrawdownR) maxDrawdownR = dd;
+
+    if (trade.pnlPct > 0) {
+      wins++;
+      totalGainPct += trade.pnlPct;
+    } else if (trade.pnlPct < 0) {
+      losses++;
+      totalLossPct += Math.abs(trade.pnlPct);
+    }
+  }
+
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? Number((wins / resolved).toFixed(2)) : 0;
+  const expectancyR = trades.length > 0 ? Number((totalR / trades.length).toFixed(3)) : 0;
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? null : 1.0);
+
+  return {
+    signals: trades.length,
+    wins,
+    losses,
+    winRate,
+    expectancyR,
+    profitFactor,
+    maxDrawdownR: Number(maxDrawdownR.toFixed(2)),
+  };
+}
+
+export function calculateWalkForward(
+  trades: RecordedTrade[],
+  oldestIdx: number,
+  latestIdx: number,
+  splitRatio: number = 0.70
+): WalkForwardResult {
+  const totalCandles = Math.max(1, latestIdx - oldestIdx + 1);
+  const isWindow = Math.round(totalCandles * splitRatio);
+  const oosWindow = Math.max(0, totalCandles - isWindow);
+  const splitIdx = oldestIdx + isWindow;
+
+  const isTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx < splitIdx);
+  const oosTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx >= splitIdx);
+
+  const inSample = calculateSplitStats(isTrades);
+  const outOfSample = calculateSplitStats(oosTrades);
+
+  let passed = true;
+  let status: 'PASS' | 'FAIL' | 'NO_OOS_TRADES' = 'NO_OOS_TRADES';
+
+  if (oosTrades.length === 0) {
+    status = 'NO_OOS_TRADES';
+    passed = true;
+  } else if (outOfSample.expectancyR >= 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor >= 1.0) || (outOfSample.profitFactor === null && outOfSample.wins > 0)) {
+    status = 'PASS';
+    passed = true;
+  } else {
+    status = 'FAIL';
+    passed = false;
+  }
+
+  return {
+    isWindow,
+    oosWindow,
+    inSample,
+    outOfSample,
+    passed,
+    status,
   };
 }
 
@@ -273,6 +393,7 @@ export function createFallbackBacktestResult(
     longStats: createEmptyDirectionalStats(),
     shortStats: createEmptyDirectionalStats(),
     regimeStats: createEmptyRegimeStats(),
+    walkForward: createEmptyWalkForwardResult(),
     neutrals: 0,
     discards: createEmptyDiscards(),
     label,
@@ -303,6 +424,7 @@ export interface BacktestResult {
   longStats: DirectionalStats;  // statistics for BUY (Long) signals
   shortStats: DirectionalStats; // statistics for SELL (Short) signals
   regimeStats: RegimeStats;     // statistics by regime (ADX > 25 vs ADX <= 25)
+  walkForward?: WalkForwardResult; // In-Sample (70%) vs Out-of-Sample (30%) validation
   neutrals: number;             // skipped NEUTRAL candles (sum of all discards)
   discards: DiscardBreakdown;   // Granular discard breakdown for diagnostics
   label: string;                // e.g. "últimas 150 velas"
@@ -560,6 +682,7 @@ export function backtestMultitemporal(
     longStats: createEmptyDirectionalStats(),
     shortStats: createEmptyDirectionalStats(),
     regimeStats: createEmptyRegimeStats(),
+    walkForward: createEmptyWalkForwardResult(),
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `datos insuficientes`,
@@ -1194,7 +1317,8 @@ export function backtestMultitemporal(
       realizedR: sim.realizedR,
       pnlPct: sim.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
-      outcome: sim.outcome
+      outcome: sim.outcome,
+      entryIdx: i,
     });
 
     if (sim.pnlPct > 0) {
@@ -1225,6 +1349,7 @@ export function backtestMultitemporal(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
 
   const res: BacktestResult = {
     totalSignals,
@@ -1240,6 +1365,7 @@ export function backtestMultitemporal(
     avgExposureHours,
     avgDurationCandles,
     ...riskMetrics,
+    walkForward,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
@@ -1282,6 +1408,7 @@ function runBacktestGenericOptimized(
       longStats: createEmptyDirectionalStats(),
       shortStats: createEmptyDirectionalStats(),
       regimeStats: createEmptyRegimeStats(),
+      walkForward: createEmptyWalkForwardResult(),
       neutrals: 0,
       discards: createEmptyDiscards(),
       label: `datos insuficientes (${klines.length} velas)`,
@@ -1356,7 +1483,8 @@ function runBacktestGenericOptimized(
       realizedR: outcome.realizedR,
       pnlPct: outcome.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
-      outcome: outcome.result
+      outcome: outcome.result,
+      entryIdx: i,
     });
 
     if (outcome.pnlPct > 0) {
@@ -1388,6 +1516,7 @@ function runBacktestGenericOptimized(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
 
   return {
     totalSignals,
@@ -1403,6 +1532,7 @@ function runBacktestGenericOptimized(
     avgExposureHours,
     avgDurationCandles,
     ...riskMetrics,
+    walkForward,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas`,
@@ -1813,6 +1943,7 @@ export function backtestMultifractalMTF(
     longStats: createEmptyDirectionalStats(),
     shortStats: createEmptyDirectionalStats(),
     regimeStats: createEmptyRegimeStats(),
+    walkForward: createEmptyWalkForwardResult(),
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `últimas 576 velas (5m)`,
@@ -1987,7 +2118,8 @@ export function backtestMultifractalMTF(
       realizedR: sim.realizedR,
       pnlPct: sim.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
-      outcome: sim.outcome
+      outcome: sim.outcome,
+      entryIdx: i,
     });
 
     if (sim.pnlPct > 0) {
@@ -2012,6 +2144,7 @@ export function backtestMultifractalMTF(
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
 
   const res: BacktestResult = {
     totalSignals,
@@ -2027,6 +2160,7 @@ export function backtestMultifractalMTF(
     avgExposureHours,
     avgDurationCandles,
     ...riskMetrics,
+    walkForward,
     neutrals,
     discards,
     label: `últimas ${evalWindow} velas (5m)`,

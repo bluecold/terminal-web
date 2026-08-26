@@ -7,6 +7,7 @@ import {
   computeConfluenciaSignalsSeries,
   computeScoringSignalsSeries,
   calculateRiskMetrics,
+  calculateWalkForward,
   type RecordedTrade
 } from '../backtester';
 import {
@@ -1547,6 +1548,125 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourney.bestStrategy, 'standard', 'Smooth low-drawdown candidate must beat identical expectancy with 7R drawdown');
     assert.ok(tourney.reasoning.includes('MDD 1.5R'), 'Reasoning must display MDD');
     assert.ok(tourney.reasoning.includes('Sortino 2.2'), 'Reasoning must display Sortino');
+  });
+
+  // Test 58: calculateWalkForward deterministic partitioning and status evaluation
+  test('calculateWalkForward divides trades into 70% In-Sample and 30% Out-of-Sample with rigorous PASS/FAIL status', () => {
+    const oldestIdx = 0;
+    const latestIdx = 99; // 100 candles total -> IS: 70 candles (0..69), OOS: 30 candles (70..99)
+
+    // Scenario A: Positive OOS -> PASS
+    const tradesPassing: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 50 },
+      { dir: 'BUY', realizedR: 1.2, pnlPct: 5.0, outcome: 'win', entryIdx: 85 } // OOS trade
+    ];
+    const wfPass = calculateWalkForward(tradesPassing, oldestIdx, latestIdx, 0.70);
+    assert.strictEqual(wfPass.isWindow, 70);
+    assert.strictEqual(wfPass.oosWindow, 30);
+    assert.strictEqual(wfPass.inSample.signals, 2);
+    assert.strictEqual(wfPass.outOfSample.signals, 1);
+    assert.strictEqual(wfPass.outOfSample.expectancyR, 1.2);
+    assert.strictEqual(wfPass.status, 'PASS');
+    assert.strictEqual(wfPass.passed, true);
+
+    // Scenario B: Negative OOS -> FAIL
+    const tradesFailing: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 2.0, pnlPct: 8.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 75 }, // OOS trade
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 90 } // OOS trade
+    ];
+    const wfFail = calculateWalkForward(tradesFailing, oldestIdx, latestIdx, 0.70);
+    assert.strictEqual(wfFail.inSample.signals, 1);
+    assert.strictEqual(wfFail.outOfSample.signals, 2);
+    assert.strictEqual(wfFail.outOfSample.wins, 0);
+    assert.strictEqual(wfFail.outOfSample.losses, 2);
+    assert.strictEqual(wfFail.outOfSample.expectancyR, -1.0);
+    assert.strictEqual(wfFail.status, 'FAIL');
+    assert.strictEqual(wfFail.passed, false);
+
+    // Scenario C: No trades in OOS -> NO_OOS_TRADES
+    const tradesNoOOS: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 15 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 40 }
+    ];
+    const wfNoOOS = calculateWalkForward(tradesNoOOS, oldestIdx, latestIdx, 0.70);
+    assert.strictEqual(wfNoOOS.inSample.signals, 2);
+    assert.strictEqual(wfNoOOS.outOfSample.signals, 0);
+    assert.strictEqual(wfNoOOS.status, 'NO_OOS_TRADES');
+    assert.strictEqual(wfNoOOS.passed, true);
+  });
+
+  // Test 59: Live Backtest Engine Walk-Forward Output
+  test('all backtest engines calculate valid walkForward result partitioning', () => {
+    const klines = generateSyntheticKlines(600, 300, 100, 0.05);
+    const stdResult = backtestStandard(klines, '5m', 'TEST_WF_STD');
+
+    assert.ok(stdResult.walkForward !== undefined);
+    assert.ok(stdResult.walkForward.isWindow > 0);
+    assert.ok(stdResult.walkForward.oosWindow > 0);
+    assert.strictEqual(
+      stdResult.walkForward.inSample.signals + stdResult.walkForward.outOfSample.signals,
+      stdResult.totalSignals
+    );
+    assert.ok(['PASS', 'FAIL', 'NO_OOS_TRADES'].includes(stdResult.walkForward.status));
+  });
+
+  // Test 60: Strategy Tournament Walk-Forward Out-of-Sample Disqualification
+  test('evaluateStrategyTournament disqualifies candidates with failed OOS from HIGH confidence', () => {
+    const candidateDegradedOOS: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Degraded Recent Regime',
+      profitFactor: 2.2,
+      expectancyR: 0.60,
+      expectancyPerHour: 1.2,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 16,
+      maxDrawdownR: 2.0,
+      sortinoRatio: 1.8,
+      forwardWindow: 6,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 13, wins: 10, losses: 3, winRate: 0.77, expectancyR: 0.85, profitFactor: 3.2, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 3, wins: 0, losses: 3, winRate: 0, expectancyR: -1.0, profitFactor: 0, maxDrawdownR: 3.0 },
+        passed: false,
+        status: 'FAIL'
+      }
+    };
+
+    const candidateRobustOOS: StrategyCandidate = {
+      key: 'standard',
+      label: 'Robust Ongoing Regime',
+      profitFactor: 1.7,
+      expectancyR: 0.45,
+      expectancyPerHour: 0.9,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 14,
+      maxDrawdownR: 1.5,
+      sortinoRatio: 1.5,
+      forwardWindow: 6,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 10, wins: 6, losses: 4, winRate: 0.60, expectancyR: 0.40, profitFactor: 1.5, maxDrawdownR: 1.5 },
+        outOfSample: { signals: 4, wins: 3, losses: 1, winRate: 0.75, expectancyR: 0.55, profitFactor: 2.5, maxDrawdownR: 1.0 },
+        passed: true,
+        status: 'PASS'
+      }
+    };
+
+    const tourney = evaluateStrategyTournament([candidateDegradedOOS, candidateRobustOOS], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'standard', 'Candidate passing OOS must beat higher-historical-PF candidate that failed OOS');
+    assert.strictEqual(tourney.confidence, 'HIGH');
+    assert.ok(tourney.reasoning.includes('WF OOS +0.55R'), 'Reasoning must display OOS performance');
+
+    // Also test what happens if ONLY the degraded candidate is evaluated
+    const soloDegraded = evaluateStrategyTournament([candidateDegradedOOS], '5m');
+    assert.strictEqual(soloDegraded.confidence, 'LIMITED', 'Failed OOS candidate must NEVER be awarded HIGH confidence');
+    assert.ok(soloDegraded.reasoning.includes('WF OOS falló'));
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

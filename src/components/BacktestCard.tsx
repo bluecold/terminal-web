@@ -40,6 +40,7 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
   const longStats         = result?.longStats;
   const shortStats        = result?.shortStats;
   const regimeStats       = result?.regimeStats;
+  const walkForward       = result?.walkForward;
   const barColor          = getColor(winRate, resolved);
   const barPct            = Math.round(winRate * 100);
   const rating            = getRatingLabel(pf, resolved);
@@ -219,6 +220,49 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
                       ⚡ ADX&gt;25: <span style={{ color: regimeStats.trending.expectancyR > 0 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '600' }}>{regimeStats.trending.expectancyR > 0 ? '+' : ''}{regimeStats.trending.expectancyR.toFixed(2)}R</span>
                     </span>
                   )}
+                </div>
+              )}
+
+              {/* Walk-Forward Validation Badge */}
+              {walkForward && (
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '0.60rem',
+                  fontFamily: 'var(--font-mono)',
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  background: walkForward.status === 'PASS'
+                    ? 'rgba(16, 185, 129, 0.08)'
+                    : walkForward.status === 'FAIL'
+                    ? 'rgba(244, 63, 94, 0.08)'
+                    : 'rgba(255, 255, 255, 0.02)',
+                  border: `1px solid ${
+                    walkForward.status === 'PASS'
+                      ? 'rgba(16, 185, 129, 0.2)'
+                      : walkForward.status === 'FAIL'
+                      ? 'rgba(244, 63, 94, 0.2)'
+                      : 'rgba(255, 255, 255, 0.05)'
+                  }`,
+                }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    Walk-Forward (70/30):
+                  </span>
+                  <span style={{
+                    fontWeight: '700',
+                    color: walkForward.status === 'PASS'
+                      ? 'var(--accent-green)'
+                      : walkForward.status === 'FAIL'
+                      ? 'var(--accent-red)'
+                      : 'var(--text-muted)'
+                  }} title={`In-Sample (70%): ${walkForward.inSample.signals} trades (E[R] ${walkForward.inSample.expectancyR > 0 ? '+' : ''}${walkForward.inSample.expectancyR.toFixed(2)}R) · Out-of-Sample (30%): ${walkForward.outOfSample.signals} trades (E[R] ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R)`}>
+                    {walkForward.status === 'PASS'
+                      ? `✓ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
+                      : walkForward.status === 'FAIL'
+                      ? `✗ OOS ${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
+                      : '~ Sin trades OOS'}
+                  </span>
                 </div>
               )}
             </>

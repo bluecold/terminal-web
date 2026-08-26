@@ -1,4 +1,4 @@
-import type { DirectionalStats, RegimeStats } from './backtester';
+import type { DirectionalStats, RegimeStats, WalkForwardResult } from './backtester';
 
 export type ConfidenceLevel = 'HIGH' | 'LIMITED' | 'NONE';
 
@@ -20,6 +20,7 @@ export interface StrategyCandidate {
   longStats?: DirectionalStats;
   shortStats?: DirectionalStats;
   regimeStats?: RegimeStats;
+  walkForward?: WalkForwardResult;
 }
 
 export interface TournamentResult {
@@ -32,17 +33,18 @@ export interface TournamentResult {
   expectancyPerHour: number;
   maxDrawdownR?: number;
   sortinoRatio?: number | null;
+  walkForward?: WalkForwardResult;
   reasoning: string;
 }
 
 /**
- * Evaluates candidates using an R-multiple, capital exposure and downside risk-adjusted model:
+ * Evaluates candidates using an R-multiple, capital exposure, downside risk and Walk-Forward validated model:
  * - Normalizes performance by R per trade (E[R]) and velocity (R per hour of exposure)
  * - Penalizes excessive drawdowns (MDD > 3.0R) and boosts high Sortino ratio systems
+ * - Enforces Walk-Forward validation: requires In-Sample (70%) and Out-of-Sample (30%) consistency (WF != FAIL for HIGH confidence)
  * - Treats zero-loss samples (PF = null / undefined / 99.9) as undefined (PF N/D), preventing single-trade singularities
  * - Applies a sample-size sigmoid penalty curve to balance statistical significance
- * - Requires minimum resolved trades and positive E[R] for HIGH confidence
- * - Selects the most capital-efficient and risk-adjusted robust strategy
+ * - Selects the most capital-efficient, risk-adjusted and out-of-sample robust strategy
  */
 export function evaluateStrategyTournament(
   candidates: StrategyCandidate[],
@@ -90,7 +92,7 @@ export function evaluateStrategyTournament(
     return { expR, exposureHours, expPerHour };
   };
 
-  // Helper to calculate composite score normalized by R, velocity, and downside risk
+  // Helper to calculate composite score normalized by R, velocity, downside risk and Walk-Forward
   const calcScore = (c: StrategyCandidate): number => {
     const { expR, expPerHour } = getMetrics(c);
 
@@ -133,16 +135,30 @@ export function evaluateStrategyTournament(
       sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
     }
 
-    const baseScore = ((expRScore * 0.35) + (velocityScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier;
+    // Walk-Forward Out-of-Sample adjustment
+    let wfMultiplier = 1.0;
+    if (c.walkForward) {
+      if (c.walkForward.status === 'PASS') {
+        const oosExpR = c.walkForward.outOfSample.expectancyR;
+        wfMultiplier = 1.0 + Math.min(0.15, Math.max(0, oosExpR) * 0.10);
+      } else if (c.walkForward.status === 'FAIL') {
+        wfMultiplier = 0.55; // Strict penalty for failing recent 30% validation
+      } else if (c.walkForward.status === 'NO_OOS_TRADES') {
+        wfMultiplier = 0.95; // Minor uncertainty penalty
+      }
+    }
+
+    const baseScore = ((expRScore * 0.35) + (velocityScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier * wfMultiplier;
     return baseScore * sampleConfidence;
   };
 
-  // 1. Check for HIGH confidence candidates (meets minHighResolved, E[R] > 0, and PF >= 1.15 or null with large N)
+  // 1. Check for HIGH confidence candidates (meets minHighResolved, E[R] > 0, PF >= 1.15 or null with large N, AND WF != FAIL)
   const highCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
       const pfOk = c.profitFactor === null ? c.resolved >= minHighResolved : c.profitFactor >= 1.15;
-      return c.resolved >= minHighResolved && pfOk && expR > 0;
+      const wfOk = !c.walkForward || c.walkForward.status !== 'FAIL';
+      return c.resolved >= minHighResolved && pfOk && expR > 0 && wfOk;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
@@ -160,6 +176,9 @@ export function evaluateStrategyTournament(
     const sortinoInfo = winner.sortinoRatio !== null && winner.sortinoRatio !== undefined
       ? `, Sortino ${winner.sortinoRatio.toFixed(1)}`
       : '';
+    const wfInfo = winner.walkForward && winner.walkForward.status === 'PASS' && winner.walkForward.outOfSample.signals > 0
+      ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R`
+      : '';
 
     return {
       bestStrategy: winner.key,
@@ -171,7 +190,8 @@ export function evaluateStrategyTournament(
       expectancyPerHour: Number(expPerHour.toFixed(3)),
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
-      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}, ${winner.resolved} trades)`,
+      walkForward: winner.walkForward,
+      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades)`,
     };
   }
 
@@ -194,6 +214,7 @@ export function evaluateStrategyTournament(
     const pfStr = winner.profitFactor !== null && Number.isFinite(winner.profitFactor) && winner.profitFactor < 99.0
       ? `PF ${winner.profitFactor.toFixed(2)}`
       : 'PF N/D';
+    const wfFailNote = winner.walkForward?.status === 'FAIL' ? ' · WF OOS falló' : '';
 
     return {
       bestStrategy: winner.key,
@@ -205,7 +226,8 @@ export function evaluateStrategyTournament(
       expectancyPerHour: Number(expPerHour.toFixed(3)),
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
-      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr})`,
+      walkForward: winner.walkForward,
+      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfFailNote})`,
     };
   }
 
@@ -231,6 +253,7 @@ export function evaluateStrategyTournament(
     expectancyPerHour: Number(expPerHour.toFixed(3)),
     maxDrawdownR: fallback.maxDrawdownR,
     sortinoRatio: fallback.sortinoRatio,
+    walkForward: fallback.walkForward,
     reasoning: `${fallback.label} (${pfStr}, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R)`,
   };
 }
