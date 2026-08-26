@@ -167,7 +167,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia y paridad cuantitativa · v2026.08.26.1
+              Motor de señales técnicas multiestrategia y paridad cuantitativa · v2026.08.26.2
             </div>
           </div>
           <button
@@ -194,15 +194,15 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           <section>
             <SectionTitle>¿Qué es FinceptTerminal?</SectionTitle>
             <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: '1.7', marginBottom: '14px' }}>
-              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real enfocada en operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> — intradía y swing de hasta una semana. Analiza activos de alta volatilidad (criptomonedas y acciones de EEUU) mediante cinco motores de señales independientes con paridad 1:1 entre simulación histórica y seguimiento en vivo, seleccionando dinámicamente el motor con mayor ventaja estadística comprobada mediante el torneo QVE.
+              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real enfocada en operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> — intradía y swing de hasta una semana. Analiza activos de alta volatilidad (criptomonedas y acciones de EEUU) mediante cinco motores de señales independientes con un simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional ($MDD_R$, Sortino en R, racha de pérdidas, desglose ADX), validación Walk-Forward (70/30) y selección por ventaja estadística normalizada en R.
             </p>
 
             {/* Key concepts grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
                 { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de la watchlist y presets con confluencias 3/3, compresión BB y RVOL.' },
-                { icon: '🏆', title: 'Torneo QVE', text: '5 motores compiten por Profit Factor con fingerprinting multitemporal sensible a revisiones OHLCV.' },
-                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Ejecución 3-tier (50/25/25%), Time-Stops a 8 velas (40m), invalidación temprana y R ponderado real.' },
+                { icon: '🏆', title: 'Torneo Walk-Forward', text: '5 motores compiten por E[R], velocidad R/h, Sortino y validación ciega OOS (70/30).' },
+                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit y fricción contable.' },
                 { icon: '🎯', title: 'Audit Tracker & Chart', text: 'Seguimiento causal sin repintado en velas vivas, líneas visuales en TradingView y cero alertas fantasma.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>
@@ -220,9 +220,9 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {[
                 { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado.' },
-                { icon: '🔍', color: 'var(--accent-blue)', text: 'Un Profit Factor ≥ 1.3 en backtesting es el umbral mínimo para que una estrategia sea elegida como líder. Por debajo de ese valor, el sistema cae a un fallback escalonado.' },
-                { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. Las condiciones de mercado cambian. Usá siempre stop loss.' },
-                { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME v2.0 y Multifractal MTF son las más exigentes en confluencia. VCME v2.0 exige un Confidence Score ≥ 65% (0.65) para disparar. Es normal que transcurran horas sin señal — esto es protección por diseño.' },
+                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 3.0R) y validación Walk-Forward (70/30). Las estrategias que fallan en el tramo reciente (OOS) no pueden ganar con confianza ALTA.' },
+                { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. El sistema evalúa métricas de riesgo avanzadas (Max Drawdown en R, racha de pérdidas y Sortino) para mitigar el sesgo de supervivencia.' },
+                { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME v2.0 y Multifractal MTF son las más exigentes en confluencia. VCME v2.0 exige un Confidence Score ≥ 65% (0.65) con campana óptima a 0.5 ATR para disparar. Es normal que transcurran horas sin señal — esto es protección por diseño.' },
                 { icon: '📰', color: 'var(--accent-blue)', text: 'Revisá siempre el Calendario de Catalizadores antes de entrar. Una señal técnica perfecta puede fallar si hay un reporte de ganancias o decisión de la Fed en las próximas 48 horas.' },
                 { icon: '💰', color: 'var(--accent-yellow)', text: 'Usá la Calculadora de Position Sizing (VCME v2.0). El sistema calcula las unidades exactas sugiriendo un riesgo del 1% de capital y límite de concentración del 20%.' },
               ].map((item, i) => (
@@ -319,7 +319,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   'CAPA 1 (1D Bias): Cierre > EMA 200, EMA 50 > EMA 200, ADX > 20 y +DI > -DI (para LONG)',
                   'CAPA 2 (1H Contexto & Régimen): Cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50-70, MACD Hist en expansión positiva + filtro de pendiente de la EMA 200 1H (> 0.0005)',
                   'CAPA 3 (Gatillo 5m): Asimétrico. LONG exige RVOL ≥ 1.5x y cierre en el 40% superior. SHORT exige RVOL ≥ 1.8x y cierre en el 40% inferior (evita short squeezes)',
-                  'Score de Confianza Continuo [0.0–1.0]: Pondera RVOL (30%), Bias 1D (25%), MACD 1H (20%), Distancia a EMA21 (15%) y VWAP (10%). Umbral mínimo de activación: 65% (0.65)',
+                  'Score de Confianza Continuo [0.0–1.0]: Pondera RVOL (30%), Bias 1D (25%), MACD 1H (20%), Distancia a EMA21 con campana óptima a 0.5 ATR (15%) y VWAP (10%). Umbral mínimo de activación: 65% (0.65)',
                   'Clasificación DAY vs SWING: Clasifica según ADX 1H > 30. Trades DAY incluyen time-stop de 40 min; trades SWING ejecutan trailing stop continuo en 1H',
                   'Gestión de Riesgo Asimétrica: SL de 1.5 ATR (LONG) y 1.8 ATR (SHORT). Trailing TP2 guiado por el Chandelier Exit (22, 3.0) en 1H',
                   'Position Sizing Automático: Calcula las unidades exactas a operar basándose en el 1% de riesgo de capital y 20% máximo de concentración',

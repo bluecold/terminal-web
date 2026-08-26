@@ -246,6 +246,27 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Regularización Bayesiana Laplace para Profit Factor en $0$ pérdidas, eliminando el artefacto $PF = 99.9 \to 5.0$ en $N=1$.
     - Capping muestral de PF ($\text{Max PF} = \min(5.0, 1.0 + N \times 0.5)$) y unificación de denominadores con `totalSignals`.
 
+- **Actualización v2026.08.26.2 — Unified Execution Simulator, Risk Metrics, Walk-Forward Validation & Anti-Chasing Refinement**:
+  - **Simulador de Ejecución Centralizado (`simulateTrade`)**:
+    - Extracción de la lógica unificada en `src/utils/backtester.ts` consumida por los 5 backtests y sincronizada con `alertTracker.ts`.
+    - Soporte completo de salidas 3-tier en VCME (50% TP1, 25% TP2, 25% TP3), invalidación temprana en Multifractal MTF, Time-Stops a 8 velas (40 min en 5m), Emergency Exit (pérdida de VWAP + EMA21), Chandelier Trailing Stop y fricción/slippage contable ($0.08\%$).
+  - **Normalización por R y Velocidad de Exposición**:
+    - Sustitución de comparaciones porcentuales brutas por retorno esperado en múltiplos R ($E[R]$) y velocidad por hora de exposición ($E[R]/\text{h} = \frac{E[R]}{\text{avgExposureHours}}$).
+    - Tratamiento de muestras sin pérdidas ($PF = \text{null} / 99.9$) como desconocidas/indeterminadas (`PF N/D`), eliminando singularidades estadísticas en muestras pequeñas ($N=1$).
+  - **Métricas de Riesgo Institucionales en Backtest y UI**:
+    - Cálculo de Max Drawdown en R ($MDD_R$), Racha Máxima de Pérdidas ($L_{\text{streak}}$) y Ratio Sortino sobre la serie de retornos $R$.
+    - Desglose direccional Long vs Short ($\Delta$ WinRate y $E[R]$) y desglose por régimen tendencial ($ADX > 25$ vs $ADX \le 25$).
+    - Penalización cuadrática en el Torneo ante drawdowns severos ($MDD_R > 3.0R$) y bonificación por consistencia Sortino positiva.
+  - **Validación Walk-Forward (70% In-Sample / 30% Out-of-Sample)**:
+    - Partición sistemática de la ventana histórica (ej. 400 velas IS / 176 velas OOS en 5m $\approx$ 14.6 h ciegas).
+    - Clasificación rigurosa en `PASS` ($E[R]_{\text{OOS}} \ge 0$), `FAIL` ($E[R]_{\text{OOS}} < 0$) o `NO_OOS_TRADES`.
+    - Descalificación estricta de la categoría de confianza `HIGH` para cualquier estrategia con `FAIL` en el tramo reciente, previniendo el sobreajuste (*overfitting*) en la selección de estrategias.
+  - **Corrección de `distScore` en VCME (Campana Óptima a 0.5 ATR)**:
+    - Corrección de la inversión matemática en `indicators.ts` y `backtester.ts` donde la distancia a la EMA21 premiaba el *chasing* sobreextendido.
+    - Implementación de la campana triangular: $\text{distScore} = 0.15 \cdot \max(0, 1.0 - |\text{distRatio} - 0.5| / 1.0)$, premiando el rebote confirmado ($0.5\text{ ATR}$) y penalizando con $0.0$ la sobreextensión $> 1.5\text{ ATR}$.
+  - **Suite de Pruebas Unitarias**:
+    - Expansión a 61 tests unitarios automatizados (`npm test`) con cobertura total de métricas de riesgo, partición Walk-Forward y calibración `distScore`.
+
 ---
 
 ## 📌 Guía de Arquitectura para la Fase 2 (Proxy de Infraestructura Futuro)
@@ -272,9 +293,9 @@ En caso de requerir independencia total del plan gratuito de Vercel (1.000.000 E
 
 - [x] **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria. (Completado v2026.08.21.1)
 - [x] **Radar / Screener Multi-Activo en Tiempo Real**: Escáner multiactivo con filtros de confluencia 3/3, Squeeze BB, RVOL y presets de mercado con 1-click chart navigation. (Completado v2026.08.21.1)
+- [x] **Costes, Métricas de Riesgo y Validación Walk-Forward**: Fricción contable unificada en `simulateTrade`, Max Drawdown en R, Sortino sobre R, streaks, desglose ADX y partición ciega 70/30 en Torneo. (Completado v2026.08.26.2)
 - [ ] **Alertas Push/Webhooks (Telegram / Discord)**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia o confirmación QVE.
 - [ ] **Overlays e Indicadores en Gráfico (VWAP / EMAs / S&R)**: Toggles interactivos en la cabecera para proyectar VWAP intradía, EMAs 20/50/200 y niveles estructurales de S/R sobre TradingView.
-- [ ] **Costes y validación robusta (Fricción Realista)**: Añadir comisiones, spread y slippage configurables; luego medir drawdown, Sharpe/Sortino y resultados por activo, dirección y régimen.
 - [ ] **Paper Trading / Diario de Operaciones**: Simulador de ejecución con 1 clic y seguimiento de órdenes abiertas/cerradas.
 - [ ] **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 

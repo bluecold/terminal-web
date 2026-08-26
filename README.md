@@ -16,12 +16,14 @@
   * **Mercados Tradicionales/Stocks:** Integración con Data Feeds de baja latencia para stocks, ETFs y futuros.
 * **Indicadores de Señal Activa en Watchlist:** Badges de neón 🟢 **`BUY`** o 🔴 **`SELL`** que aparecen dinámicamente al lado de los símbolos mientras su alerta permanezca en estado `OPEN` o `TP1_HIT`, desapareciendo automáticamente al cerrarse o expirar el trade.
 * **Notificaciones de Escritorio Enriquecidas con Niveles de Trading:** Notificaciones del sistema operativo que detallan directamente los puntos exactos de `Entry`, `SL`, `TP1` y `TP2` para que el trader pueda operar sin abrir la app.
-* **Motor QVE de Ventaja Estadística (QVE Engine):** Torneo cuantitativo centralizado (`tournament.ts`) que evalúa dinámicamente el rendimiento histórico de las 5 estrategias y selecciona automáticamente la estrategia líder con mayor ventaja matemática (`Profit Factor`, `Expectancy` y `WinRate`).
-* **Paridad Cuantitativa 1:1 (Simulación vs Live):** Sincronización milimétrica entre el motor de backtesting y el tracker en vivo. Soporta salidas 3-tier en VCME (50% TP1 @ 2R, 25% TP2 @ 3.5R, 25% TP3 @ 5R), Time-Stops a 8 velas (40m en 5m) si $PnL < 0.5R$, e invalidación temprana en Multifractal MTF ante giros adversos en las primeras 3 velas.
+* **Motor QVE de Ventaja Estadística & Torneo Walk-Forward:** Torneo cuantitativo centralizado (`tournament.ts`) que evalúa dinámicamente el rendimiento histórico de las 5 estrategias mediante normalización por R ($E[R]$), velocidad por hora de exposición ($E[R]/\text{h}$), penalización de drawdown ($MDD_R > 3.0R$), consistencia Sortino y validación ciega Walk-Forward (70/30).
+* **Simulador de Ejecución Unificado (`simulateTrade`):** Motor de cálculo compartido entre los 5 backtests y el tracker en vivo con paridad 1:1, soporte de salidas 3-tier en VCME (50% TP1 @ 1.5R/2.0R, 25% TP2, 25% TP3), Chandelier Trailing Exit, Time-Stops a 8 velas (40m en 5m), Emergency Exit por cruce VWAP/EMA21, invalidación temprana en Multifractal MTF y fricción contable realista ($0.08\%$).
+* **Métricas de Riesgo Institucionales:** Evaluación de Max Drawdown en R ($MDD_R$), Racha Máxima de Pérdidas ($L_{\text{streak}}$), Ratio Sortino sobre la serie de retornos en R, desglose direccional ($\Delta$ Long / Short) y desglose por régimen tendencial ($ADX > 25$ vs $ADX \le 25$).
+* **Validación Walk-Forward (70% In-Sample / 30% Out-of-Sample):** Partición automática de ventanas históricas (ej. 400 velas de selección / 176 velas de validación ciega en 5m). Descalificación estricta de la confianza `HIGH` ante degradación en la muestra reciente (`FAIL`).
 * **Caché Multi-Timeframe con Fingerprint Atómico OHLCV:** Huella compuesta $O(1)$ que evalúa la firma completa `(time, open, high, low, close, volume)` de $5m, 1h, 1d$, invalidando la caché al instante ante revisiones o fluctuaciones de precio intrabarra.
-* **Múltiplos R Ponderados Dinámicos:** Cálculo matemático exacto de $R$ en base a distancias reales de niveles (+0.75R / +1.0R en TP1_BE, +2.0R / +2.75R en TP2_HIT) reflejado de manera sincronizada en el panel de auditoría y en los labels de TradingView.
+* **Múltiplos R Ponderados Dinámicos:** Cálculo matemático exacto de $R$ en base a distancias reales de niveles (+0.75R / +1.0R en TP1_BE, +1.375R en TP2_HIT, runner flotante) reflejado de manera sincronizada en el panel de auditoría y en los labels de TradingView.
 * **Prevención Absoluta de Notificaciones Fantasma:** Pre-validación de trades abiertos antes del envío de alertas al sistema operativo, garantizando que el 100% de las notificaciones recibidas queden auditadas en la tabla de operaciones.
-* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 24 tests unitarios de integración continua que validan toda la cadena operativa de punta a punta.
+* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 61 tests unitarios de integración continua que validan toda la cadena operativa, cálculo matemático y motores de señal de punta a punta.
 
 ---
 
@@ -32,26 +34,26 @@ La aplicación cuenta con **5 estrategias principales** que analizan los datos e
 1. **Experimental Signal:** Evalúa cruces de medias móviles (EMA 9/20), niveles de VWAP diario y confirmaciones de volumen + acción del precio (patrones envolventes, martillos) para determinar entradas precisas.
 2. **Scoring Multicapa:** Un modelo avanzado de puntajes ponderados que evalúa tendencia, RSI, Bollinger (%B), volumen, vela y estructura S/R.
 3. **Standard Voting:** Agrupa diversas confirmaciones e integra la **EMA 200** como filtro principal. Cuenta con indicadores visuales de pendiente en RSI, y un filtro de desaceleración en el histograma del MACD para evitar falsas señales en momentum decreciente.
-4. **VCME v2.0 Quant Engine (Volatility-Contraction Momentum Expansion):** Estrategia cuantitativa institucional de 3 capas (1D/1H/5m) con asimetría LONG/SHORT, score de confianza continuo [0.0 - 1.0], trailing stop por Chandelier Exit de 1H y gestión de riesgo integrada:
+4. **VCME v2.0 Quant Engine (Volatility-Contraction Momentum Expansion):** Estrategia cuantitativa institucional de 3 capas (1D/1H/5m) con asimetría LONG/SHORT, score de confianza continuo [0.0 - 1.0] con campana óptima a 0.5 ATR anti-chasing, trailing stop por Chandelier Exit de 1H y gestión de riesgo integrada:
     - **Perfiles de Ejecución**:
-      - *Day Trading (Intradía)*: Gatillo en 5m, ventana de evaluación corta (576 velas de 5m), Stop Loss ajustado por ATR/estructura local (0.8 ATR a 1.8 ATR) y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
-      - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
+      - *Day Trading (Intradía)*: Gatillo en 5m, ventana de evaluación (576 velas de 5m), Stop Loss ajustado por ATR/estructura local (0.8 ATR a 1.8 ATR) y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
+      - *Swing Trading*: Gatillo en 1H, ventana de evaluación (168 velas de 1H), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
     - **Modos de Gatillo**:
       - *Agresivo (Ruptura)*: Disparo inmediato al cumplir las condiciones de confluencia y geometría de la vela de gatillo (`closePosition >= 0.60`, mecha superior `<= 0.25`).
       - *Conservador (Retest)*: Busca confirmación mediante retest de los niveles de ruptura (retroceso de hasta 6 velas con expiración) para asegurar que el rompimiento es verídico en mercados de alta volatilidad.
     - **Volumen Estacional (U-Shape)**: Implementación de RVOL estacional diario que compara el volumen actual con el promedio de la misma franja de hora y minuto UTC de los últimos 20 días para mayor precisión técnica.
-    - **Clasificación de Confianza**: Gradúa las señales en `ALTA`, `MODERADA` o `DESCARTAR` (que neutraliza la señal) según el puntaje de confluencia y el nivel de volatilidad relativo.
+    - **Clasificación de Confianza**: Gradúa las señales en `ALTA`, `MODERADA` o `DESCARTAR` (que neutraliza la señal) según el puntaje de confluencia continuo ($\ge 0.65$) y campana de distancia a EMA21.
     - **1D (Bias/Dirección):** Exige precio por encima de la EMA 200 diaria, la EMA 50 diaria por encima de la EMA 200 diaria, ADX diario > 20 con el +DI diario por encima del -DI diario, y distancia a la EMA 200 `> 0.3 * ATR 1D` para LONG.
     - **1H (Setup):** Estructura stateless que busca un setup técnico alineado en las últimas 3 horas (cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50 y 70, y el histograma del MACD en expansión positiva) sin invalidaciones intermedias.
     - **Gatillo/Ejecución**: Ofrece tres estrategias de entrada (Pullback, Breakout, Mean Reversion) aplicadas al timeframe del perfil seleccionado (5m o 1H).
     - **Geometría de Vela e Invalidation:**
-      - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2.2 * ATR del VWAP.
+      - *Anti-Chasing*: Rechazo de entrada si el precio dista más de 2.2 * ATR del VWAP y penalización de `distScore` si dista $> 1.5 * ATR$ de la EMA21.
       - *Geometría Cuantitativa*: Cierre en el 40% superior de la vela (`closePosition >= 0.60`) y mecha adversa `<= 0.25` (evitando martillos invertidos / dojis).
       - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
       - *Límite de Riesgo ATR*: Stop Loss acotado dinámicamente entre `0.8 * ATR` y `1.8 * ATR` (máx. 1.2% Intradía o 3.5% Swing).
     - **Gestión de Riesgo y Salidas Complejas:**
       - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
-      - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
+      - **Time Stop:** Cierre de la posición si tras 8 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
       - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
 5. **Multifractal MTF Engine (Signal 5):** Motor de alertas multifractal con arquitectura de compuertas lógicas secuenciales 1D → 1H → 5M y 4 sub-indicadores dedicados:
     - **Capa 1 — Sesgo Macro (1D Andian Oscillator):** Descompone velas diarias en fuerza alcista (GREEN) y bajista (RED), suavizadas con EMA y normalizadas contra el rango promedio. Determina BULLISH o BEARISH. Solo permite operar en la dirección del sesgo.
@@ -60,7 +62,7 @@ La aplicación cuenta con **5 estrategias principales** que analizan los datos e
     - **Estrategias de Entrada:**
       - *⚡ Ruptura con Expansión:* Cierre rompe banda + volumen institucional + dominancia activa ≥ 65%. Requiere las 3 capas alineadas.
       - *🔄 Reversión a la Media:* Divergencia en Dread Blitz + absorción pasiva en mechas.
-    - **Gestión de Riesgo:** Stop Loss dinámico en midpoint de banda (Ruptura) o bajo mecha de absorción (Reversión). Invalidación automática en 3 velas. Filtro de apertura NYSE (09:30-09:45 EST).
+    - **Gestión de Riesgo:** Stop Loss dinámico en midpoint de banda (Ruptura) o bajo mecha de absorción (Reversión). Invalidación automática temprana ante retroceso adverso en 3 velas. Filtro de apertura NYSE (09:30-09:45 EST).
 
 ---
 
@@ -107,12 +109,14 @@ La aplicación cuenta con **5 estrategias principales** que analizan los datos e
 
 ## 📊 Motor de Backtesting (Simulación Histórica)
 
-FinceptTerminal cuenta con un motor de backtesting optimizado a $O(n)$ integrado directamente en el frontend, lo que permite evaluar la rentabilidad histórica de las estrategias casi instantáneamente sin necesidad de un backend pesado:
+FinceptTerminal cuenta con un motor de backtesting institucional optimizado a $O(n)$ integrado directamente en el frontend, lo que permite evaluar la rentabilidad histórica de las estrategias casi instantáneamente sin necesidad de un backend pesado:
 
+- **Simulador Unificado (`simulateTrade`):** Ejecución algorítmica compartida con `alertTracker` para garantizar cero discrepancias entre histórico y en vivo.
+- **Validación Walk-Forward (70/30):** Partición In-Sample / Out-of-Sample con control de sobreajuste y descalificación de estrategias degradadas en la muestra reciente.
+- **Métricas de Riesgo Avanzadas:** Max Drawdown en R ($MDD_R$), Racha Máxima de Pérdidas, Ratio Sortino de la serie R, desglose Long/Short y desglose por régimen ADX (>25 vs $\le 25$).
+- **Normalización por R y Tiempo de Exposición:** Reporte en $E[R]$ por trade y $E[R]$ por hora de capital en riesgo ($E[R]/\text{h}$).
 - **Umbrales Adaptativos (ATR):** El `Stop Loss` y `Take Profit` se calculan dinámicamente según la volatilidad real del activo (ATR), permitiendo comparar de forma justa criptomonedas (alta volatilidad) con acciones (baja volatilidad).
-- **Simulación Multifractal MTF:** Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M sobre las últimas 150 velas de 5m con cooldown de 12 velas para prevenir look-ahead bias, forward window de 1 hora, e invalidación temprana en 3 velas.
 - **Manejo de Sesiones (Gaps):** Detección automática de huecos de mercado para acciones de EEUU. Las señales intradiarias que cruzarían un gap overnight son descartadas.
-- **Métricas Avanzadas:** Calcula y expone métricas institucionales como **Profit Factor**, **Expectancy (Esperanza Matemática)**, y **Resolution Rate**, además del tradicional WinRate.
 - **Control de Cooldown:** Previene la distorsión estadística al ignorar señales duplicadas dentro de la ventana de vida de una operación activa.
 
 ---
@@ -121,6 +125,7 @@ FinceptTerminal cuenta con un motor de backtesting optimizado a $O(n)$ integrado
 
 - [x] **Deduplicación Persistente Atómica por Vela:** Registro persistente por estampa de tiempo de vela cerrada para prevenir duplicados. *(Completado v2026.08.21.1)*
 - [x] **Radar Multi-Activo / Screener en Tiempo Real:** Matriz cuantitativa en vivo con confluencias 3/3, Squeeze BB, RVOL y presets de mercado. *(Completado v2026.08.21.1)*
+- [x] **Validación Walk-Forward y Métricas de Riesgo Institucionales:** Drawdown en R, Sortino, streaks, desgloses ADX y partición ciega 70/30 en Torneo. *(Completado v2026.08.26.2)*
 - [ ] **Alertas Push/Webhooks (Telegram / Discord):** Notificaciones móviles automáticas ante señales de alta confluencia o confirmación QVE.
 - [ ] **Overlays e Indicadores en Gráfico (VWAP / EMAs / S&R):** Toggles visuales interactivos para ver medias y soporte/resistencia directamente en TradingView.
 - [ ] **Paper Trading & Diario de Operaciones:** Simulador de órdenes con 1 clic y seguimiento de rendimiento.
