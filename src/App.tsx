@@ -442,8 +442,8 @@ function App() {
             const btScore = backtestScoring(closedData, interval, undefined, symbol);
 
             btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-            if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
-              const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
+            const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
+            if (triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 

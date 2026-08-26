@@ -1055,6 +1055,18 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(mfCustom.triggerPrice, customExecPrice, 'Multifractal triggerPrice must strictly equal customExecPrice');
   });
 
+  // Test 38: VCME Swing Mode Window Reachability for Stocks (evalWindow = 168)
+  test('VCME Swing mode evaluates on stock datasets with ~300-440 1H candles (evalWindow = 168)', () => {
+    // 350 hourly candles (typical 2-month stock data or 440 3-month data)
+    const klines1h = generateSyntheticKlines(350, 3600, 150);
+    const klines1d = generateSyntheticKlines(60, 86400, 150);
+
+    const result = backtestMultitemporal(klines1h, klines1h, klines1d, '1h', 'AAPL', 'swing', 'agresivo');
+    assert.strictEqual(result.insufficient, false, 'VCME Swing must evaluate successfully with 350 1H candles');
+    assert.strictEqual(result.forwardLabel, '48 hs max (Swing)');
+    assert(result.label.includes('1h'), 'Label must indicate 1h candles');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

@@ -289,7 +289,7 @@ export function backtestMultitemporal(
   const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
   const tf = style === 'swing' ? '1h' : '5m';
-  const evalWindow = 576;
+  const evalWindow = style === 'swing' ? 168 : 576;
   const stepSec = klines5m.length > 1 ? (klines5m[1].time - klines5m[0].time) : (style === 'swing' ? 3600 : 300);
   const forwardWindow = style === 'swing'
     ? (stepSec === 300 ? 576 : 48)  // 576 x 5m = 48h OR 48 x 1h = 48h

@@ -85,7 +85,7 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
   return fetchWithDeduplication(cacheKey, KLINE_TTL_MS, async () => {
     try {
       // Convert interval to a valid range for Yahoo — wider ranges to support backtesting (300+ candles)
-      let range = '3mo';  // 1h default: ~2000 hourly candles, we use 300
+      let range = '730d'; // 1h default: up to 730 days (~3500 hourly candles for US stocks/crypto)
       if (interval === '1d') range = '2y';  // ~500 daily candles
       if (interval === '1wk') range = '5y';
       if (interval === '5m') range = '60d';
