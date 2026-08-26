@@ -939,6 +939,17 @@ export function backtestMultitemporal(
           break;
         }
 
+        // Target 1 (Limit order filled intra-candle)
+        if (!tp1Hit && k.high >= tp1) {
+          tp1Hit = true;
+          activeSL = entry;
+        }
+
+        // Target 2 (Limit order filled intra-candle)
+        if (tp1Hit && !tp2Hit && k.high >= tp2) {
+          tp2Hit = true;
+        }
+
         // Time Stop for DAY trades: 8 candles (40 min)
         if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
           const currentPnl = k.close - entry;
@@ -950,6 +961,7 @@ export function backtestMultitemporal(
           }
         }
 
+        // Emergency Exit (Evaluated at candle close)
         if (isLongEmergency) {
           const tp1P = tp1Hit ? 0.50 * ((tp1 - entry) / entry * 100) : 0;
           const tp2P = tp2Hit ? 0.25 * ((tp2 - entry) / entry * 100) : 0;
@@ -958,17 +970,6 @@ export function backtestMultitemporal(
           tradeOutcome = 'timeout';
           exitIdx = f;
           break;
-        }
-
-        // Target 1
-        if (!tp1Hit && k.high >= tp1) {
-          tp1Hit = true;
-          activeSL = entry;
-        }
-
-        // Target 2
-        if (tp1Hit && !tp2Hit && k.high >= tp2) {
-          tp2Hit = true;
         }
 
         // Target 3: Trailing exit with Chandelier (highestHigh - 2.5 * ATR) or EMA 9
@@ -1015,6 +1016,17 @@ export function backtestMultitemporal(
           break;
         }
 
+        // Target 1 (Limit order filled intra-candle)
+        if (!tp1Hit && k.low <= tp1) {
+          tp1Hit = true;
+          activeSL = entry;
+        }
+
+        // Target 2 (Limit order filled intra-candle)
+        if (tp1Hit && !tp2Hit && k.low <= tp2) {
+          tp2Hit = true;
+        }
+
         // Time Stop for DAY trades: 8 candles (40 min)
         if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
           const currentPnl = entry - k.close;
@@ -1026,6 +1038,7 @@ export function backtestMultitemporal(
           }
         }
 
+        // Emergency Exit (Evaluated at candle close)
         if (isShortEmergency) {
           const tp1P = tp1Hit ? 0.50 * ((entry - tp1) / entry * 100) : 0;
           const tp2P = tp2Hit ? 0.25 * ((entry - tp2) / entry * 100) : 0;
@@ -1034,15 +1047,6 @@ export function backtestMultitemporal(
           tradeOutcome = 'timeout';
           exitIdx = f;
           break;
-        }
-
-        if (!tp1Hit && k.low <= tp1) {
-          tp1Hit = true;
-          activeSL = entry;
-        }
-
-        if (tp1Hit && !tp2Hit && k.low <= tp2) {
-          tp2Hit = true;
         }
 
         if (tp2Hit) {

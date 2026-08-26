@@ -904,18 +904,29 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       candleTimestamp: alertCandleTime
     };
 
-    // Pre-load klines:
+    // Pre-load klines with baseline candles so ATR(14) converges to ~1.0:
+    const klines: Kline[] = [];
+    for (let i = 0; i < 20; i++) {
+      klines.push({
+        time: startTime - (20 - i) * 300,
+        open: 100,
+        high: 100.5,
+        low: 99.5,
+        close: 100,
+        volume: 1000
+      });
+    }
     // Candle 1: reaches 103.5 -> hits TP1 (status = TP1_HIT)
     // Candle 2: surges to 106.0 -> hits TP2 (status = TP2_HIT)
     // Candle 3: peaks at 108.0 (highestHigh = 108.0), ATR ~ 1.0 -> Chandelier SL = 108 - 2.5*1 = 105.5
-    // Candle 4: drops to close at 105.0 (below Chandelier 105.5) -> exits runner
-    const klines: Kline[] = [
+    // Candle 4: drops to close at 104.0 (below Chandelier ~104.2) -> exits runner
+    klines.push(
       { time: startTime, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
       { time: startTime + 300, open: 100, high: 103.5, low: 100, close: 103.2, volume: 1000 },
       { time: startTime + 600, open: 103.2, high: 106.0, low: 103.0, close: 105.5, volume: 1500 },
       { time: startTime + 900, open: 105.5, high: 108.0, low: 105.2, close: 107.5, volume: 2000 },
-      { time: startTime + 1200, open: 107.5, high: 107.5, low: 104.8, close: 105.0, volume: 2500 },
-    ];
+      { time: startTime + 1200, open: 107.5, high: 107.5, low: 103.8, close: 104.0, volume: 2500 },
+    );
 
     const evaluated = updateAlertsOutcome([alert], { 'ETHUSDT:5m': klines });
     assert.strictEqual(evaluated[0].status, 'TP2_CLOSED', 'Alert must be TP2_CLOSED on Chandelier exit');
@@ -1246,6 +1257,64 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const liveResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'SLOPE_TEST');
     assert(liveResult !== null, 'VCME sniper signal calculation must complete');
     assert(['BUY', 'SELL', 'NEUTRAL'].includes(liveResult.signal), 'Signal must be valid');
+  });
+
+  // Test 50: Intra-Candle TP1 Hit Preserved on Same-Candle Emergency Exit
+  test('Same-candle TP1 hit preserves 50% partial profit before candle-close Emergency Exit', () => {
+    const startTime = 1700000000;
+    const entryPrice = 100;
+    const stopLoss = 96;
+    const takeProfit1 = 106; // +6%
+    const takeProfit2 = 110;
+    
+    // Generate 30 pre-candles at price 100 (VWAP ~100, EMA21 ~100)
+    const klines: Kline[] = [];
+    for (let i = 0; i < 30; i++) {
+      klines.push({
+        time: startTime + i * 300,
+        open: 100,
+        high: 100.5,
+        low: 99.5,
+        close: 100,
+        volume: 1000
+      });
+    }
+
+    const alert: AuditAlertItem = {
+      id: 'vcme-tp1-emergency-test',
+      symbol: 'BTCUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.5,
+      strategy: 'VCME Sniper',
+      executionStyle: 'dayTrading',
+      entryPrice,
+      stopLoss,
+      takeProfit1,
+      takeProfit2,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: (startTime + 29 * 300) * 1000,
+      candleTimestamp: startTime + 29 * 300
+    };
+
+    // Candle 31: Spikes up to 106.5 (hits TP1 106.0 intra-candle), but dumps and closes at 98.0 (< VWAP & EMA21)
+    klines.push({
+      time: startTime + 30 * 300,
+      open: 100.0,
+      high: 106.5, // Hits TP1 (+6%)
+      low: 97.5,
+      close: 98.0, // Loses VWAP & EMA21 at close
+      volume: 10000
+    });
+
+    const evaluated = updateAlertsOutcome([alert], { 'BTCUSDT:5m': klines });
+    assert.strictEqual(evaluated[0].status, 'EXPIRED', 'Alert must exit via Emergency Exit as EXPIRED');
+    // Expected PnL: 50% * (+6%) + 50% * (-2%) = +3.0% - 1.0% = +2.0%
+    assert.strictEqual(evaluated[0].pnlPercent, 2.0, `PnL must be +2.0% with 50% partial taken (got ${evaluated[0].pnlPercent}%)`);
+    assert(evaluated[0].realizedR > 0, `Realized R must be positive (+0.5R) because TP1 was filled intra-candle (got ${evaluated[0].realizedR}R)`);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

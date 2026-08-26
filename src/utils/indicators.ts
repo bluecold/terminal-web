@@ -1263,11 +1263,15 @@ export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
 // ==========================================
 
 export function calculateATRSeries(klines: Kline[], period: number = 14): number[] {
-  const length = klines.length;
+  const length = klines ? klines.length : 0;
+  if (!klines || length === 0) return [];
   const atrSeries: number[] = new Array(length).fill(0);
-  if (length < period + 1) return atrSeries;
+  if (length === 1) {
+    atrSeries[0] = Math.max(0, klines[0].high - klines[0].low);
+    return atrSeries;
+  }
 
-  const trueRanges: number[] = [0]; // Index 0 has TR=0 or high-low. Let's align with calculateATR
+  const trueRanges: number[] = [Math.max(0, klines[0].high - klines[0].low)];
   for (let i = 1; i < length; i++) {
     const high = klines[i].high;
     const low = klines[i].low;
@@ -1279,18 +1283,18 @@ export function calculateATRSeries(klines: Kline[], period: number = 14): number
     trueRanges.push(Math.max(tr1, tr2, tr3));
   }
 
-  // Wilder's Smoothing (RMA)
-  let atr = trueRanges.slice(1, period + 1).reduce((a, b) => a + b, 0) / period;
-  atrSeries[period] = atr;
-
-  for (let i = period + 1; i < length; i++) {
-    atr = (atr * (period - 1) + trueRanges[i]) / period;
-    atrSeries[i] = atr;
+  let runningSum = 0;
+  for (let i = 0; i < Math.min(period, length); i++) {
+    runningSum += trueRanges[i];
+    atrSeries[i] = runningSum / (i + 1);
   }
 
-  // Fill initial values with the first ATR value to avoid NaN/0 problems in calculations
-  for (let i = 0; i < period; i++) {
-    atrSeries[i] = atrSeries[period];
+  if (length <= period) return atrSeries;
+
+  let atr = atrSeries[period - 1];
+  for (let i = period; i < length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+    atrSeries[i] = atr;
   }
 
   return atrSeries;

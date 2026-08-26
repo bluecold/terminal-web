@@ -253,54 +253,9 @@ export function updateAlertsOutcome(
       const currentVwap = fullIdx >= 0 && vwapSeries[fullIdx] !== undefined ? vwapSeries[fullIdx] : 0;
       const currentEma21 = fullIdx >= 0 && ema21Series[fullIdx] !== undefined ? ema21Series[fullIdx] : 0;
       const currentEma9 = fullIdx >= 0 && ema9Series[fullIdx] !== undefined ? ema9Series[fullIdx] : 0;
-      const currentATR = fullIdx >= 0 && atrSeries[fullIdx] !== undefined && !isNaN(atrSeries[fullIdx]) ? atrSeries[fullIdx] : (initialRiskDist / 1.5);
+      const currentATR = fullIdx >= 0 && atrSeries[fullIdx] !== undefined && !isNaN(atrSeries[fullIdx]) && atrSeries[fullIdx] > 0 ? atrSeries[fullIdx] : (initialRiskDist / 1.5);
 
-      // ── 1. Strategy-Specific Early Exit Checks ─────────────────────────────
-      // A. VCME Inactivity Time-Stop: 8 candles (40 min) for Day Trading if TP1 not hit and PnL < 0.5R
-      if (isVCME && isDayTrading && alert.executionStyle !== 'swing' && currentStatus === 'OPEN' && candleCount >= 8) {
-        const currentGain = isBuy ? candle.close - alert.entryPrice : alert.entryPrice - candle.close;
-        if (currentGain < 0.5 * initialRiskDist) {
-          const diffPct = (currentGain / alert.entryPrice) * 100;
-          currentPnl = Number(diffPct.toFixed(2));
-          realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 0;
-          currentStatus = 'EXPIRED';
-          break;
-        }
-      }
-
-      // B. Multifractal Early Invalidation: in candles 1..3, if adverse move > 0.5R, cut loss early
-      if (isMultifractal && isDayTrading && currentStatus === 'OPEN' && candleCount <= 3) {
-        const adverseDiff = isBuy ? alert.entryPrice - candle.close : candle.close - alert.entryPrice;
-        if (adverseDiff > 0.5 * initialRiskDist) {
-          const lossPct = -Number(((adverseDiff / alert.entryPrice) * 100).toFixed(2));
-          currentPnl = lossPct;
-          realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : -0.5;
-          currentStatus = 'SL_HIT';
-          break;
-        }
-      }
-
-      // C. VCME Emergency Exit (VWAP + EMA21 breach)
-      const isLongEmergency = isBuy && isVCME && currentVwap > 0 && currentEma21 > 0 && candle.close < currentVwap && candle.close < currentEma21;
-      const isShortEmergency = !isBuy && isVCME && currentVwap > 0 && currentEma21 > 0 && candle.close > currentVwap && candle.close > currentEma21;
-
-      if (isLongEmergency || isShortEmergency) {
-        const isLong = isBuy;
-        const tp1P = (currentStatus === 'TP1_HIT' || currentStatus === 'TP2_HIT')
-          ? 0.50 * (isLong ? (alert.takeProfit1 - alert.entryPrice) : (alert.entryPrice - alert.takeProfit1)) / alert.entryPrice * 100
-          : 0;
-        const tp2P = currentStatus === 'TP2_HIT'
-          ? 0.25 * (isLong ? (alert.takeProfit2 - alert.entryPrice) : (alert.entryPrice - alert.takeProfit2)) / alert.entryPrice * 100
-          : 0;
-        const leftWeight = 1 - (currentStatus !== 'OPEN' ? 0.50 : 0) - (currentStatus === 'TP2_HIT' ? 0.25 : 0);
-        const openPortionPnl = (isLong ? (candle.close - alert.entryPrice) : (alert.entryPrice - candle.close)) / alert.entryPrice * 100;
-        currentPnl = Number((tp1P + tp2P + leftWeight * openPortionPnl).toFixed(2));
-        realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : -0.5;
-        currentStatus = 'EXPIRED';
-        break;
-      }
-
-      // ── 2. Target & Stop Loss Evaluation ──────────────────────────────────
+      // ── 1. Stop Loss & Intra-Candle Target Hits ────────────────────────────
       if (isBuy) {
         // Stop Loss Check
         if (candle.low <= activeSL) {
@@ -326,29 +281,17 @@ export function updateAlertsOutcome(
           }
         }
 
-        // VCME Runner Exit after TP2 (Chandelier Trailing or EMA9 or TP3)
-        if (isVCME && currentStatus === 'TP2_HIT') {
-          const chandelierSL = highestHigh - 2.5 * currentATR;
-          if (candle.close <= chandelierSL || (!isNaN(currentEma9) && currentEma9 > 0 && candle.close < currentEma9)) {
-            const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
-            const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 25;
-            const runnerGain = ((candle.close - alert.entryPrice) / alert.entryPrice) * 25;
-            currentPnl = Number((tp1Gain + tp2Gain + runnerGain).toFixed(2));
-            realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : Number((0.50 * r1 + 0.25 * r2).toFixed(2));
-            currentStatus = 'TP2_CLOSED';
-            break;
-          } else if (candle.high >= tp3) {
-            const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
-            const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 25;
-            const tp3Gain = ((tp3 - alert.entryPrice) / alert.entryPrice) * 25;
-            currentPnl = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
-            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
-            currentStatus = 'TP2_CLOSED';
-            break;
-          }
+        // TP1 Check (intra-candle limit fill)
+        if (currentStatus === 'OPEN' && candle.high >= alert.takeProfit1) {
+          currentStatus = 'TP1_HIT';
+          activeSL = alert.entryPrice;
+          const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+          const openFloating = ((candle.close - alert.entryPrice) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
+          realizedR = Number((0.50 * r1).toFixed(2));
         }
 
-        // TP2 Check
+        // TP2 Check (intra-candle limit fill)
         if (candle.high >= alert.takeProfit2 && currentStatus !== 'TP2_HIT') {
           if (isVCME) {
             currentStatus = 'TP2_HIT';
@@ -368,18 +311,8 @@ export function updateAlertsOutcome(
             break;
           }
         }
-
-        // TP1 Check
-        if (currentStatus === 'OPEN' && candle.high >= alert.takeProfit1) {
-          currentStatus = 'TP1_HIT';
-          activeSL = alert.entryPrice;
-          const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
-          const openFloating = ((candle.close - alert.entryPrice) / alert.entryPrice) * 50;
-          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
-          realizedR = Number((0.50 * r1).toFixed(2));
-        }
       } else {
-        // Sell signal
+        // Sell signal Stop Loss Check
         if (candle.high >= activeSL) {
           if (currentStatus === 'TP2_HIT') {
             const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
@@ -403,28 +336,17 @@ export function updateAlertsOutcome(
           }
         }
 
-        // VCME Runner Exit after TP2 (Chandelier Trailing or EMA9 or TP3)
-        if (isVCME && currentStatus === 'TP2_HIT') {
-          const chandelierSL = lowestLow + 2.5 * currentATR;
-          if (candle.close >= chandelierSL || (!isNaN(currentEma9) && currentEma9 > 0 && candle.close > currentEma9)) {
-            const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
-            const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 25;
-            const runnerGain = ((alert.entryPrice - candle.close) / alert.entryPrice) * 25;
-            currentPnl = Number((tp1Gain + tp2Gain + runnerGain).toFixed(2));
-            realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : Number((0.50 * r1 + 0.25 * r2).toFixed(2));
-            currentStatus = 'TP2_CLOSED';
-            break;
-          } else if (candle.low <= tp3) {
-            const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
-            const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 25;
-            const tp3Gain = ((alert.entryPrice - tp3) / alert.entryPrice) * 25;
-            currentPnl = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
-            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
-            currentStatus = 'TP2_CLOSED';
-            break;
-          }
+        // TP1 Check (intra-candle limit fill)
+        if (currentStatus === 'OPEN' && candle.low <= alert.takeProfit1) {
+          currentStatus = 'TP1_HIT';
+          activeSL = alert.entryPrice;
+          const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+          const openFloating = ((alert.entryPrice - candle.close) / alert.entryPrice) * 50;
+          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
+          realizedR = Number((0.50 * r1).toFixed(2));
         }
 
+        // TP2 Check (intra-candle limit fill)
         if (candle.low <= alert.takeProfit2 && currentStatus !== 'TP2_HIT') {
           if (isVCME) {
             currentStatus = 'TP2_HIT';
@@ -444,14 +366,93 @@ export function updateAlertsOutcome(
             break;
           }
         }
+      }
 
-        if (currentStatus === 'OPEN' && candle.low <= alert.takeProfit1) {
-          currentStatus = 'TP1_HIT';
-          activeSL = alert.entryPrice;
-          const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
-          const openFloating = ((alert.entryPrice - candle.close) / alert.entryPrice) * 50;
-          currentPnl = Number((tp1Gain + openFloating).toFixed(2));
-          realizedR = Number((0.50 * r1).toFixed(2));
+      // ── 2. Time-Stop & Emergency Exits (Candle Close) ──────────────────────
+      // A. VCME Inactivity Time-Stop: 8 candles (40 min) for Day Trading if TP1 not hit and PnL < 0.5R
+      if (isVCME && isDayTrading && alert.executionStyle !== 'swing' && currentStatus === 'OPEN' && candleCount >= 8) {
+        const currentGain = isBuy ? candle.close - alert.entryPrice : alert.entryPrice - candle.close;
+        if (currentGain < 0.5 * initialRiskDist) {
+          const diffPct = (currentGain / alert.entryPrice) * 100;
+          currentPnl = Number(diffPct.toFixed(2));
+          realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : 0;
+          currentStatus = 'EXPIRED';
+          break;
+        }
+      }
+
+      // B. Multifractal Early Invalidation: in candles 1..3, if adverse move > 0.5R, cut loss early
+      if (isMultifractal && isDayTrading && currentStatus === 'OPEN' && candleCount <= 3) {
+        const adverseDiff = isBuy ? alert.entryPrice - candle.close : candle.close - alert.entryPrice;
+        if (adverseDiff > 0.5 * initialRiskDist) {
+          const lossPct = -Number(((adverseDiff / alert.entryPrice) * 100).toFixed(2));
+          currentPnl = lossPct;
+          realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : -0.5;
+          currentStatus = 'SL_HIT';
+          break;
+        }
+      }
+
+      // C. VCME Emergency Exit (VWAP + EMA21 breach at candle close)
+      const isLongEmergency = isBuy && isVCME && currentVwap > 0 && currentEma21 > 0 && candle.close < currentVwap && candle.close < currentEma21;
+      const isShortEmergency = !isBuy && isVCME && currentVwap > 0 && currentEma21 > 0 && candle.close > currentVwap && candle.close > currentEma21;
+
+      if (isLongEmergency || isShortEmergency) {
+        const isLong = isBuy;
+        const tp1P = (currentStatus === 'TP1_HIT' || currentStatus === 'TP2_HIT')
+          ? 0.50 * (isLong ? (alert.takeProfit1 - alert.entryPrice) : (alert.entryPrice - alert.takeProfit1)) / alert.entryPrice * 100
+          : 0;
+        const tp2P = currentStatus === 'TP2_HIT'
+          ? 0.25 * (isLong ? (alert.takeProfit2 - alert.entryPrice) : (alert.entryPrice - alert.takeProfit2)) / alert.entryPrice * 100
+          : 0;
+        const leftWeight = 1 - (currentStatus !== 'OPEN' ? 0.50 : 0) - (currentStatus === 'TP2_HIT' ? 0.25 : 0);
+        const openPortionPnl = (isLong ? (candle.close - alert.entryPrice) : (alert.entryPrice - candle.close)) / alert.entryPrice * 100;
+        currentPnl = Number((tp1P + tp2P + leftWeight * openPortionPnl).toFixed(2));
+        realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : -0.5;
+        currentStatus = 'EXPIRED';
+        break;
+      }
+
+      // D. VCME Runner Exit after TP2 (Chandelier Trailing or EMA9 or TP3)
+      if (isVCME && currentStatus === 'TP2_HIT') {
+        if (isBuy) {
+          const chandelierSL = highestHigh - 2.5 * currentATR;
+          if (candle.close <= chandelierSL || (!isNaN(currentEma9) && currentEma9 > 0 && candle.close < currentEma9)) {
+            const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+            const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 25;
+            const runnerGain = ((candle.close - alert.entryPrice) / alert.entryPrice) * 25;
+            currentPnl = Number((tp1Gain + tp2Gain + runnerGain).toFixed(2));
+            realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : Number((0.50 * r1 + 0.25 * r2).toFixed(2));
+            currentStatus = 'TP2_CLOSED';
+            break;
+          } else if (candle.high >= tp3) {
+            const tp1Gain = ((alert.takeProfit1 - alert.entryPrice) / alert.entryPrice) * 50;
+            const tp2Gain = ((alert.takeProfit2 - alert.entryPrice) / alert.entryPrice) * 25;
+            const tp3Gain = ((tp3 - alert.entryPrice) / alert.entryPrice) * 25;
+            currentPnl = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
+            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
+            currentStatus = 'TP2_CLOSED';
+            break;
+          }
+        } else {
+          const chandelierSL = lowestLow + 2.5 * currentATR;
+          if (candle.close >= chandelierSL || (!isNaN(currentEma9) && currentEma9 > 0 && candle.close > currentEma9)) {
+            const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+            const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 25;
+            const runnerGain = ((alert.entryPrice - candle.close) / alert.entryPrice) * 25;
+            currentPnl = Number((tp1Gain + tp2Gain + runnerGain).toFixed(2));
+            realizedR = initialRiskPct > 0 ? Number(((currentPnl / 100) / initialRiskPct).toFixed(2)) : Number((0.50 * r1 + 0.25 * r2).toFixed(2));
+            currentStatus = 'TP2_CLOSED';
+            break;
+          } else if (candle.low <= tp3) {
+            const tp1Gain = ((alert.entryPrice - alert.takeProfit1) / alert.entryPrice) * 50;
+            const tp2Gain = ((alert.entryPrice - alert.takeProfit2) / alert.entryPrice) * 25;
+            const tp3Gain = ((alert.entryPrice - tp3) / alert.entryPrice) * 25;
+            currentPnl = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
+            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
+            currentStatus = 'TP2_CLOSED';
+            break;
+          }
         }
       }
     }
