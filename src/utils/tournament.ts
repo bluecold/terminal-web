@@ -7,6 +7,7 @@ export interface StrategyCandidate {
   expectancy: number;
   winRate: number;
   resolved: number;
+  forwardWindow?: number;
 }
 
 export interface TournamentResult {
@@ -22,7 +23,9 @@ export interface TournamentResult {
  * Evaluates candidates using a balanced progressive confidence model:
  * - Requires minimum resolved trades per timeframe for HIGH confidence
  * - Applies a sigmoid penalty curve based on sample size
- * - Computes a composite score: (PF * 0.45 + Expectancy * 0.35 + WinRate * 0.20) * sampleConfidence
+ * - Normalizes Expectancy by Time Horizon (Square-root of time volatility scaling: base window = 6 candles)
+ * - Applies Bayesian sample-aware capping on Profit Factor to prevent single-trade singularities (PF 99.9 -> 5.0)
+ * - Computes a composite score: (cappedPF * 0.45 + normalizedExpScore * 0.35 + winRate * 0.20) * sampleConfidence
  * - Falls back to LIMITED confidence if minimum sample isn't met but PF >= 0.95
  * - Yields the best relative strategy even when confidence is NONE so intraday signals aren't silenced
  */
@@ -45,13 +48,29 @@ export function evaluateStrategyTournament(
   const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
   const idealMin = Math.round(minHighResolved * 1.5);
 
-  // Helper to calculate composite score with sigmoid sample penalty and normalized expectancy
+  // Helper to calculate composite score with sample-aware PF and horizon-normalized expectancy
   const calcScore = (c: StrategyCandidate): number => {
+    // Sigmoid sample confidence based on total evaluated trades
     const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
-    const cappedPF = Math.min(Math.max(0, c.profitFactor), 5.0);
-    // Normalize expectancy smoothly: maps [0, +inf) to [0, 3.0] so it aligns cleanly with cappedPF (0-5.0) and winRate (0-1.0)
-    const normalizedExp = Math.max(0, Math.tanh(Math.max(0, c.expectancy) / 2.0)) * 3.0;
-    const baseScore = (cappedPF * 0.45) + (normalizedExp * 0.35) + (c.winRate * 0.20);
+    
+    // Bayesian sample-aware PF ceiling: a sample of N trades cannot claim infinity / 5.0 PF
+    const maxAttainablePF = Math.min(5.0, 1.0 + Math.max(0, c.resolved) * 0.5);
+    // If PF was 99.9 (zero losses) or excessively high on small N, regularize with Laplace prior
+    const rawPF = c.profitFactor >= 99.0 ? (c.expectancy > 0 ? (1.0 + Math.min(c.expectancy, 4.0)) : 1.0) : c.profitFactor;
+    const cappedPF = Math.min(Math.max(0, rawPF), maxAttainablePF);
+
+    // Horizon-normalized expectancy (Square-root of time volatility scaling: base window = 6 candles)
+    const horizon = c.forwardWindow && c.forwardWindow > 0 ? c.forwardWindow : (
+      c.key === 'multitemporal' ? (timeframe === '1h' ? 48 : 72) :
+      c.key === 'multifractal' ? 12 : 6
+    );
+    const timeScalingFactor = Math.sqrt(horizon / 6);
+    const normalizedExpectancy = c.expectancy / timeScalingFactor;
+
+    // Smooth bounded mapping for normalized expectancy: maps [0, +inf) to [0, 3.0]
+    const normalizedExpScore = Math.max(0, Math.tanh(Math.max(0, normalizedExpectancy) / 0.75)) * 3.0;
+
+    const baseScore = (cappedPF * 0.45) + (normalizedExpScore * 0.35) + (c.winRate * 0.20);
     return baseScore * sampleConfidence;
   };
 
@@ -91,10 +110,10 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 3. Fallback: Select best relative strategy so signals are not silently swallowed
+  // 3. Fallback: Select best relative strategy using calcScore so signals are not silently swallowed
   const sortedAll = [...candidates].sort((a, b) => {
-    const scoreA = (a.profitFactor * 0.5) + (a.winRate * 0.5);
-    const scoreB = (b.profitFactor * 0.5) + (b.winRate * 0.5);
+    const scoreA = calcScore(a);
+    const scoreB = calcScore(b);
     return scoreB - scoreA;
   });
   const fallback = sortedAll[0] || candidates[0];

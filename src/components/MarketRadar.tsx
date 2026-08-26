@@ -19,6 +19,7 @@ import {
   backtestMultifractalMTF,
   getTrendFilter
 } from '../utils/backtester';
+import { formatSmartPrice } from '../utils/formatters';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
 
 export interface RadarRowData {
@@ -260,11 +261,11 @@ export default function MarketRadar({
       const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : null;
 
       const candidates: StrategyCandidate[] = [
-        { key: 'standard', label: 'Estándar', profitFactor: btStd ? btStd.profitFactor : 1.0, expectancy: btStd ? btStd.expectancy : 0, winRate: btStd ? btStd.winRate : 0.5, resolved: btStd ? (btStd.wins + btStd.losses) : 0 },
-        { key: 'confluencia', label: 'Confluencia', profitFactor: btConf ? btConf.profitFactor : 1.0, expectancy: btConf ? btConf.expectancy : 0, winRate: btConf ? btConf.winRate : 0.5, resolved: btConf ? (btConf.wins + btConf.losses) : 0 },
-        { key: 'scoring', label: 'Scoring', profitFactor: btScore ? btScore.profitFactor : 1.0, expectancy: btScore ? btScore.expectancy : 0, winRate: btScore ? btScore.winRate : 0.5, resolved: btScore ? (btScore.wins + btScore.losses) : 0 },
-        { key: 'multitemporal', label: 'VCME Sniper', profitFactor: btMulti ? btMulti.profitFactor : 1.0, expectancy: btMulti ? btMulti.expectancy : 0, winRate: btMulti ? btMulti.winRate : 0.5, resolved: btMulti ? (btMulti.wins + btMulti.losses) : 0 },
-        { key: 'multifractal', label: 'Multifractal MTF', profitFactor: btMF ? btMF.profitFactor : 1.0, expectancy: btMF ? btMF.expectancy : 0, winRate: btMF ? btMF.winRate : 0.5, resolved: btMF ? (btMF.wins + btMF.losses) : 0 },
+        { key: 'standard', label: 'Estándar', profitFactor: btStd ? btStd.profitFactor : 1.0, expectancy: btStd ? btStd.expectancy : 0, winRate: btStd ? btStd.winRate : 0.5, resolved: btStd ? (btStd.totalSignals > 0 ? btStd.totalSignals : btStd.wins + btStd.losses) : 0, forwardWindow: 6 },
+        { key: 'confluencia', label: 'Confluencia', profitFactor: btConf ? btConf.profitFactor : 1.0, expectancy: btConf ? btConf.expectancy : 0, winRate: btConf ? btConf.winRate : 0.5, resolved: btConf ? (btConf.totalSignals > 0 ? btConf.totalSignals : btConf.wins + btConf.losses) : 0, forwardWindow: 6 },
+        { key: 'scoring', label: 'Scoring', profitFactor: btScore ? btScore.profitFactor : 1.0, expectancy: btScore ? btScore.expectancy : 0, winRate: btScore ? btScore.winRate : 0.5, resolved: btScore ? (btScore.totalSignals > 0 ? btScore.totalSignals : btScore.wins + btScore.losses) : 0, forwardWindow: 6 },
+        { key: 'multitemporal', label: 'VCME Sniper', profitFactor: btMulti ? btMulti.profitFactor : 1.0, expectancy: btMulti ? btMulti.expectancy : 0, winRate: btMulti ? btMulti.winRate : 0.5, resolved: btMulti ? (btMulti.totalSignals > 0 ? btMulti.totalSignals : btMulti.wins + btMulti.losses) : 0, forwardWindow: 72 },
+        { key: 'multifractal', label: 'Multifractal MTF', profitFactor: btMF ? btMF.profitFactor : 1.0, expectancy: btMF ? btMF.expectancy : 0, winRate: btMF ? btMF.winRate : 0.5, resolved: btMF ? (btMF.totalSignals > 0 ? btMF.totalSignals : btMF.wins + btMF.losses) : 0, forwardWindow: 12 },
       ];
 
       const tourney = evaluateStrategyTournament(candidates, '5m');
@@ -526,9 +527,7 @@ export default function MarketRadar({
 
   const formatP = (val: number) => {
     if (!val) return '—';
-    return val >= 1000
-      ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : `$${val.toFixed(2)}`;
+    return formatSmartPrice(val);
   };
 
   return (

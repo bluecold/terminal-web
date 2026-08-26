@@ -1,4 +1,5 @@
 import type { Kline } from '../services/api';
+import { formatSmartPrice, formatSmartNumber } from './formatters';
 
 export interface IndicatorResult {
   value: number;
@@ -642,10 +643,10 @@ export function calculateScoringSignal(
     const isChasing = atr > 0 && Math.abs(curr.close - vwap) > 2.0 * atr;
     if (isChasing) {
       s4 -= 1;
-      n4 = `VWAP: ${vwap.toFixed(2)} | Chasing (>2 ATR de VWAP)`;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Chasing (>2 ATR de VWAP)`;
     } else {
-      if (curr.close > vwap) { s4 += 1; n4 = `VWAP: ${vwap.toFixed(2)} | Precio sobre VWAP (compradores)`; }
-      else                   { s4 -= 1; n4 = `VWAP: ${vwap.toFixed(2)} | Precio bajo VWAP (vendedores)`; }
+      if (curr.close > vwap) { s4 += 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio sobre VWAP (compradores)`; }
+      else                   { s4 -= 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio bajo VWAP (vendedores)`; }
     }
   } else if (cfg.useObv) {
     const obvArr    = calculateOBV(klines);
@@ -665,7 +666,7 @@ export function calculateScoringSignal(
   const uWick     = upperWickRatio(curr);
   const lWick     = lowerWickRatio(curr);
 
-  let s5 = 0; let n5 = `Cuerpo: ${body >= 0 ? '+' : ''}${body.toFixed(2)} (${(pctBody * 100).toFixed(0)}%)`;
+  let s5 = 0; let n5 = `Cuerpo: ${body >= 0 ? '+' : ''}${formatSmartNumber(body)} (${(pctBody * 100).toFixed(0)}%)`;
   if (pctBody < 0.3) {
     s5 = 0;
     n5 += ' | Doji débil';
@@ -692,12 +693,12 @@ export function calculateScoringSignal(
 
     if (distSupport >= 0 && distSupport < nearThreshold && distSupport <= distResist) {
       s6 += 1;
-      n6 = `Cerca soporte ($${sr.nearestSupport.toFixed(2)})`;
+      n6 = `Cerca soporte (${formatSmartPrice(sr.nearestSupport)})`;
     } else if (distResist >= 0 && distResist < nearThreshold && distResist < distSupport) {
       s6 -= 1;
-      n6 = `Cerca resistencia ($${sr.nearestResistance.toFixed(2)})`;
+      n6 = `Cerca resistencia (${formatSmartPrice(sr.nearestResistance)})`;
     } else {
-      n6 = `S: $${sr.nearestSupport > 0 ? sr.nearestSupport.toFixed(2) : '-'} | R: $${sr.nearestResistance > 0 ? sr.nearestResistance.toFixed(2) : '-'}`;
+      n6 = `S: ${sr.nearestSupport > 0 ? formatSmartPrice(sr.nearestSupport) : '-'} | R: ${sr.nearestResistance > 0 ? formatSmartPrice(sr.nearestResistance) : '-'}`;
     }
   } else {
     n6 = 'Sin niveles S/R detectados';
@@ -897,7 +898,7 @@ export function calculateSupertrendSeries(klines: Kline[], period: number = 10, 
     }
     return {
       time: k.time,
-      value: Number(superTrend[i].toFixed(2)),
+      value: superTrend[i],
       direction: direction[i] === 1 ? 'UP' : 'DOWN'
     };
   });
@@ -1050,14 +1051,14 @@ export function calculateMultitemporalSignal(
 
   return {
     signal,
-    stopLoss: Number(stopLoss.toFixed(2)),
-    takeProfit: Number(takeProfit.toFixed(2)),
+    stopLoss,
+    takeProfit,
     rsi: isNaN(rsi) ? 50 : rsi,
     rsiSlope: rsiSlopeVal,
     supertrendVal: latestSt.value,
     supertrendDir: latestSt.direction,
-    vwap: Number(vwap.toFixed(2)),
-    ema200_1h: Number(macroEma200.toFixed(2)),
+    vwap,
+    ema200_1h: macroEma200,
     isTrendUp,
     nearestSupport: sr.nearestSupport,
     nearestResistance: sr.nearestResistance,
@@ -2167,7 +2168,7 @@ export function calculateVCMESniperSignal(
   }
 
   if (idx1h < 50) {
-    return { ...fallback, bias1D, ema200_1D: Number(lastEma200_1d.toFixed(2)), triggerDetail: 'Datos 1H insuficientes' };
+    return { ...fallback, bias1D, ema200_1D: lastEma200_1d, triggerDetail: 'Datos 1H insuficientes' };
   }
 
   const close1h = closes1h[idx1h];
@@ -2647,10 +2648,10 @@ export function calculateVCMESniperSignal(
         signal = 'NEUTRAL';
         mode = 'NONE';
         confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${(riskPercent * 100).toFixed(2)}% vs máx ${(maxAllowedRisk * 100).toFixed(1)}% o ${(risk / (atr5m || 1)).toFixed(2)} ATR vs máx 1.8 ATR)`;
+        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
         stopLoss = 0;
       } else {
-        chandelierExit = !isNaN(chandelierLong) ? Number(chandelierLong.toFixed(2)) : Number((entry - 3.0 * atrVal1h).toFixed(2));
+        chandelierExit = !isNaN(chandelierLong) ? chandelierLong : (entry - 3.0 * atrVal1h);
         takeProfit1 = entry + tp1Mult * risk;
         takeProfit2 = entry + tp2Mult * risk;
         takeProfit3 = entry + tp3Mult * risk;
@@ -2683,10 +2684,10 @@ export function calculateVCMESniperSignal(
         signal = 'NEUTRAL';
         mode = 'NONE';
         confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${(riskPercent * 100).toFixed(2)}% vs máx ${(maxAllowedRisk * 100).toFixed(1)}% o ${(risk / (atr5m || 1)).toFixed(2)} ATR vs máx 1.8 ATR)`;
+        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
         stopLoss = 0;
       } else {
-        chandelierExit = !isNaN(chandelierShort) ? Number(chandelierShort.toFixed(2)) : Number((entry + 3.0 * atrVal1h).toFixed(2));
+        chandelierExit = !isNaN(chandelierShort) ? chandelierShort : (entry + 3.0 * atrVal1h);
         takeProfit1 = entry - tp1Mult * risk;
         takeProfit2 = entry - tp2Mult * risk;
         takeProfit3 = entry - tp3Mult * risk;
@@ -2715,13 +2716,13 @@ export function calculateVCMESniperSignal(
     signal,
     mode,
     tradeType,
-    stopLoss: Number(stopLoss.toFixed(2)),
-    takeProfit1: Number(takeProfit1.toFixed(2)),
-    takeProfit2: Number(takeProfit2.toFixed(2)),
-    takeProfit3: Number(takeProfit3.toFixed(2)),
-    riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+    riskRewardRatio,
     chandelierExit,
-    positionSizeUnits: Number(positionSizeUnits.toFixed(2)),
+    positionSizeUnits,
     riskAmount,
     confidenceScore,
     bias1D,
@@ -2730,17 +2731,17 @@ export function calculateVCMESniperSignal(
     triggerDetail,
     rsi1H: Number(rsiVal1h.toFixed(1)),
     macdHistDirection: macdHistDir,
-    ema200_1D: Number(lastEma200_1d.toFixed(2)),
-    ema50_1H: Number(ema50Val1h.toFixed(2)),
-    vwap5m: Number(vwap5m.toFixed(2)),
-    bbUpper5m: Number(bb.upper.toFixed(2)),
-    bbLower5m: Number(bb.lower.toFixed(2)),
+    ema200_1D: lastEma200_1d,
+    ema50_1H: ema50Val1h,
+    vwap5m,
+    bbUpper5m: bb.upper,
+    bbLower5m: bb.lower,
     isTrendUp: bias1D === 'ALCISTA',
     nearestSupport: sr.nearestSupport,
     nearestResistance: sr.nearestResistance,
     score: finalScorePercent,
     baseScore,
-    adaptiveFactor: Number(adaptiveFactor.toFixed(2)),
+    adaptiveFactor,
     marketRegime,
     volatilityProfile,
     recentPerfLabel,
@@ -3142,7 +3143,7 @@ export function calculateMultifractalMTFSignal(
     signal = 'BUY';
     strategy = 'BREAKOUT_EXPANSION';
     stopLoss = curr5MBand.midpoint;
-    reasoning = `Placing SL at channel midpoint (${stopLoss.toFixed(2)}) for institutional breakout expansion hypothesis.`;
+    reasoning = `Placing SL at channel midpoint (${formatSmartPrice(stopLoss)}) for institutional breakout expansion hypothesis.`;
   }
   // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN DE VOLATILIDAD (SHORT)
   else if (
@@ -3155,7 +3156,7 @@ export function calculateMultifractalMTFSignal(
     signal = 'SELL';
     strategy = 'BREAKOUT_EXPANSION';
     stopLoss = curr5MBand.midpoint;
-    reasoning = `Placing SL at channel midpoint (${stopLoss.toFixed(2)}) for institutional breakdown expansion hypothesis.`;
+    reasoning = `Placing SL at channel midpoint (${formatSmartPrice(stopLoss)}) for institutional breakdown expansion hypothesis.`;
   }
   // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (LONG)
   else if (
@@ -3167,7 +3168,7 @@ export function calculateMultifractalMTFSignal(
     signal = 'BUY';
     strategy = 'MEAN_REVERSION';
     stopLoss = currCandle.low - (curr5MBand.upper - curr5MBand.lower) * 0.25;
-    reasoning = `Placing SL below absorption low (${stopLoss.toFixed(2)}) for mean reversion divergence.`;
+    reasoning = `Placing SL below absorption low (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
   }
   // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (SHORT)
   else if (
@@ -3179,7 +3180,7 @@ export function calculateMultifractalMTFSignal(
     signal = 'SELL';
     strategy = 'MEAN_REVERSION';
     stopLoss = currCandle.high + (curr5MBand.upper - curr5MBand.lower) * 0.25;
-    reasoning = `Placing SL above absorption high (${stopLoss.toFixed(2)}) for mean reversion divergence.`;
+    reasoning = `Placing SL above absorption high (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
   }
 
   const activeVolPercent = signal === 'SELL' ? currVolComp.activeSellPercent : currVolComp.activeBuyPercent;
@@ -3187,7 +3188,7 @@ export function calculateMultifractalMTFSignal(
   return {
     signal,
     strategy,
-    stopLoss: Number(stopLoss.toFixed(2)),
+    stopLoss,
     triggerPrice: currCandle.close,
     isCompressed1H,
     bias1D,
@@ -3196,7 +3197,7 @@ export function calculateMultifractalMTFSignal(
     andianGreen: lastAndian.green,
     andianRed: lastAndian.red,
     andianOrange: lastAndian.orange,
-    volatilityWidth1H: Number(current1HBand.width.toFixed(2)),
+    volatilityWidth1H: current1HBand.width,
     dreadBlitzMCD: currDread.mcd,
     isOverbought5M: currDread.isOverbought,
     isOversold5M: currDread.isOversold,

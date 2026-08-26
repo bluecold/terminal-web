@@ -4,6 +4,7 @@ import type { IChartApi, ISeriesApi, IPriceLine, Time } from 'lightweight-charts
 import type { Kline } from '../services/api';
 import { calculateBollingerBandsSeries } from '../utils/indicators';
 import type { BollingerBandsSeriesResult } from '../utils/indicators';
+import { formatSmartPrice } from '../utils/formatters';
 
 export interface AlertOverlay {
   entryPrice: number;
@@ -58,16 +59,7 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
 
   // Helper to format prices according to their magnitude
   const formatPrice = (value: number) => {
-    if (value === null || value === undefined || isNaN(value)) return '-';
-    if (value === 0) return '0.00';
-    const absVal = Math.abs(value);
-    if (absVal < 0.01) {
-      return value.toFixed(6);
-    } else if (absVal < 1) {
-      return value.toFixed(4);
-    } else {
-      return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
+    return formatSmartPrice(value, false);
   };
 
   // Helper to update the floating legend text and styles

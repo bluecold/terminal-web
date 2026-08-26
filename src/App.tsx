@@ -23,6 +23,7 @@ import {
   generateCandleAlertKey,
   type AuditAlertItem
 } from './utils/alertTracker';
+import { formatSmartPrice } from './utils/formatters';
 import type { AlertOverlay } from './components/Chart';
 
 function App() {
@@ -56,7 +57,7 @@ function App() {
   const activeSignals = useMemo(() => {
     const map: Record<string, string> = {};
     alertsLog.forEach(alert => {
-      if (alert.status === 'OPEN' || alert.status === 'TP1_HIT') {
+      if (alert.status === 'OPEN' || alert.status === 'TP1_HIT' || alert.status === 'TP2_HIT') {
         map[alert.symbol] = alert.signal;
       }
     });
@@ -127,7 +128,7 @@ function App() {
     const btScore = backtestScoring(data, tf);
 
     let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-    let btMF    = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0 };
+    let btMF    = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
 
     if (allData) {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
@@ -143,11 +144,11 @@ function App() {
     }
 
     const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.wins + btStd.losses },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.wins + btConf.losses },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.wins + btScore.losses },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.wins + btMulti.losses },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.wins + btMF.losses },
+      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
     ];
 
     const tournament = evaluateStrategyTournament(candidates, tf);
@@ -446,14 +447,14 @@ function App() {
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0 };
+            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
 
             const candidates: StrategyCandidate[] = [
-              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.wins + btStd.losses },
-              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.wins + btConf.losses },
-              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.wins + btScore.losses },
-              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.wins + btMulti.losses },
-              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.wins + btMF.losses },
+              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
+              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
+              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
+              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
             ];
 
             const tournament = evaluateStrategyTournament(candidates, interval);
@@ -543,7 +544,7 @@ function App() {
           // Option A: Single position per symbol & timeframe
           // Check if there is already an active (unresolved) position for this symbol + interval
           const hasActiveTrade = alertsLogRef.current.some(
-            a => a.symbol === symbol && a.interval === signalInterval && (a.status === 'OPEN' || a.status === 'TP1_HIT')
+            a => a.symbol === symbol && a.interval === signalInterval && (a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT')
           );
 
           if (hasActiveTrade) {
@@ -597,7 +598,9 @@ function App() {
                 executionStyle,
                 triggerMode
               );
-              if (vcmeRes.stopLoss > 0) {
+              const isBuySig = overallSignal.includes('BUY');
+              const isValidRisk = isBuySig ? vcmeRes.stopLoss < entryPrice : vcmeRes.stopLoss > entryPrice;
+              if (vcmeRes.stopLoss > 0 && isValidRisk) {
                 levels = {
                   stopLoss: vcmeRes.stopLoss,
                   takeProfit1: vcmeRes.takeProfit1,
@@ -605,41 +608,40 @@ function App() {
                 };
               }
             } else if (bestStrategy === 'multifractal') {
+              const isBuySig = overallSignal.includes('BUY');
               const mfRes = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol);
               if (mfRes.stopLoss > 0) {
                 const entryP = mfRes.triggerPrice || entryPrice;
                 const riskDist = Math.abs(entryP - mfRes.stopLoss);
-                const isBuySig = overallSignal.includes('BUY');
-                levels = {
-                  stopLoss: mfRes.stopLoss,
-                  takeProfit1: Number((isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist).toFixed(4)),
-                  takeProfit2: Number((isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist).toFixed(4)),
-                };
+                const isValidRisk = isBuySig ? mfRes.stopLoss < entryP : mfRes.stopLoss > entryP;
+                if (isValidRisk && riskDist > 0) {
+                  levels = {
+                    stopLoss: mfRes.stopLoss,
+                    takeProfit1: isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist,
+                    takeProfit2: isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist,
+                  };
+                }
               }
             }
 
-            const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
-              && ('Notification' in window) && Notification.permission === 'granted';
+              const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
+                && ('Notification' in window) && Notification.permission === 'granted';
 
-            if (desktopNotificationsEnabled) {
-              const confidenceTag = bestConfidence === 'LIMITED'
-                ? ' ⚠️ [Muestra Limitada]'
-                : bestConfidence === 'NONE'
-                  ? ' 🛡️ [Sin Ventaja]'
-                  : '';
-              const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-              
-              const formatP = (val: number) => val >= 1000
-                ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : `$${val.toFixed(2)}`;
+              if (desktopNotificationsEnabled) {
+                const confidenceTag = bestConfidence === 'LIMITED'
+                  ? ' ⚠️ [Muestra Limitada]'
+                  : bestConfidence === 'NONE'
+                    ? ' 🛡️ [Sin Ventaja]'
+                    : '';
+                const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
 
-              const levelInfo = `Entry: ${formatP(entryPrice)} | SL: ${formatP(levels.stopLoss)} | TP1: ${formatP(levels.takeProfit1)} | TP2: ${formatP(levels.takeProfit2)}`;
+                const levelInfo = `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`;
 
-              new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
-                body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})\n${levelInfo}`,
-                tag: `${symbol}-${signalInterval}`,
-              });
-            }
+                new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
+                  body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})\n${levelInfo}`,
+                  tag: `${symbol}-${signalInterval}`,
+                });
+              }
 
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
             const dedupKey = candleTimestamp > 0
@@ -654,6 +656,7 @@ function App() {
               time: timeString,
               pf: bestPF,
               strategy: strategyLabel,
+              executionStyle,
               confidence: bestConfidence,
               entryPrice,
               stopLoss: levels.stopLoss,
@@ -817,7 +820,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.25.1
+            v2026.08.26.1
           </span>
         </div>
       </header>
@@ -1031,10 +1034,15 @@ function App() {
                   let statusBg = 'rgba(59, 130, 246, 0.15)';
                   let statusColor = 'var(--accent-blue)';
 
-                  if (alert.status === 'TP2_HIT') {
+                  if (alert.status === 'TP2_CLOSED') {
                     const rVal = alert.realizedR || 0;
                     statusLabel = `TP2 (+${rVal > 0 ? rVal.toFixed(2) : '2.00'}R) ✅`;
                     statusBg = 'rgba(16, 185, 129, 0.2)';
+                    statusColor = 'var(--accent-green)';
+                  } else if (alert.status === 'TP2_HIT') {
+                    const rVal = alert.realizedR || 0;
+                    statusLabel = `TP2 Runner (+${rVal > 0 ? rVal.toFixed(2) : '1.38'}R) 🏃`;
+                    statusBg = 'rgba(16, 185, 129, 0.15)';
                     statusColor = 'var(--accent-green)';
                   } else if (alert.status === 'TP1_BE_CLOSED') {
                     const rVal = alert.realizedR || 0;
@@ -1157,9 +1165,9 @@ function App() {
                           paddingTop: '3px',
                           marginTop: '2px'
                         }}>
-                          <span>In: <strong style={{ color: '#fff' }}>${alert.entryPrice >= 1000 ? alert.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.entryPrice.toFixed(2)}</strong></span>
-                          <span>SL: <span style={{ color: 'var(--accent-red)' }}>${alert.stopLoss >= 1000 ? alert.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.stopLoss.toFixed(2)}</span></span>
-                          <span>TP: <span style={{ color: 'var(--accent-green)' }}>${alert.takeProfit1 >= 1000 ? alert.takeProfit1.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : alert.takeProfit1.toFixed(2)}</span></span>
+                          <span>In: <strong style={{ color: '#fff' }}>{formatSmartPrice(alert.entryPrice)}</strong></span>
+                          <span>SL: <span style={{ color: 'var(--accent-red)' }}>{formatSmartPrice(alert.stopLoss)}</span></span>
+                          <span>TP: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit1)}</span></span>
                         </div>
                       )}
                     </div>
@@ -1197,7 +1205,7 @@ function App() {
               {mainView === 'chart' ? (
                 <div>
                   {currentAsset} - <span style={{ color: 'var(--text-secondary)' }}>{interval.toUpperCase()} CHART</span>
-                  {latestClose > 0 && <span style={{ marginLeft: '14px', color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>${latestClose >= 1000 ? latestClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : latestClose.toFixed(2)}</span>}
+                  {latestClose > 0 && <span style={{ marginLeft: '14px', color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(latestClose)}</span>}
                 </div>
               ) : (
                 <div style={{ fontSize: '0.78rem', fontWeight: '800', color: 'var(--text-primary)', letterSpacing: '0.5px' }}>

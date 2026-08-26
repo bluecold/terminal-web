@@ -10,6 +10,8 @@ import { calculateVCMESniperSignal, calculateMultifractalMTFSignal } from '../in
 import {
   updateAlertsOutcome,
   calculateSessionStats,
+  calculateAlertLevels,
+  getStrategyExpiryCandles,
   generateCandleAlertKey,
   isCandleAlertFired,
   registerFiredCandleAlert,
@@ -17,6 +19,8 @@ import {
   clearFiredAlertsRegistry,
   type AuditAlertItem
 } from '../alertTracker';
+import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
+import { evaluateStrategyTournament, type StrategyCandidate } from '../tournament';
 import type { Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -65,7 +69,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const result = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'BTCUSDT', 'dayTrading');
     assert.strictEqual(result.insufficient, false, 'VCME intraday should NOT return insufficient data for 999 candles');
-    assert.strictEqual(result.forwardLabel, '24 hs max (Intradía)');
+    assert.strictEqual(result.forwardLabel, '6 hs max (Intradía)');
   });
 
   // Test 2: Swing Mode 1H Session Gap Immunity
@@ -109,7 +113,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const closedAlert: AuditAlertItem = {
       id: '1', symbol: 'BTCUSDT', interval: '5m', signal: 'BUY', time: '12:00',
       pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106,
-      status: 'TP2_HIT', realizedR: 2.5, pnlPercent: 4.5, timestamp: 1700000000000
+      status: 'TP2_CLOSED', realizedR: 2.5, pnlPercent: 4.5, timestamp: 1700000000000
     };
 
     const klinesMap = {
@@ -118,11 +122,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([closedAlert], klinesMap);
     assert.strictEqual(updated[0].pnlPercent, 4.5, 'Closed alert P&L should be frozen');
-    assert.strictEqual(updated[0].status, 'TP2_HIT');
+    assert.strictEqual(updated[0].status, 'TP2_CLOSED');
   });
 
   // Test 7: Alert Tracker TP1 -> TP2 Progression
-  test('updateAlertsOutcome advances OPEN alert to TP1_HIT and then TP2_HIT', () => {
+  test('updateAlertsOutcome advances OPEN alert to TP1_HIT and then TP2_CLOSED', () => {
     const openAlert: AuditAlertItem = {
       id: '2', symbol: 'ETHUSDT', interval: '1h', signal: 'BUY', time: '12:00',
       pf: 1.8, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 102, takeProfit2: 105,
@@ -137,7 +141,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     };
 
     const updated = updateAlertsOutcome([openAlert], klinesMap);
-    assert.strictEqual(updated[0].status, 'TP2_HIT', 'Alert should progress through TP1 to TP2_HIT');
+    assert.strictEqual(updated[0].status, 'TP2_CLOSED', 'Standard alert should progress through TP1 to TP2_CLOSED');
     assert(updated[0].pnlPercent > 0);
   });
 
@@ -217,14 +221,14 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const todayMs = Date.now();
     const alerts: AuditAlertItem[] = [
       { id: '1', symbol: 'BTC', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_BE_CLOSED', realizedR: 0.75, pnlPercent: 1.5, timestamp: todayMs },
-      { id: '2', symbol: 'ETH', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP2_HIT', realizedR: 2.0, pnlPercent: 4.5, timestamp: todayMs },
+      { id: '2', symbol: 'ETH', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP2_CLOSED', realizedR: 2.0, pnlPercent: 4.5, timestamp: todayMs },
       { id: '3', symbol: 'SOL', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'SL_HIT', realizedR: -1.0, pnlPercent: -2.0, timestamp: todayMs },
       { id: '4', symbol: 'BNB', interval: '5m', signal: 'BUY', time: '12:00', pf: 2.0, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 103, takeProfit2: 106, status: 'TP1_HIT', realizedR: 0.75, pnlPercent: 2.0, timestamp: todayMs }
     ];
 
     const stats = calculateSessionStats(alerts, false);
     assert.strictEqual(stats.total, 4);
-    assert.strictEqual(stats.wins, 2, 'TP1_BE_CLOSED and TP2_HIT must count as wins');
+    assert.strictEqual(stats.wins, 2, 'TP1_BE_CLOSED and TP2_CLOSED must count as wins');
     assert.strictEqual(stats.losses, 1, 'SL_HIT must count as loss');
     assert.strictEqual(stats.openCount, 1, 'TP1_HIT must be counted in openCount while trailing');
     assert.strictEqual(stats.winRate, 66.7);
@@ -699,6 +703,298 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const trackerRes = updateAlertsOutcome([alert], { 'GOLDEN_MTF:5m': forwardKlines });
     assert.strictEqual(trackerRes[0].status, 'TP1_BE_CLOSED', 'Multifractal must transition to TP1_BE_CLOSED on entry retest');
     assert.strictEqual(trackerRes[0].realizedR, 0.75, 'Realized R for 1.5R TP1 at Breakeven must be exactly +0.75R');
+  });
+
+  // Test 25: Smart Formatters Scale Invariance ($BTC vs $SOL vs $DOGE vs $PEPE)
+  test('formatSmartPrice and formatSmartNumber adapt dynamically across asset price scales', () => {
+    assert.strictEqual(getOptimalDecimals(65420.5), 2);
+    assert.strictEqual(getOptimalDecimals(152.4), 2);
+    assert.strictEqual(getOptimalDecimals(0.5218), 4);
+    assert.strictEqual(getOptimalDecimals(0.1174), 4);
+    assert.strictEqual(getOptimalDecimals(0.00000854), 8);
+
+    assert.strictEqual(formatSmartPrice(65420.5), '$65,420.50');
+    assert.strictEqual(formatSmartPrice(152.4), '$152.40');
+    assert.strictEqual(formatSmartPrice(0.5218), '$0.5218');
+    assert.strictEqual(formatSmartPrice(0.1174), '$0.1174');
+    assert.strictEqual(formatSmartPrice(0.00000854), '$0.00000854');
+    assert.strictEqual(formatSmartPrice(0.00000854, false), '0.00000854');
+
+    assert.strictEqual(formatSmartNumber(0.1174), '0.1174');
+    assert.strictEqual(formatSmartNumber(0.00000854), '0.00000854');
+    assert.strictEqual(formatSmartNumber(152.4, 2), '152.40');
+  });
+
+  // Test 26: calculateAlertLevels Micro-Price Integrity ($PEPE / $SHIB)
+  test('calculateAlertLevels preserves unquantized precision on micro-cap assets ($PEPE < $0.0001)', () => {
+    const pepeEntry = 0.00000854;
+    const buyLevels = calculateAlertLevels('BUY', pepeEntry, '5m');
+
+    assert(buyLevels.stopLoss > 0, 'Stop loss must be strictly positive');
+    assert(buyLevels.stopLoss < pepeEntry, 'Stop loss for BUY must be strictly below entry');
+    assert(buyLevels.takeProfit1 > pepeEntry, 'TP1 must be strictly above entry');
+    assert(buyLevels.takeProfit2 > buyLevels.takeProfit1, 'TP2 must be strictly above TP1');
+
+    const riskDist = pepeEntry - buyLevels.stopLoss;
+    const rewardDist = buyLevels.takeProfit1 - pepeEntry;
+    const effectiveRR = rewardDist / riskDist;
+    assert(Math.abs(effectiveRR - 1.5) < 1e-6, `R:R ratio must be 1.5:1 without quantization error (got ${effectiveRR})`);
+  });
+
+  // Test 27: Low-Priced Asset Risk Integrity and Tracker Execution ($DOGE ~0.1174)
+  test('Low-priced asset ($DOGE) maintains risk bounds and does not trigger false instant SL_HIT', () => {
+    const dogeEntry = 0.1174;
+    const dogeSL = dogeEntry * (1 - 0.015); // ~0.115639
+    const dogeTP1 = dogeEntry * (1 + 0.015 * 1.5); // ~0.1200425
+    const dogeTP2 = dogeEntry * (1 + 0.015 * 2.5); // ~0.1218025
+
+    // Verify unrounded SL is strictly below entry
+    assert(dogeSL < dogeEntry, 'Calculated SL must be below entry');
+
+    const alert: AuditAlertItem = {
+      id: 'doge-test-alert',
+      symbol: 'DOGEUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '14:00',
+      pf: 2.0,
+      strategy: 'VCME Sniper',
+      entryPrice: dogeEntry,
+      stopLoss: dogeSL,
+      takeProfit1: dogeTP1,
+      takeProfit2: dogeTP2,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: 1700000000000,
+      candleTimestamp: 1700000000
+    };
+
+    // Candle 1: Price fluctuates between 0.1165 (above SL 0.115639) and 0.1185 -> should stay OPEN
+    const candle1: Kline = {
+      time: 1700000300,
+      open: 0.1174,
+      high: 0.1185,
+      low: 0.1165,
+      close: 0.1180,
+      volume: 500000
+    };
+
+    const trackerStep1 = updateAlertsOutcome([alert], { 'DOGEUSDT:5m': [candle1] });
+    assert.strictEqual(trackerStep1[0].status, 'OPEN', 'DOGE alert must remain OPEN (0.1165 > SL 0.115639)');
+
+    // Candle 2: Price surges to 0.1205 (hits TP1 0.1200425) -> should transition to TP1_HIT
+    const candle2: Kline = {
+      time: 1700000600,
+      open: 0.1180,
+      high: 0.1205,
+      low: 0.1178,
+      close: 0.1202,
+      volume: 800000
+    };
+
+    const trackerStep2 = updateAlertsOutcome([alert], { 'DOGEUSDT:5m': [candle1, candle2] });
+    assert.strictEqual(trackerStep2[0].status, 'TP1_HIT', 'DOGE alert must transition to TP1_HIT');
+  });
+
+  // Test 28: getStrategyExpiryCandles Horizon Parity
+  test('getStrategyExpiryCandles enforces strategy-aware horizon parity', () => {
+    assert.strictEqual(getStrategyExpiryCandles('VCME Sniper', '5m', 'dayTrading'), 72, 'VCME DayTrading 5m must be 72 candles (6h)');
+    assert.strictEqual(getStrategyExpiryCandles('VCME Multitemporal', '1h', 'swing'), 48, 'VCME Swing 1h must be 48 candles (48h)');
+    assert.strictEqual(getStrategyExpiryCandles('Multifractal MTF', '5m'), 12, 'Multifractal MTF 5m must be 12 candles (1h)');
+    assert.strictEqual(getStrategyExpiryCandles('Standard Voting', '5m'), 6, 'Standard 5m must be 6 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Standard Voting', '1h'), 4, 'Standard 1h must be 4 candles');
+  });
+
+  // Test 29: VCME Emergency Exit (VWAP + EMA21)
+  test('updateAlertsOutcome executes Emergency Exit when VCME trade loses VWAP and EMA21', () => {
+    const startTime = 1700000000;
+    const entryPrice = 100;
+    const stopLoss = 96; // 4% risk
+    const takeProfit1 = 106;
+    const takeProfit2 = 110;
+    
+    // Generate 30 pre-candles at price ~100 to establish baseline VWAP ~100 and EMA21 ~100
+    const klines: Kline[] = [];
+    for (let i = 0; i < 30; i++) {
+      klines.push({
+        time: startTime + i * 300,
+        open: 100,
+        high: 100.5,
+        low: 99.5,
+        close: 100,
+        volume: 1000
+      });
+    }
+
+    const alertTime = (startTime + 29 * 300) * 1000;
+    const alertCandleTime = startTime + 29 * 300;
+
+    const alert: AuditAlertItem = {
+      id: 'vcme-emergency-test',
+      symbol: 'BTCUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.5,
+      strategy: 'VCME Sniper',
+      executionStyle: 'dayTrading',
+      entryPrice,
+      stopLoss,
+      takeProfit1,
+      takeProfit2,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: alertTime,
+      candleTimestamp: alertCandleTime
+    };
+
+    // Candle 31: Sharp dip to 98.0 (below VWAP ~100 and EMA21 ~99.8, but ABOVE SL 96.0)
+    klines.push({
+      time: startTime + 30 * 300,
+      open: 99.5,
+      high: 99.5,
+      low: 97.8,
+      close: 98.0, // loses VWAP & EMA21
+      volume: 5000
+    });
+
+    const evaluated = updateAlertsOutcome([alert], { 'BTCUSDT:5m': klines });
+    assert.strictEqual(evaluated[0].status, 'EXPIRED', 'Alert must trigger Emergency Exit and resolve as EXPIRED');
+    assert(evaluated[0].pnlPercent < 0 && evaluated[0].pnlPercent > -3.0, `PnL should be ~ -2.0% (got ${evaluated[0].pnlPercent}%)`);
+    assert(evaluated[0].realizedR < 0 && evaluated[0].realizedR > -0.9, `Realized R should be ~ -0.5R (got ${evaluated[0].realizedR}R) instead of -1.0R full SL`);
+  });
+
+  // Test 30: VCME Chandelier Trailing Runner after TP2
+  test('updateAlertsOutcome trails runner with Chandelier Stop after TP2', () => {
+    const startTime = 1700000000;
+    const entryPrice = 100;
+    const stopLoss = 98; // riskDist = 2
+    const takeProfit1 = 103; // +1.5R
+    const takeProfit2 = 105; // +2.5R
+    const alertCandleTime = startTime;
+    
+    const alert: AuditAlertItem = {
+      id: 'vcme-chandelier-test',
+      symbol: 'ETHUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.5,
+      strategy: 'VCME Sniper',
+      executionStyle: 'dayTrading',
+      entryPrice,
+      stopLoss,
+      takeProfit1,
+      takeProfit2,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: startTime * 1000,
+      candleTimestamp: alertCandleTime
+    };
+
+    // Pre-load klines:
+    // Candle 1: reaches 103.5 -> hits TP1 (status = TP1_HIT)
+    // Candle 2: surges to 106.0 -> hits TP2 (status = TP2_HIT)
+    // Candle 3: peaks at 108.0 (highestHigh = 108.0), ATR ~ 1.0 -> Chandelier SL = 108 - 2.5*1 = 105.5
+    // Candle 4: drops to close at 105.0 (below Chandelier 105.5) -> exits runner
+    const klines: Kline[] = [
+      { time: startTime, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
+      { time: startTime + 300, open: 100, high: 103.5, low: 100, close: 103.2, volume: 1000 },
+      { time: startTime + 600, open: 103.2, high: 106.0, low: 103.0, close: 105.5, volume: 1500 },
+      { time: startTime + 900, open: 105.5, high: 108.0, low: 105.2, close: 107.5, volume: 2000 },
+      { time: startTime + 1200, open: 107.5, high: 107.5, low: 104.8, close: 105.0, volume: 2500 },
+    ];
+
+    const evaluated = updateAlertsOutcome([alert], { 'ETHUSDT:5m': klines });
+    assert.strictEqual(evaluated[0].status, 'TP2_CLOSED', 'Alert must be TP2_CLOSED on Chandelier exit');
+    assert(evaluated[0].realizedR >= 1.8, `Realized R with trailing runner should be >= 1.8R (got ${evaluated[0].realizedR}R)`);
+  });
+
+  // Test 31: VCME Runner SL Pullback to TP1 (Eliminates Optimistic Bias)
+  test('updateAlertsOutcome accurately resolves runner pullback to active SL (TP1) as +1.75R', () => {
+    const startTime = 1700000000;
+    const entryPrice = 100;
+    const stopLoss = 98;    // riskDist = 2
+    const takeProfit1 = 103; // +1.5R
+    const takeProfit2 = 105; // +2.5R
+    const alertCandleTime = startTime;
+    
+    const alert: AuditAlertItem = {
+      id: 'vcme-pullback-test',
+      symbol: 'SOLUSDT',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 2.5,
+      strategy: 'VCME Sniper',
+      executionStyle: 'dayTrading',
+      entryPrice,
+      stopLoss,
+      takeProfit1,
+      takeProfit2,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: startTime * 1000,
+      candleTimestamp: alertCandleTime
+    };
+
+    // Candle 1: reaches 103.5 -> hits TP1
+    // Candle 2: reaches 105.2 -> hits TP2 (status = TP2_HIT), activeSL set to TP1 (103.0)
+    // Candle 3: drops to low 102.5 (<= activeSL 103.0) -> exits runner at activeSL (103.0)
+    const klines: Kline[] = [
+      { time: startTime, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
+      { time: startTime + 300, open: 100, high: 103.5, low: 100, close: 103.2, volume: 1000 },
+      { time: startTime + 600, open: 103.2, high: 105.2, low: 103.0, close: 105.0, volume: 1500 },
+      { time: startTime + 900, open: 105.0, high: 105.0, low: 102.5, close: 102.8, volume: 2000 },
+    ];
+
+    const evaluated = updateAlertsOutcome([alert], { 'SOLUSDT:5m': klines });
+    assert.strictEqual(evaluated[0].status, 'TP2_CLOSED', 'Alert must transition to TP2_CLOSED on runner SL hit');
+    // Realized R: 0.50*1.5 + 0.25*2.5 + 0.25*1.5 = 0.75 + 0.625 + 0.375 = 1.75R (NOT 2.00R!)
+    assert.strictEqual(evaluated[0].realizedR, 1.75, 'Realized R on pullback to TP1 SL must be exactly +1.75R');
+  });
+
+  // Test 32: Multifractal Mean Reversion Invalidation Parity
+  test('backtestMultifractalMTF preserves winning Mean Reversion setups without false midpoint invalidation', () => {
+    const klines1d = generateSyntheticKlines(60, 86400, 100, 0.2);
+    const klines1h = generateSyntheticKlines(100, 3600, 100, 0.05);
+    const klines5m = generateSyntheticKlines(600, 300, 100, 0.02);
+
+    const result = backtestMultifractalMTF(klines5m, klines1h, klines1d, 'MR_TEST');
+    assert.strictEqual(result.insufficient, false);
+    assert(typeof result.winRate === 'number');
+    assert(typeof result.profitFactor === 'number');
+  });
+
+  // Test 33: Tournament Zero-Loss / Single Trade Singularity Rejection
+  test('evaluateStrategyTournament prevents single-trade zero-loss candidates from beating robust samples', () => {
+    const candidates: StrategyCandidate[] = [
+      // 1 single lucky trade with 0 losses
+      { key: 'standard', label: 'Lucky Single Trade', profitFactor: 99.9, expectancy: 1.5, winRate: 1.0, resolved: 1, forwardWindow: 6 },
+      // 20 robust trades with strong stats
+      { key: 'confluencia', label: 'Robust Confluencia', profitFactor: 2.2, expectancy: 0.6, winRate: 0.65, resolved: 20, forwardWindow: 6 }
+    ];
+
+    const result = evaluateStrategyTournament(candidates, '5m');
+    assert.strictEqual(result.bestStrategy, 'confluencia', 'Robust sample must decisively beat single lucky trade');
+    assert.strictEqual(result.confidence, 'HIGH');
+  });
+
+  // Test 34: Tournament Time-Horizon Expectancy Normalization
+  test('evaluateStrategyTournament fairly scales expectancy across different forward windows', () => {
+    const candidates: StrategyCandidate[] = [
+      // Fast strategy (6 candles): +0.35% in 30 min (E_norm = 0.35%)
+      { key: 'standard', label: 'Fast Scalp (6 candles)', profitFactor: 1.8, expectancy: 0.35, winRate: 0.60, resolved: 20, forwardWindow: 6 },
+      // Slow strategy (72 candles): +0.40% in 6 hrs (E_norm = 0.40 / sqrt(12) = 0.115%)
+      { key: 'multitemporal', label: 'Slow Drift (72 candles)', profitFactor: 1.8, expectancy: 0.40, winRate: 0.60, resolved: 20, forwardWindow: 72 }
+    ];
+
+    const result = evaluateStrategyTournament(candidates, '5m');
+    assert.strictEqual(result.bestStrategy, 'standard', 'Fast scalp with higher edge-per-unit-time must beat slow drift with identical PF');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

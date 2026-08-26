@@ -294,7 +294,7 @@ export function backtestMultitemporal(
   const stepSec = klines5m.length > 1 ? (klines5m[1].time - klines5m[0].time) : (style === 'swing' ? 3600 : 300);
   const forwardWindow = style === 'swing'
     ? (stepSec === 300 ? 576 : 48)  // 576 x 5m = 48h OR 48 x 1h = 48h
-    : 288;                           // 288 x 5m = 24h
+    : 72;                            // 72 x 5m = 6h (Intradía)
   const cooldownHours = style === 'swing' ? 4 : 2;
   const candlesPerHour = Math.max(1, Math.round(3600 / (stepSec || 300)));
   const cooldownPeriod = cooldownHours * candlesPerHour;  // 4h cooldown for Swing, 2h for DayTrading
@@ -305,7 +305,7 @@ export function backtestMultitemporal(
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
     label: `datos insuficientes`,
-    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '24 hs max (Intradía)',
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: 1.5,
@@ -1069,7 +1069,7 @@ export function backtestMultitemporal(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? wins / resolved : 0;
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
-  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? 99.9 : 0);
+  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? totalGainPct + 1.0 : 0);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
 
@@ -1082,11 +1082,11 @@ export function backtestMultitemporal(
     timeouts,
     winRate,
     resolutionRate,
-    profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
+    profitFactor: Number(profitFactor.toFixed(2)),
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
-    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '24 hs max (Intradía)',
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: style === 'swing' ? 2.0 : 1.5,
@@ -1196,7 +1196,7 @@ function runBacktestGenericOptimized(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? wins / resolved : 0;
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
-  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? Infinity : 0);
+  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? totalGainPct + 1.0 : 0);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
 
@@ -1209,7 +1209,7 @@ function runBacktestGenericOptimized(
     timeouts,
     winRate,
     resolutionRate,
-    profitFactor: Number(profitFactor === Infinity ? 99.9 : profitFactor.toFixed(2)),
+    profitFactor: Number(profitFactor.toFixed(2)),
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
     label: `últimas ${actualWindow} velas`,
@@ -1763,20 +1763,17 @@ export function backtestMultifractalMTF(
       if (fIdx >= klines5m.length) break;
       const fCandle = klines5m[fIdx];
 
+      // Early invalidation in candles 1..3 on adverse move > 0.5R (matches alertTracker)
       if (f <= 3) {
-        const fBand = volBands5M[fIdx];
-        if (fBand) {
-          if (signal === 'BUY' && fCandle.close < fBand.midpoint) {
-            outcome = 'LOSS';
-            const lossPct = Math.abs((fCandle.close - entryPrice) / entryPrice * 100) + frictionPct;
-            totalLossPct += lossPct;
-            break;
-          } else if (signal === 'SELL' && fCandle.close > fBand.midpoint) {
-            outcome = 'LOSS';
-            const lossPct = Math.abs((entryPrice - fCandle.close) / entryPrice * 100) + frictionPct;
-            totalLossPct += lossPct;
-            break;
-          }
+        const adverseMove = signal === 'BUY'
+          ? entryPrice - fCandle.close
+          : fCandle.close - entryPrice;
+
+        if (adverseMove > 0.5 * risk) {
+          outcome = 'LOSS';
+          const lossPct = (adverseMove / entryPrice * 100) + frictionPct;
+          totalLossPct += lossPct;
+          break;
         }
       }
 
@@ -1829,7 +1826,7 @@ export function backtestMultifractalMTF(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number((resolved / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? 99.9 : 0);
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? Number((totalGainPct + 1.0).toFixed(2)) : 0);
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
 
   const res: BacktestResult = {

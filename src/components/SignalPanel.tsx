@@ -13,6 +13,7 @@ import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtr
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
 import BacktestCard from './BacktestCard';
+import { formatSmartPrice, formatSmartNumber } from '../utils/formatters';
 
 interface SignalPanelProps {
   symbol: string;
@@ -62,7 +63,7 @@ export default function SignalPanel({
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
   useEffect(() => {
-    const APP_VERSION = 'v2026.08.25.1';
+    const APP_VERSION = 'v2026.08.26.1';
     const cachedVersion = localStorage.getItem('terminal_app_version');
     if (cachedVersion !== APP_VERSION) {
       // Clear old terminal cache keys
@@ -309,11 +310,11 @@ export default function SignalPanel({
       return { bestStrategy: 'standard' as const, strategyLabel: 'Estándar', confidence: 'HIGH' as ConfidenceLevel, compositeScore: 0, profitFactor: 0, reasoning: '' };
     }
     const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Estándar',        profitFactor: btStandard.profitFactor,  expectancy: btStandard.expectancy,  winRate: btStandard.winRate,  resolved: btStandard.wins + btStandard.losses },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConfluencia.profitFactor, expectancy: btConfluencia.expectancy, winRate: btConfluencia.winRate, resolved: btConfluencia.wins + btConfluencia.losses },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScoring.profitFactor,expectancy: btScoring.expectancy,winRate: btScoring.winRate,resolved: btScoring.wins + btScoring.losses },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMultitemporal ? btMultitemporal.profitFactor : 0, expectancy: btMultitemporal ? btMultitemporal.expectancy : 0, winRate: btMultitemporal ? btMultitemporal.winRate : 0, resolved: btMultitemporal ? btMultitemporal.wins + btMultitemporal.losses : 0 },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMultifractal ? btMultifractal.profitFactor : 0,   expectancy: btMultifractal ? btMultifractal.expectancy : 0,   winRate: btMultifractal ? btMultifractal.winRate : 0,   resolved: btMultifractal ? btMultifractal.wins + btMultifractal.losses : 0 },
+      { key: 'standard',     label: 'Estándar',        profitFactor: btStandard.profitFactor,  expectancy: btStandard.expectancy,  winRate: btStandard.winRate,  resolved: btStandard.totalSignals > 0 ? btStandard.totalSignals : (btStandard.wins + btStandard.losses), forwardWindow: 6 },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConfluencia.profitFactor, expectancy: btConfluencia.expectancy, winRate: btConfluencia.winRate, resolved: btConfluencia.totalSignals > 0 ? btConfluencia.totalSignals : (btConfluencia.wins + btConfluencia.losses), forwardWindow: 6 },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScoring.profitFactor,expectancy: btScoring.expectancy,winRate: btScoring.winRate,resolved: btScoring.totalSignals > 0 ? btScoring.totalSignals : (btScoring.wins + btScoring.losses), forwardWindow: 6 },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMultitemporal ? btMultitemporal.profitFactor : 0, expectancy: btMultitemporal ? btMultitemporal.expectancy : 0, winRate: btMultitemporal ? btMultitemporal.winRate : 0, resolved: btMultitemporal ? (btMultitemporal.totalSignals > 0 ? btMultitemporal.totalSignals : btMultitemporal.wins + btMultitemporal.losses) : 0, forwardWindow: interval === '1h' ? 48 : 72 },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMultifractal ? btMultifractal.profitFactor : 0,   expectancy: btMultifractal ? btMultifractal.expectancy : 0,   winRate: btMultifractal ? btMultifractal.winRate : 0,   resolved: btMultifractal ? (btMultifractal.totalSignals > 0 ? btMultifractal.totalSignals : btMultifractal.wins + btMultifractal.losses) : 0, forwardWindow: 12 },
     ];
     return evaluateStrategyTournament(candidates, interval);
   }, [btStandard, btConfluencia, btScoring, btMultitemporal, btMultifractal, interval]);
@@ -837,7 +838,7 @@ export default function SignalPanel({
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Stop Loss Recomendado:</span>
                             <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
-                              {exp.stopLoss > 0 ? `$${exp.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                              {exp.stopLoss > 0 ? formatSmartPrice(exp.stopLoss) : '-'}
                             </span>
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1330,23 +1331,23 @@ export default function SignalPanel({
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.12)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
-                              <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                              <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.stopLoss)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 ({executionStyle === 'swing' ? '2.0R' : '1.5R'} — cerrar 50% + BE):</span>
-                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit1.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit1)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 ({executionStyle === 'swing' ? '4.0R' : '2.5R'} — cerrar 25%):</span>
-                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit2.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit2)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🚀 TP3 ({executionStyle === 'swing' ? '5.0R' : '3.5R'} — 25% + trailing):</span>
-                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multi.takeProfit3.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                              <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit3)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: '0.75rem', color: 'var(--accent-blue)' }}>⚖️ R:R Ratio:</span>
-                              <span style={{ color: 'var(--accent-blue)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>1:{multi.riskRewardRatio}</span>
+                              <span style={{ color: 'var(--accent-blue)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>1:{formatSmartNumber(multi.riskRewardRatio, 1)}</span>
                             </div>
                           </div>
                         </div>
@@ -1355,7 +1356,7 @@ export default function SignalPanel({
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem' }}>
                         <span style={{ color: 'var(--text-secondary)' }}>S/R ({executionStyle === 'swing' ? '1H' : '5m'}):</span>
                         <span style={{ color: 'var(--text-primary)', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>
-                          {klines.length > 0 ? `S: $${multi.nearestSupport > 0 ? multi.nearestSupport.toFixed(2) : '-'} | R: $${multi.nearestResistance > 0 ? multi.nearestResistance.toFixed(2) : '-'}` : '-'}
+                          {klines.length > 0 ? `S: ${multi.nearestSupport > 0 ? formatSmartPrice(multi.nearestSupport) : '-'} | R: ${multi.nearestResistance > 0 ? formatSmartPrice(multi.nearestResistance) : '-'}` : '-'}
                         </span>
                       </div>
                     </div>
@@ -1563,11 +1564,11 @@ export default function SignalPanel({
                           <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px', marginBottom: '2px' }}>GESTIÓN DE RIESGO E INVALIDACIÓN</div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Precio de Entrada:</span>
-                            <span style={{ color: 'var(--text-primary)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multifractal.triggerPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                            <span style={{ color: 'var(--text-primary)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multifractal.triggerPrice)}</span>
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
-                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>${multifractal.stopLoss.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multifractal.stopLoss)}</span>
                           </div>
                           <div style={{
                             fontSize: '0.65rem',
@@ -1815,19 +1816,19 @@ export default function SignalPanel({
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Entrada:</span>
                 <div style={{ color: '#fff', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  ${entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatSmartPrice(entryPrice)}
                 </div>
               </div>
               <div>
                 <span style={{ color: 'var(--accent-red)' }}>Stop Loss (-{(slPct*100).toFixed(1)}%):</span>
                 <div style={{ color: 'var(--accent-red)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  ${slPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatSmartPrice(slPrice)}
                 </div>
               </div>
               <div>
                 <span style={{ color: 'var(--accent-green)' }}>Target 1 (+{(tpPct*100).toFixed(1)}%):</span>
                 <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  ${tpPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatSmartPrice(tpPrice)}
                 </div>
               </div>
               <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '10px' }}>
@@ -1897,7 +1898,7 @@ export default function SignalPanel({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>TAMAÑO RECOMENDADO:</span>
                 <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
-                  {positionUnits >= 1000 ? positionUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : positionUnits.toFixed(4)} {isCrypto ? symbol.replace('USDT', '') : 'Acciones'}
+                  {positionUnits >= 1000 ? positionUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : formatSmartNumber(positionUnits, 4)} {isCrypto ? symbol.replace('USDT', '') : 'Acciones'}
                 </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '6px' }}>

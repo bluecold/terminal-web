@@ -31,8 +31,8 @@ Actualmente existen 5 agrupaciones principales de señales:
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
 4. **VCME Sniper Engine v3 (Híbrido - Upgraded)**: Estrategia cuantitativa avanzada con selección interactiva de perfil y gatillo:
    - **Perfiles de Ejecución**:
-     - *Day Trading (Intradía)*: Gatillo en 5m, ventana de simulación/evaluación corta (576 velas de 5m), Stop Loss ajustado por ATR/estructura local y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
-     - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
+     - *Day Trading (Intradía)*: Gatillo en 5m, ventana de simulación/evaluación (576 velas de 5m), forwardWindow unificado de 72 velas (6 hs max), Stop Loss ajustado por ATR/estructura local y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
+     - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), forwardWindow de 48 velas (48 hs max), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
    - **Modos de Gatillo**:
      - *Agresivo (Ruptura)*: Disparo inmediato al cumplir las condiciones de confluencia de la vela de gatillo.
      - *Conservador (Retest)*: Busca confirmación mediante retest de los niveles de ruptura (retroceso de hasta 5 velas a las BB u ORB roto) para asegurar que el rompimiento es verídico en mercados de alta volatilidad.
@@ -227,6 +227,24 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Caché por hash de timestamps de velas para evitar recalcular 55 backtests cada minuto.
     - Pausas asíncronas no bloqueantes entre lotes para garantizar 60 FPS continuos en la UI.
     - Backoff de 10 minutos para símbolos caídos o con errores repetidos de API con estado `OFFLINE` y botón de reintento manual.
+
+- **Actualización v2026.08.26.1 — Quantitative Precision, Parity Overhaul & Tournament Normalization**:
+  - **Resolución de la Cuantización de Riesgo en Activos Low-Price**:
+    - Erradicación de `.toFixed(2)` en niveles SL/TP en `indicators.ts`, `alertTracker.ts` y `App.tsx`.
+    - Creación de `formatters.ts` con `getOptimalDecimals`, `formatSmartPrice` y `formatSmartNumber` adaptables dinámicamente desde $PEPE ($0.000003) hasta $BTC ($60,000+).
+  - **Sincronización de Salidas y Horizontes VCME**:
+    - Unificación del horizonte intradía a 72 velas (6 horas) en `backtester.ts` y `alertTracker.ts`.
+    - Implementación de Emergency Exit (pérdida de VWAP + EMA21) y Chandelier Trailing Exit ($2.5 \cdot ATR$ / EMA9) en el live alert tracker.
+  - **Máquina de Estados de Runner Post-TP2**:
+    - Descongelamiento de `TP2_HIT` (permanece activo en evaluación continua) y creación del estado terminal `TP2_CLOSED`.
+    - Eliminación de la acreditación anticipada de $R$: se acredita $+1.375R$ al tocar TP2 y el runner ($25\%$) flota en tiempo real hasta su resolución ($+1.75R$ en retroceso a TP1 SL, Chandelier exit, o $+2.625R$ en TP3).
+  - **Protección de Reversión a la Media en Multifractal MTF**:
+    - Eliminación de la invalidación por cruce de Midpoint con `Math.abs()` en `backtester.ts:1766-1781`.
+    - Sustitución por evaluación de retroceso adverso real ($> 0.5R$) con paridad 1:1 respecto a `alertTracker.ts`.
+  - **Normalización Temporal y Regularización Bayesiana en el Torneo de Estrategias**:
+    - Normalización de Expectancy por raíz de tiempo ($\sqrt{t}$): factor $\sqrt{\text{horizonte}/6}$ nivelando la comparación entre ventanas de 6, 12 y 72 velas.
+    - Regularización Bayesiana Laplace para Profit Factor en $0$ pérdidas, eliminando el artefacto $PF = 99.9 \to 5.0$ en $N=1$.
+    - Capping muestral de PF ($\text{Max PF} = \min(5.0, 1.0 + N \times 0.5)$) y unificación de denominadores con `totalSignals`.
 
 ---
 
