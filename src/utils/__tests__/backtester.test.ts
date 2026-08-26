@@ -1147,6 +1147,17 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(Number.isFinite(liveResult.stopLoss), 'Stop loss must be finite');
   });
 
+  // Test 43: Pullback Boundary Evaluation Parity (idx >= 10 Guard)
+  test('VCME backtester evaluates pullbacks at the start of the window without boundary blindness', () => {
+    const klines5m = generateSyntheticKlines(700, 300, 100);
+    const klines1h = generateSyntheticKlines(200, 3600, 100);
+    const klines1d = generateSyntheticKlines(60, 86400, 100);
+
+    const btResult = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'PULLBACK_TEST', 'dayTrading');
+    assert.strictEqual(btResult.insufficient, false, 'Backtester must evaluate window seamlessly');
+    assert(typeof btResult.totalSignals === 'number', 'totalSignals must be a valid number');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

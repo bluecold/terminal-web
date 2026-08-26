@@ -611,7 +611,7 @@ export function backtestMultitemporal(
 
     // A. Pullback Trigger (Solo agresivo)
     const hasPullbackLong = (idx: number) => {
-      if (idx < oldestEvalIdx) return false;
+      if (idx < 10) return false;
       const low = klines5m[idx].low;
       const e9 = ema9_5m[idx];
       const e21 = ema21_5m[idx];
@@ -624,7 +624,7 @@ export function backtestMultitemporal(
     };
 
     const hasPullbackShort = (idx: number) => {
-      if (idx < oldestEvalIdx) return false;
+      if (idx < 10) return false;
       const high = klines5m[idx].high;
       const e9 = ema9_5m[idx];
       const e21 = ema21_5m[idx];
