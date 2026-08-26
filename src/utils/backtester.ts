@@ -1478,11 +1478,12 @@ export function computeScoringSignalsSeries(
     obvEMAArr = calculateEMA(obvArr, 10);
   }
 
-  // Cache at aligned checkpoints. Queries use the most recent checkpoint at or
-  // before the evaluated candle, so no future price data enters the S/R layer.
-  const srCacheInterval = 1;
+  // Cache at aligned checkpoints (interval = 5, matching 5-bar pivot confirmation).
+  // Queries use the most recent checkpoint at or before the evaluated candle, avoiding look-ahead bias.
+  const srCacheInterval = 5;
   const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
-  for (let idx = 0; idx < length; idx += srCacheInterval) {
+  const startIdx = Math.max(0, Math.floor(55 / srCacheInterval) * srCacheInterval);
+  for (let idx = startIdx; idx < length; idx += srCacheInterval) {
     const windowStart = Math.max(0, idx - 100);
     const windowSlice = klines.slice(windowStart, idx + 1);
     const sr = calculateSupportResistance(windowSlice, klines[idx].close);

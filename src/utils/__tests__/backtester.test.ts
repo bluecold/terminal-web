@@ -4,7 +4,8 @@ import {
   backtestMultitemporal,
   backtestMultifractalMTF,
   computeStandardSignalsSeries,
-  computeConfluenciaSignalsSeries
+  computeConfluenciaSignalsSeries,
+  computeScoringSignalsSeries
 } from '../backtester';
 import {
   calculateVCMESniperSignal,
@@ -1190,6 +1191,21 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // Verify Standard BUY on the same candle is also NOT blocked
     assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'Standard', 'BUY'), false, 'Multifractal BUY must NOT block Standard BUY on same candle');
+  });
+
+  // Test 46: Scoring Series Checkpoint S/R Caching (srCacheInterval = 5)
+  test('computeScoringSignalsSeries computes signals efficiently with aligned 5-bar S/R caching', () => {
+    const klines = generateSyntheticKlines(300, 300, 100, 0.05);
+    const signals = computeScoringSignalsSeries(klines, '5m');
+
+    assert.strictEqual(signals.length, 300, 'Signals length must match input klines');
+    // First 59 bars are NEUTRAL
+    assert.strictEqual(signals[0], 'NEUTRAL');
+    assert.strictEqual(signals[58], 'NEUTRAL');
+    // Signals from bar 59 onwards are valid signal types
+    for (let i = 59; i < 300; i++) {
+      assert(['BUY', 'SELL', 'NEUTRAL'].includes(signals[i]), `Signal at index ${i} must be valid`);
+    }
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
