@@ -2061,7 +2061,7 @@ export function calculateVCMESniperSignal(
   // 2. FILTROS Y SETUP DE 1H (VCME v2.0 Context & Regime)
   // ═══════════════════════════════════════════════════════════
   const closes1h = klines1h.map(k => k.close);
-  const ema200_1h = calculateEMA(closes1h, Math.min(200, closes1h.length));
+  const ema200_1h = closes1h.length >= 200 ? calculateEMA(closes1h, 200) : new Array(closes1h.length).fill(NaN);
   const ema50_1h = calculateEMA(closes1h, 50);
   const ema20_1h = calculateEMA(closes1h, 20);
   const rsiSeries1h = calculateRSISeries(closes1h, 14);
@@ -2112,8 +2112,8 @@ export function calculateVCMESniperSignal(
   const isSetupLongCandle = (hIdx: number) => {
     const hist = macdData1h.histogram[hIdx];
     const prevHist = macdData1h.histogram[hIdx - 1];
-    const ema200Val = ema200_1h[hIdx];
-    const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+    const ema200Val = !isNaN(ema200_1h[hIdx]) ? ema200_1h[hIdx] : ema50_1h[hIdx];
+    const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
     const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
     const adxVal = adxSeries1h.adx[hIdx];
     const regimeOkLong = adxVal > 20 && slope > 0.0005;
@@ -2131,8 +2131,8 @@ export function calculateVCMESniperSignal(
   const isSetupShortCandle = (hIdx: number) => {
     const hist = macdData1h.histogram[hIdx];
     const prevHist = macdData1h.histogram[hIdx - 1];
-    const ema200Val = ema200_1h[hIdx];
-    const ema200Prev5 = hIdx >= 5 ? ema200_1h[hIdx - 5] : ema200Val;
+    const ema200Val = !isNaN(ema200_1h[hIdx]) ? ema200_1h[hIdx] : ema50_1h[hIdx];
+    const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
     const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
     const adxVal = adxSeries1h.adx[hIdx];
     const regimeOkShort = adxVal > 20 && slope < -0.0005;

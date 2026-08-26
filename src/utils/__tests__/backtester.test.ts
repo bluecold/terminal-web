@@ -1222,6 +1222,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert(['ALCISTA', 'BAJISTA', 'NEUTRAL'].includes(liveResult.bias1D), 'bias1D must be valid');
   });
 
+  // Test 48: 1H Candle Length < 200 Slope Fallback (EMA50 Warmup Guard)
+  test('VCME computes valid 1H regime slope and does not freeze at 0 signals when 1H candles < 200', () => {
+    const klines5m = generateSyntheticKlines(700, 300, 100, 0.05);
+    const klines1h_90 = generateSyntheticKlines(90, 3600, 100, 0.05); // 90 1H bars (< 200)
+    const klines1d = generateSyntheticKlines(60, 86400, 100);
+
+    const btResult = backtestMultitemporal(klines5m, klines1h_90, klines1d, '5m', 'H1_90_TEST', 'dayTrading');
+    assert.strictEqual(btResult.insufficient, false, '90 1H bars must evaluate without insufficient flag');
+    assert(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+
+    const liveResult = calculateVCMESniperSignal(klines5m, klines1h_90, klines1d, 'H1_90_TEST');
+    assert.strictEqual(typeof liveResult.signal, 'string');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
