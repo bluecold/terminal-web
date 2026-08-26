@@ -24,7 +24,6 @@ import {
   upperWickRatio,
   lowerWickRatio,
   getSessionId,
-  calculateTimeOfDayVolumeAvg,
   calculateRevolutionVolatilityBand,
   calculateVolumeComposition,
   calculateAndianOscillator,
@@ -533,8 +532,8 @@ export function backtestMultitemporal(
     const atr5m = atrSeries5m[i];
     const volCurr5m = vol5m[i];
     
-    // Seasonal Volume RVOL
-    const volAvg5m = calculateTimeOfDayVolumeAvg(klines5m, i, 20);
+    // Rolling Volume SMA-20 RVOL O(1)
+    const volAvg5m = volSma5m[i] > 0 ? volSma5m[i] : (volCurr5m || 1);
 
     if (isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
       neutrals++; continue;

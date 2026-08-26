@@ -2048,38 +2048,20 @@ export function checkBearishDivergence(klines: Kline[], rsiSeries: number[], ind
   return currHigh > maxPrice && currRsi < rsiSeries[maxPriceIdx];
 }
 
-export function calculateTimeOfDayVolumeAvg(klines: Kline[], index: number, lookbackDays: number = 20): number {
+/**
+ * Calculates rolling Volume SMA (default: 20 periods) without date allocation overhead.
+ * Provides a statistically robust liquidity baseline for RVOL in 24/7 markets.
+ */
+export function calculateRollingVolumeAvg(klines: Kline[], index: number, period: number = 20): number {
   if (index < 0 || index >= klines.length) return 0;
-  const currentKline = klines[index];
-  const currentDate = new Date(currentKline.time * 1000);
-  const currentHour = currentDate.getUTCHours();
-  const currentMinute = currentDate.getUTCMinutes();
-
-  let matchSum = 0;
-  let matchCount = 0;
-
-  for (let i = index - 1; i >= 0; i--) {
-    const d = new Date(klines[i].time * 1000);
-    if (d.getUTCHours() === currentHour && d.getUTCMinutes() === currentMinute) {
-      matchSum += klines[i].volume;
-      matchCount++;
-      if (matchCount >= lookbackDays) {
-        break;
-      }
-    }
+  let sum = 0;
+  let count = 0;
+  const start = Math.max(0, index - period);
+  for (let i = start; i < index; i++) {
+    sum += klines[i].volume;
+    count++;
   }
-
-  if (matchCount === 0) {
-    let sum = 0;
-    let count = 0;
-    for (let i = Math.max(0, index - 20); i < index; i++) {
-      sum += klines[i].volume;
-      count++;
-    }
-    return count > 0 ? sum / count : currentKline.volume;
-  }
-
-  return matchSum / matchCount;
+  return count > 0 ? sum / count : klines[index].volume;
 }
 
 export function calculateVCMESniperSignal(
@@ -2297,7 +2279,7 @@ export function calculateVCMESniperSignal(
   const atr5m = atrSeries5m[lastIdx];
   const volCurr5m = vol5m[lastIdx];
   
-  const volAvg5m = calculateTimeOfDayVolumeAvg(klines5m, lastIdx, 20);
+  const volAvg5m = volSma5m[lastIdx] > 0 ? volSma5m[lastIdx] : calculateRollingVolumeAvg(klines5m, lastIdx, 20);
   const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
 
   if (!bb || isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {

@@ -9,7 +9,6 @@ import {
   calculateMultifractalMTFSignal,
   calculateBollingerBandsSeries,
   calculateBollingerVolatilityStatus,
-  calculateTimeOfDayVolumeAvg,
 } from '../utils/indicators';
 import {
   backtestStandard,
@@ -293,14 +292,14 @@ export default function MarketRadar({
         }
       }
 
-      // ── 3. RVOL (Time-of-Day Seasonality) & Bollinger Volatility ──
+      // ── 3. RVOL (Rolling 20-bar Volume SMA) & Bollinger Volatility ──
       let rvol = 1.0;
       if (closed5m.length >= 20) {
-        const lastIdx = closed5m.length - 1;
-        const lastVol = closed5m[lastIdx].volume;
-        const todVolAvg = calculateTimeOfDayVolumeAvg(closed5m, lastIdx, 20);
-        if (todVolAvg > 0) {
-          rvol = Number((lastVol / todVolAvg).toFixed(2));
+        const lastVol = closed5m[closed5m.length - 1].volume;
+        const vol20 = closed5m.slice(-20).map(k => k.volume);
+        const volAvg = vol20.reduce((a, b) => a + b, 0) / 20;
+        if (volAvg > 0) {
+          rvol = Number((lastVol / volAvg).toFixed(2));
         }
       }
 

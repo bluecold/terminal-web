@@ -6,7 +6,7 @@ import {
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries
 } from '../backtester';
-import { calculateVCMESniperSignal, calculateMultifractalMTFSignal } from '../indicators';
+import { calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateRollingVolumeAvg } from '../indicators';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -995,6 +995,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const result = evaluateStrategyTournament(candidates, '5m');
     assert.strictEqual(result.bestStrategy, 'standard', 'Fast scalp with higher edge-per-unit-time must beat slow drift with identical PF');
+  });
+
+  // Test 35: Statistical Rolling RVOL Accuracy & Robustness
+  test('calculateRollingVolumeAvg calculates robust rolling baseline without date allocations', () => {
+    const klines: Kline[] = [];
+    for (let i = 0; i < 30; i++) {
+      klines.push({ time: 1700000000 + i * 300, open: 100, high: 101, low: 99, close: 100, volume: 1000 + i * 10 });
+    }
+    let expectedSum = 0;
+    for (let i = 5; i < 25; i++) expectedSum += klines[i].volume;
+    const expectedAvg = expectedSum / 20;
+
+    const computedAvg = calculateRollingVolumeAvg(klines, 25, 20);
+    assert.strictEqual(computedAvg, expectedAvg);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
