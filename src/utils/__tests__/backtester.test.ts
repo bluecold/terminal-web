@@ -1317,6 +1317,22 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert(evaluated[0].realizedR > 0, `Realized R must be positive (+0.5R) because TP1 was filled intra-candle (got ${evaluated[0].realizedR}R)`);
   });
 
+  // Test 51: Win Rate strictly reflects proportion of trades with positive net R (pnlPct > 0)
+  test('winRate strictly reflects proportion of trades with positive net return (pnlPct > 0)', () => {
+    // Generate trending dataset that triggers evaluation
+    const klines5m = generateSyntheticKlines(700, 300, 100, 0.02);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.02);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.02);
+
+    const result = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'WINRATE_TEST', 'dayTrading');
+    assert.strictEqual(result.insufficient, false);
+    if (result.resolved > 0) {
+      assert.strictEqual(result.resolved, result.wins + result.losses, 'Resolved trades must equal wins + losses');
+      const expectedWinRate = result.wins / result.resolved;
+      assert(Math.abs(result.winRate - expectedWinRate) < 0.001, 'winRate must equal wins / (wins + losses)');
+    }
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

@@ -1088,19 +1088,15 @@ export function backtestMultitemporal(
     const frictionPct = 0.08;
     pnlPct -= frictionPct;
 
-    if (tradeOutcome === 'win') {
+    if (pnlPct > 0) {
       wins++;
-      totalGainPct += Math.max(0, pnlPct);
-    } else if (tradeOutcome === 'loss') {
+      totalGainPct += pnlPct;
+    } else if (pnlPct < 0) {
       losses++;
       totalLossPct += Math.abs(pnlPct);
-    } else {
+    }
+    if (tradeOutcome === 'timeout') {
       timeouts++;
-      if (pnlPct > 0) {
-        totalGainPct += pnlPct;
-      } else if (pnlPct < 0) {
-        totalLossPct += Math.abs(pnlPct);
-      }
     }
 
     nextAllowedIdx = exitIdx + cooldownPeriod;
@@ -1215,19 +1211,16 @@ function runBacktestGenericOptimized(
     totalSignals++;
     const outcome = evaluateOutcome(klines, i, signal, forwardWindow, entryThreshold, entryTargetThreshold);
 
-    if (outcome.result === 'win') {
+    if (outcome.pnlPct > 0) {
       wins++;
       totalGainPct += outcome.pnlPct;
-    } else if (outcome.result === 'loss') {
+    } else if (outcome.pnlPct < 0) {
       losses++;
       totalLossPct += Math.abs(outcome.pnlPct);
-    } else {
+    }
+
+    if (outcome.result === 'timeout') {
       timeouts++;
-      if (outcome.pnlPct > 0) {
-        totalGainPct += outcome.pnlPct;
-      } else if (outcome.pnlPct < 0) {
-        totalLossPct += Math.abs(outcome.pnlPct);
-      }
     }
 
     nextAllowedIdx = i + Math.max(forwardWindow + 1, params.cooldownPeriod);
@@ -1857,8 +1850,10 @@ export function backtestMultifractalMTF(
       const endPrice = klines5m[lastIdx].close;
       const timeoutPnl = (signal === 'BUY' ? (endPrice - entryPrice) / entryPrice : (entryPrice - endPrice) / entryPrice) * 100 - frictionPct;
       if (timeoutPnl > 0) {
+        wins++;
         totalGainPct += timeoutPnl;
       } else if (timeoutPnl < 0) {
+        losses++;
         totalLossPct += Math.abs(timeoutPnl);
       }
     }
