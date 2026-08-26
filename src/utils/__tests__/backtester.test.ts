@@ -1011,6 +1011,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(computedAvg, expectedAvg);
   });
 
+  // Test 36: RVOL Volume Spike Isolation (No Self-Inclusion Damping)
+  test('RVOL baseline strictly excludes current bar avoiding self-inclusion damping (3.0x vs 2.625x)', () => {
+    const klines: Kline[] = [];
+    for (let i = 0; i < 20; i++) {
+      klines.push({ time: 1700000000 + i * 300, open: 100, high: 101, low: 99, close: 100, volume: 100 });
+    }
+    klines.push({ time: 1700000000 + 20 * 300, open: 100, high: 101, low: 99, close: 100, volume: 300 });
+
+    const baseline = calculateRollingVolumeAvg(klines, 20, 20);
+    const rvol = klines[20].volume / baseline;
+    assert.strictEqual(baseline, 100, 'Baseline volume must strictly equal 100 (excluding the 300 spike)');
+    assert.strictEqual(rvol, 3.0, 'RVOL must be exactly 3.0x');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

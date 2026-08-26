@@ -347,10 +347,9 @@ export function backtestMultitemporal(
   const volSma5m: number[] = new Array(klines5m.length).fill(0);
   let volSum5m = 0;
   for (let i = 0; i < Math.min(20, vol5m.length); i++) volSum5m += vol5m[i];
-  if (vol5m.length >= 20) volSma5m[19] = volSum5m / 20;
   for (let i = 20; i < vol5m.length; i++) {
-    volSum5m = volSum5m - vol5m[i - 20] + vol5m[i];
-    volSma5m[i] = volSum5m / 20;
+    volSma5m[i] = volSum5m / 20; // Trailing 20 bars (i-20 to i-1), strictly excluding candle i
+    volSum5m = volSum5m - vol5m[i - 20] + vol5m[i]; // Update sum including candle i for the next index
   }
 
   // Bollinger Band Width series for Squeeze (bbSeries5m is shorter by ~19)
