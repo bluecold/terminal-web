@@ -9,7 +9,7 @@ import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries } from './utils/indicators';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, type VCMESniperResult, type MultifractalMTFSignalResult } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import {
@@ -476,7 +476,7 @@ function App() {
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
-          let overallSignal: string;
+          let overallSignal = 'NEUTRAL';
           let signalConfidence = '';
           const closedData = data.slice(0, -1);
           const closed5m = data5m.slice(0, -1);
@@ -487,7 +487,25 @@ function App() {
             : bestStrategy === 'multitemporal'
               ? (executionStyle === 'swing' ? '1h' : '5m')
               : interval;
-          let signalKlines = closedData;
+
+          const triggerKlines = (bestStrategy === 'multitemporal' && executionStyle === 'swing')
+            ? closed1h
+            : (bestStrategy === 'multitemporal' || bestStrategy === 'multifractal')
+              ? closed5m
+              : closedData;
+          let signalKlines = triggerKlines;
+
+          // Extract the true execution open price of the newly opened candle (1:1 with backtester.ts entry)
+          const liveCandle = signalInterval === '5m'
+            ? (data5m.length > 0 ? data5m[data5m.length - 1] : null)
+            : (data.length > 0 ? data[data.length - 1] : null);
+          const nextOpen = (liveCandle && liveCandle.open > 0)
+            ? liveCandle.open
+            : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
+          const entryPrice = nextOpen > 0 ? nextOpen : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
+
+          let vcmeResult: VCMESniperResult | null = null;
+          let mfResult: MultifractalMTFSignalResult | null = null;
 
           if (bestStrategy === 'NONE') {
             overallSignal = 'NEUTRAL';
@@ -498,8 +516,7 @@ function App() {
             const result = calculateScoringSignal(closedData, interval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'multitemporal') {
-            const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
-            const result = calculateVCMESniperSignal(
+            vcmeResult = calculateVCMESniperSignal(
               triggerKlines,
               closed1h,
               closed1d,
@@ -507,19 +524,21 @@ function App() {
               btMulti.winRate,
               btMulti.profitFactor,
               executionStyle,
-              triggerMode
+              triggerMode,
+              entryPrice
             );
-            overallSignal = result.signal;
-            signalConfidence = result.confidence;
+            overallSignal = vcmeResult.signal;
+            signalConfidence = vcmeResult.confidence;
             signalKlines = triggerKlines;
           } else if (bestStrategy === 'multifractal') {
-            const result = calculateMultifractalMTFSignal(
+            mfResult = calculateMultifractalMTFSignal(
               closed5m,
               closed1h,
               closed1d,
-              symbol
+              symbol,
+              entryPrice
             );
-            overallSignal = result.signal;
+            overallSignal = mfResult.signal;
             signalKlines = closed5m;
           } else {
             const voting = calculateStandardVoting(closedData);
@@ -581,51 +600,29 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
-            // Extract the true execution open price of the newly opened candle (1:1 with backtester.ts entry)
-            const liveCandle = signalInterval === '5m'
-              ? (data5m.length > 0 ? data5m[data5m.length - 1] : null)
-              : (data.length > 0 ? data[data.length - 1] : null);
-            const nextOpen = (liveCandle && liveCandle.open > 0)
-              ? liveCandle.open
-              : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
-            const entryPrice = nextOpen > 0 ? nextOpen : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
-
             const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
             const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
             let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR);
 
-            if (bestStrategy === 'multitemporal') {
-              const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
-              const vcmeRes = calculateVCMESniperSignal(
-                triggerKlines,
-                closed1h,
-                closed1d,
-                symbol,
-                btMulti.winRate,
-                btMulti.profitFactor,
-                executionStyle,
-                triggerMode,
-                entryPrice
-              );
+            if (bestStrategy === 'multitemporal' && vcmeResult) {
               const isBuySig = overallSignal.includes('BUY');
-              const isValidRisk = isBuySig ? vcmeRes.stopLoss < entryPrice : vcmeRes.stopLoss > entryPrice;
-              if (vcmeRes.stopLoss > 0 && isValidRisk) {
+              const isValidRisk = isBuySig ? vcmeResult.stopLoss < entryPrice : vcmeResult.stopLoss > entryPrice;
+              if (vcmeResult.stopLoss > 0 && isValidRisk) {
                 levels = {
-                  stopLoss: vcmeRes.stopLoss,
-                  takeProfit1: vcmeRes.takeProfit1,
-                  takeProfit2: vcmeRes.takeProfit2,
+                  stopLoss: vcmeResult.stopLoss,
+                  takeProfit1: vcmeResult.takeProfit1,
+                  takeProfit2: vcmeResult.takeProfit2,
                 };
               }
-            } else if (bestStrategy === 'multifractal') {
+            } else if (bestStrategy === 'multifractal' && mfResult) {
               const isBuySig = overallSignal.includes('BUY');
-              const mfRes = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol, entryPrice);
-              if (mfRes.stopLoss > 0) {
-                const entryP = mfRes.triggerPrice || entryPrice;
-                const riskDist = Math.abs(entryP - mfRes.stopLoss);
-                const isValidRisk = isBuySig ? mfRes.stopLoss < entryP : mfRes.stopLoss > entryP;
+              if (mfResult.stopLoss > 0) {
+                const entryP = mfResult.triggerPrice || entryPrice;
+                const riskDist = Math.abs(entryP - mfResult.stopLoss);
+                const isValidRisk = isBuySig ? mfResult.stopLoss < entryP : mfResult.stopLoss > entryP;
                 if (isValidRisk && riskDist > 0) {
                   levels = {
-                    stopLoss: mfRes.stopLoss,
+                    stopLoss: mfResult.stopLoss,
                     takeProfit1: isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist,
                     takeProfit2: isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist,
                   };

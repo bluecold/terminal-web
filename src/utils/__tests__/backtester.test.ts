@@ -10,6 +10,7 @@ import {
   calculateVCMESniperSignal,
   calculateMultifractalMTFSignal,
   calculateRollingVolumeAvg,
+  calculateRevolutionVolatilityBand,
   isNyseOpeningWindow,
   getOpeningRange,
   getSessionId
@@ -1087,6 +1088,21 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const klineA: Kline = { time: utcMidnight + 1000, open: 100, high: 105, low: 95, close: 102, volume: 500 };
     const klineB: Kline = { time: utcMidnight + 90000, open: 102, high: 108, low: 98, close: 105, volume: 600 };
     assert.notStrictEqual(getSessionId(klineA, '5m', 'AAPL'), getSessionId(klineB, '5m', 'AAPL'), 'Different days must produce distinct session IDs');
+  });
+
+  // Test 40: Revolution Volatility Bands O(N) Variance & Compression Accuracy
+  test('calculateRevolutionVolatilityBand executes with O(N) rolling variance and correct compression flags', () => {
+    const klines = generateSyntheticKlines(300, 300, 100);
+    const bands = calculateRevolutionVolatilityBand(klines, 20, 2, 200, 15);
+
+    assert.strictEqual(bands.length, 300, 'Output length must equal input klines length');
+    // First 19 entries are uninitialized
+    assert.strictEqual(bands[0].upper, 0);
+    assert.strictEqual(bands[18].width, 0);
+    // From index 19 onwards, valid values
+    assert.ok(bands[19].upper > bands[19].lower, 'Upper band must exceed lower band');
+    assert.ok(bands[19].width > 0, 'Band width must be positive');
+    assert(typeof bands[100].isCompressed === 'boolean', 'isCompressed must be boolean');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

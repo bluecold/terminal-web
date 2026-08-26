@@ -2430,6 +2430,10 @@ export function calculateVCMESniperSignal(
   const confidenceScoreLong = getContinuousConfidence('LONG');
   const confidenceScoreShort = getContinuousConfidence('SHORT');
 
+  const srLevel = calculateSupportResistance(klines5m, curr5m.close);
+  const distSupport = srLevel.nearestSupport > 0 ? (curr5m.close - srLevel.nearestSupport) / curr5m.close : Infinity;
+  const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr5m.close) / curr5m.close : Infinity;
+
   // Legacy Discrete Score 0-9 for UI compatibility
   const getConfluenceScore = (dir: 'LONG' | 'SHORT') => {
     let pt = 0;
@@ -2440,10 +2444,6 @@ export function calculateVCMESniperSignal(
     if (isLong ? close1h > vwapVal1h : close1h < vwapVal1h) pt += 1;
     if (isLong ? (macdHist1h > 0 && macdHist1h > macdHistPrev1h) : (macdHist1h < 0 && macdHist1h < macdHistPrev1h)) pt += 1;
     if (squeezePrev) pt += 1;
-
-    const srLevel = calculateSupportResistance(klines5m, curr5m.close);
-    const distSupport = srLevel.nearestSupport > 0 ? (curr5m.close - srLevel.nearestSupport) / curr5m.close : Infinity;
-    const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr5m.close) / curr5m.close : Infinity;
     if (isLong ? distSupport < 0.005 : distResist < 0.005) pt += 1;
 
     return pt;
@@ -2626,7 +2626,7 @@ export function calculateVCMESniperSignal(
   const volatilityProfile = avgDailyRange > 3.5 ? 'Alta Volatilidad' : 'Normal';
   const recentPerfLabel = 'VCME v2.0 Activo';
 
-  const sr = calculateSupportResistance(klines5m, entry);
+  const sr = (Math.abs(entry - curr5m.close) < 0.0001) ? srLevel : calculateSupportResistance(klines5m, entry);
   const atrPercent = entry > 0 ? (atr5m / entry * 100) : 0;
 
   return {
@@ -2697,67 +2697,87 @@ export function calculateRevolutionVolatilityBand(
 ): VolatilityBandItem[] {
   if (!klines || klines.length < period) return [];
 
-  const closes = klines.map(k => k.close);
-  const sma = calculateSMA(closes, period);
-  const widths: number[] = [];
-  const rawBands: { upper: number; lower: number; midpoint: number; width: number }[] = [];
+  const n = klines.length;
+  const closes = new Float64Array(n);
+  for (let i = 0; i < n; i++) closes[i] = klines[i].close;
 
-  for (let i = 0; i < klines.length; i++) {
+  const widths = new Float64Array(n);
+  const uppers = new Float64Array(n);
+  const lowers = new Float64Array(n);
+  const midpoints = new Float64Array(n);
+
+  let sum = 0;
+  let sumSq = 0;
+
+  for (let i = 0; i < n; i++) {
+    const c = closes[i];
+    sum += c;
+    sumSq += c * c;
+
+    if (i >= period) {
+      const oldC = closes[i - period];
+      sum -= oldC;
+      sumSq -= oldC * oldC;
+    }
+
     if (i < period - 1) {
-      widths.push(NaN);
-      rawBands.push({ upper: NaN, lower: NaN, midpoint: NaN, width: NaN });
+      widths[i] = NaN;
+      uppers[i] = NaN;
+      lowers[i] = NaN;
+      midpoints[i] = NaN;
       continue;
     }
 
-    const currentSma = sma[i];
-    let sumSq = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      sumSq += Math.pow(closes[j] - currentSma, 2);
-    }
-    const stdDev = Math.sqrt(sumSq / period);
+    const currentSma = sum / period;
+    const variance = Math.max(0, (sumSq - (sum * sum) / period) / period);
+    const stdDev = Math.sqrt(variance);
     const upper = currentSma + (stdDev * multiplier);
     const lower = currentSma - (stdDev * multiplier);
     const width = upper - lower;
 
-    widths.push(width);
-    rawBands.push({ upper, lower, midpoint: currentSma, width });
+    widths[i] = width;
+    uppers[i] = upper;
+    lowers[i] = lower;
+    midpoints[i] = currentSma;
   }
 
-  const result: VolatilityBandItem[] = [];
+  const result: VolatilityBandItem[] = new Array(n);
+  const scratchBuf = new Float64Array(lookbackN);
 
-  for (let i = 0; i < klines.length; i++) {
+  for (let i = 0; i < n; i++) {
     if (i < period - 1) {
-      result.push({ upper: 0, lower: 0, midpoint: 0, width: 0, threshold: 0, isCompressed: false });
+      result[i] = { upper: 0, lower: 0, midpoint: 0, width: 0, threshold: 0, isCompressed: false };
       continue;
     }
 
     const currentWidth = widths[i];
-    // Gather valid previous widths up to lookbackN
-    const validPastWidths: number[] = [];
     const startIdx = Math.max(period - 1, i - lookbackN);
+    let count = 0;
     for (let j = startIdx; j < i; j++) {
-      if (!isNaN(widths[j])) {
-        validPastWidths.push(widths[j]);
+      const w = widths[j];
+      if (!isNaN(w)) {
+        scratchBuf[count++] = w;
       }
     }
 
     let threshold = currentWidth;
-    if (validPastWidths.length > 5) {
-      const sorted = [...validPastWidths].sort((a, b) => a - b);
-      const pIdx = Math.floor((percentile / 100) * sorted.length);
-      threshold = sorted[Math.min(pIdx, sorted.length - 1)];
+    if (count > 5) {
+      const slice = scratchBuf.subarray(0, count);
+      slice.sort();
+      const pIdx = Math.floor((percentile / 100) * count);
+      threshold = slice[Math.min(pIdx, count - 1)];
     }
 
     const isCompressed = !isNaN(currentWidth) && currentWidth <= threshold;
 
-    result.push({
-      upper: rawBands[i].upper,
-      lower: rawBands[i].lower,
-      midpoint: rawBands[i].midpoint,
+    result[i] = {
+      upper: uppers[i],
+      lower: lowers[i],
+      midpoint: midpoints[i],
       width: currentWidth,
       threshold,
       isCompressed
-    });
+    };
   }
 
   return result;
