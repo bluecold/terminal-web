@@ -1208,6 +1208,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }
   });
 
+  // Test 47: 150-199 Daily Candle Safety (EMA200 >= 200 Guard)
+  test('VCME evaluates properly without silent candle rejection on 150-199 daily candles', () => {
+    const klines5m = generateSyntheticKlines(700, 300, 100);
+    const klines1h = generateSyntheticKlines(200, 3600, 100);
+    const klines1d_160 = generateSyntheticKlines(160, 86400, 100); // 160 daily bars (< 200)
+
+    const btResult = backtestMultitemporal(klines5m, klines1h, klines1d_160, '5m', 'DAILY_160_TEST', 'dayTrading');
+    assert.strictEqual(btResult.insufficient, false, 'Backtest must not be marked as insufficient');
+    assert(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+
+    const liveResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d_160, 'DAILY_160_TEST');
+    assert(['ALCISTA', 'BAJISTA', 'NEUTRAL'].includes(liveResult.bias1D), 'bias1D must be valid');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

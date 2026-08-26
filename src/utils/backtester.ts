@@ -321,8 +321,8 @@ export function backtestMultitemporal(
   // ── Pre-calculate all series O(n) ─────────────────────────────────────
   // 1D series
   const closes1d = klines1d.map(k => k.close);
-  const ema200_1d = closes1d.length >= 150 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
-  const ema50_1d = calculateEMA(closes1d, 50);
+  const ema200_1d = closes1d.length >= 200 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
+  const ema50_1d = closes1d.length >= 50 ? calculateEMA(closes1d, 50) : new Array(closes1d.length).fill(NaN);
   const adxData1d = calculateADXSeries(klines1d, 14);
 
   // 1H series
@@ -463,14 +463,17 @@ export function backtestMultitemporal(
     const lastPlusDI1d = adxData1d.plusDI[idx1d];
     const lastMinusDI1d = adxData1d.minusDI[idx1d];
 
-    if (isNaN(lastEma200_1d) || isNaN(lastEma50_1d) || isNaN(lastAdx1d)) { neutrals++; continue; }
+    if (isNaN(lastAdx1d)) { neutrals++; continue; }
 
     let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-    const bias_long = lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
-    const bias_short = lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
+    const hasDailyTrend = !isNaN(lastEma200_1d) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
+    if (hasDailyTrend) {
+      const bias_long = lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
+      const bias_short = lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
 
-    if (bias_long) bias1D = 'ALCISTA';
-    else if (bias_short) bias1D = 'BAJISTA';
+      if (bias_long) bias1D = 'ALCISTA';
+      else if (bias_short) bias1D = 'BAJISTA';
+    }
 
     // ── LAYER 2: 1H Setup (Stateless State Machine + ADX/EMA200 Slope Regime) ──
     const idx1h = idx1hMap[i];

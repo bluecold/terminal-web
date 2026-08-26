@@ -23,6 +23,9 @@ export function calculateSMA(data: number[], period: number): number[] {
 }
 
 export function calculateEMA(data: number[], period: number): number[] {
+  if (!data || data.length < period) {
+    return new Array(data ? data.length : 0).fill(NaN);
+  }
   const ema = [];
   const multiplier = 2 / (period + 1);
   let prevEma = data.slice(0, period).reduce((a, b) => a + b, 0) / period; // Start with SMA
@@ -2030,7 +2033,7 @@ export function calculateVCMESniperSignal(
   // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias - VCME v2.0)
   // ═══════════════════════════════════════════════════════════
   const closes1d = klines1d.map(k => k.close);
-  const ema200_1d = closes1d.length >= 150 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
+  const ema200_1d = closes1d.length >= 200 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
   const ema50_1d = closes1d.length >= 50 ? calculateEMA(closes1d, 50) : new Array(closes1d.length).fill(NaN);
 
   const lastEma200_1d = ema200_1d[ema200_1d.length - 1];
