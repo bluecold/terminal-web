@@ -34,6 +34,12 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
   const pf                = result?.profitFactor ?? null;
   const expectancyR       = result?.expectancyR ?? (result?.expectancy ? result.expectancy / 1.0 : 0);
   const expectancyPerHour = result?.expectancyPerHour ?? 0;
+  const maxDrawdownR      = result?.maxDrawdownR ?? 0;
+  const maxLossStreak     = result?.maxLossStreak ?? 0;
+  const sortinoRatio      = result?.sortinoRatio ?? null;
+  const longStats         = result?.longStats;
+  const shortStats        = result?.shortStats;
+  const regimeStats       = result?.regimeStats;
   const barColor          = getColor(winRate, resolved);
   const barPct            = Math.round(winRate * 100);
   const rating            = getRatingLabel(pf, resolved);
@@ -127,34 +133,95 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
             </span>
           </div>
 
-          {/* Metrics row: Profit Factor + Expectancy R + Hourly velocity */}
+          {/* Metrics row 1: Profit Factor + Expectancy R + Hourly velocity */}
           {resolved >= 3 && (
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontSize: '0.65rem',
-              fontFamily: 'var(--font-mono)',
-              padding: '4px 8px',
-              background: 'rgba(0,0,0,0.15)',
-              borderRadius: '4px',
-              border: '1px solid var(--border-color)',
-            }}>
-              <span style={{ color: 'var(--text-secondary)' }} title={pf === null ? 'Sin pérdidas registradas en la muestra (indefinido)' : `Profit Factor: ${pf.toFixed(2)}`}>
-                PF: <span style={{ color: pf === null || pf >= 1.3 ? 'var(--accent-green)' : pf >= 0.8 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
-                  {pf !== null ? pf.toFixed(2) : 'N/D'}
+            <>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '0.65rem',
+                fontFamily: 'var(--font-mono)',
+                padding: '4px 8px',
+                background: 'rgba(0,0,0,0.15)',
+                borderRadius: '4px',
+                border: '1px solid var(--border-color)',
+              }}>
+                <span style={{ color: 'var(--text-secondary)' }} title={pf === null ? 'Sin pérdidas registradas en la muestra (indefinido)' : `Profit Factor: ${pf.toFixed(2)}`}>
+                  PF: <span style={{ color: pf === null || pf >= 1.3 ? 'var(--accent-green)' : pf >= 0.8 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
+                    {pf !== null ? pf.toFixed(2) : 'N/D'}
+                  </span>
                 </span>
-              </span>
-              <span style={{ color: 'var(--text-secondary)' }} title="Expectancy en R-múltiplos por trade">
-                E[R]: <span style={{ color: expectancyR > 0 ? 'var(--accent-green)' : expectancyR < 0 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: '600' }}>
-                  {expectancyR > 0 ? '+' : ''}{expectancyR.toFixed(2)}R
+                <span style={{ color: 'var(--text-secondary)' }} title="Expectancy en R-múltiplos por trade">
+                  E[R]: <span style={{ color: expectancyR > 0 ? 'var(--accent-green)' : expectancyR < 0 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: '600' }}>
+                    {expectancyR > 0 ? '+' : ''}{expectancyR.toFixed(2)}R
+                  </span>
                 </span>
-              </span>
-              <span style={{ color: 'var(--text-secondary)' }} title={`Velocidad de capital: ${expectancyPerHour > 0 ? '+' : ''}${expectancyPerHour.toFixed(2)} R por hora de exposición`}>
-                R/h: <span style={{ fontWeight: '600', color: expectancyPerHour > 0 ? 'var(--accent-green)' : expectancyPerHour < 0 ? 'var(--accent-red)' : 'var(--text-primary)' }}>
-                  {expectancyPerHour > 0 ? '+' : ''}{expectancyPerHour.toFixed(2)}
+                <span style={{ color: 'var(--text-secondary)' }} title={`Velocidad de capital: ${expectancyPerHour > 0 ? '+' : ''}${expectancyPerHour.toFixed(2)} R por hora de exposición`}>
+                  R/h: <span style={{ fontWeight: '600', color: expectancyPerHour > 0 ? 'var(--accent-green)' : expectancyPerHour < 0 ? 'var(--accent-red)' : 'var(--text-primary)' }}>
+                    {expectancyPerHour > 0 ? '+' : ''}{expectancyPerHour.toFixed(2)}
+                  </span>
                 </span>
-              </span>
-            </div>
+              </div>
+
+              {/* Metrics row 2: Max Drawdown in R + Max Loss Streak + Sortino */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '0.62rem',
+                fontFamily: 'var(--font-mono)',
+                padding: '3px 8px',
+                background: 'rgba(0,0,0,0.10)',
+                borderRadius: '4px',
+                border: '1px solid rgba(255, 255, 255, 0.04)',
+                color: 'var(--text-secondary)'
+              }}>
+                <span title="Max Drawdown en múltiplos de riesgo (profundidad de caída en R)">
+                  MDD: <span style={{ color: maxDrawdownR <= 2.0 ? 'var(--accent-green)' : maxDrawdownR <= 4.0 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
+                    {maxDrawdownR.toFixed(1)}R
+                  </span>
+                </span>
+                <span title="Racha máxima de operaciones perdedoras consecutivas">
+                  Racha ✗: <span style={{ color: maxLossStreak <= 2 ? 'var(--accent-green)' : maxLossStreak <= 4 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
+                    {maxLossStreak}
+                  </span>
+                </span>
+                <span title="Sortino Ratio sobre serie de R (retorno ajustado por volatilidad bajista)">
+                  Sortino: <span style={{ color: sortinoRatio === null ? 'var(--accent-green)' : sortinoRatio >= 1.5 ? 'var(--accent-green)' : sortinoRatio >= 0.8 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
+                    {sortinoRatio !== null ? sortinoRatio.toFixed(2) : 'N/D'}
+                  </span>
+                </span>
+              </div>
+
+              {/* Directional & Regime breakdown */}
+              {((longStats && longStats.signals > 0) || (shortStats && shortStats.signals > 0)) && (
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '0.58rem',
+                  fontFamily: 'var(--font-mono)',
+                  color: 'var(--text-muted)',
+                  padding: '2px 4px',
+                  gap: '4px',
+                  flexWrap: 'wrap'
+                }}>
+                  {longStats && longStats.signals > 0 && (
+                    <span title={`LONG: ${longStats.wins}W / ${longStats.losses}L · E[R]: ${longStats.expectancyR > 0 ? '+' : ''}${longStats.expectancyR.toFixed(2)}R`}>
+                      ▲ L: <span style={{ color: longStats.winRate >= 0.55 ? 'var(--accent-green)' : 'var(--text-secondary)', fontWeight: '600' }}>{Math.round(longStats.winRate * 100)}%</span> ({longStats.signals})
+                    </span>
+                  )}
+                  {shortStats && shortStats.signals > 0 && (
+                    <span title={`SHORT: ${shortStats.wins}W / ${shortStats.losses}L · E[R]: ${shortStats.expectancyR > 0 ? '+' : ''}${shortStats.expectancyR.toFixed(2)}R`}>
+                      ▼ S: <span style={{ color: shortStats.winRate >= 0.55 ? 'var(--accent-green)' : 'var(--text-secondary)', fontWeight: '600' }}>{Math.round(shortStats.winRate * 100)}%</span> ({shortStats.signals})
+                    </span>
+                  )}
+                  {regimeStats && regimeStats.trending.signals > 0 && (
+                    <span title={`Régimen Tendencial (ADX > 25): ${regimeStats.trending.signals} trades · WR: ${Math.round(regimeStats.trending.winRate * 100)}% · E[R]: ${regimeStats.trending.expectancyR > 0 ? '+' : ''}${regimeStats.trending.expectancyR.toFixed(2)}R`}>
+                      ⚡ ADX&gt;25: <span style={{ color: regimeStats.trending.expectancyR > 0 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '600' }}>{regimeStats.trending.expectancyR > 0 ? '+' : ''}{regimeStats.trending.expectancyR.toFixed(2)}R</span>
+                    </span>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
           {/* Low confidence warning */}

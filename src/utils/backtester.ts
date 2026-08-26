@@ -58,6 +58,232 @@ export function createEmptyDiscards(): DiscardBreakdown {
   };
 }
 
+export interface DirectionalStats {
+  signals: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  expectancyR: number;
+  profitFactor: number | null;
+}
+
+export interface RegimeStats {
+  trending: { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX > 25
+  ranging:  { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX <= 25
+}
+
+export interface RecordedTrade {
+  dir: 'BUY' | 'SELL';
+  realizedR: number;
+  pnlPct: number;
+  adxAtEntry?: number;
+  outcome: 'win' | 'loss' | 'neutral' | 'timeout';
+}
+
+export function createEmptyDirectionalStats(): DirectionalStats {
+  return { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0, profitFactor: null };
+}
+
+export function createEmptyRegimeStats(): RegimeStats {
+  return {
+    trending: { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0 },
+    ranging:  { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0 },
+  };
+}
+
+export interface RiskMetricsResult {
+  maxDrawdownR: number;
+  maxLossStreak: number;
+  sortinoRatio: number | null;
+  longStats: DirectionalStats;
+  shortStats: DirectionalStats;
+  regimeStats: RegimeStats;
+}
+
+export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult {
+  if (trades.length === 0) {
+    return {
+      maxDrawdownR: 0,
+      maxLossStreak: 0,
+      sortinoRatio: null,
+      longStats: createEmptyDirectionalStats(),
+      shortStats: createEmptyDirectionalStats(),
+      regimeStats: createEmptyRegimeStats(),
+    };
+  }
+
+  let cumR = 0;
+  let peakR = 0;
+  let maxDrawdownR = 0;
+  let currentLossStreak = 0;
+  let maxLossStreak = 0;
+  let downsideSumSq = 0;
+  let totalR = 0;
+
+  let longSignals = 0, longWins = 0, longLosses = 0, longGainPct = 0, longLossPct = 0, longTotalR = 0;
+  let shortSignals = 0, shortWins = 0, shortLosses = 0, shortGainPct = 0, shortLossPct = 0, shortTotalR = 0;
+
+  let trendSignals = 0, trendWins = 0, trendLosses = 0, trendTotalR = 0;
+  let rangeSignals = 0, rangeWins = 0, rangeLosses = 0, rangeTotalR = 0;
+
+  for (const trade of trades) {
+    totalR += trade.realizedR;
+    cumR += trade.realizedR;
+    if (cumR > peakR) {
+      peakR = cumR;
+    }
+    const dd = peakR - cumR;
+    if (dd > maxDrawdownR) {
+      maxDrawdownR = dd;
+    }
+
+    if (trade.pnlPct < 0 || trade.realizedR < 0) {
+      currentLossStreak++;
+      if (currentLossStreak > maxLossStreak) {
+        maxLossStreak = currentLossStreak;
+      }
+      downsideSumSq += Math.pow(Math.abs(trade.realizedR), 2);
+    } else {
+      currentLossStreak = 0;
+    }
+
+    if (trade.dir === 'BUY') {
+      longSignals++;
+      longTotalR += trade.realizedR;
+      if (trade.pnlPct > 0) {
+        longWins++;
+        longGainPct += trade.pnlPct;
+      } else if (trade.pnlPct < 0) {
+        longLosses++;
+        longLossPct += Math.abs(trade.pnlPct);
+      }
+    } else if (trade.dir === 'SELL') {
+      shortSignals++;
+      shortTotalR += trade.realizedR;
+      if (trade.pnlPct > 0) {
+        shortWins++;
+        shortGainPct += trade.pnlPct;
+      } else if (trade.pnlPct < 0) {
+        shortLosses++;
+        shortLossPct += Math.abs(trade.pnlPct);
+      }
+    }
+
+    const adx = trade.adxAtEntry;
+    const isTrending = (adx !== undefined && !isNaN(adx)) ? adx > 25 : false;
+    if (isTrending) {
+      trendSignals++;
+      trendTotalR += trade.realizedR;
+      if (trade.pnlPct > 0) trendWins++;
+      else if (trade.pnlPct < 0) trendLosses++;
+    } else {
+      rangeSignals++;
+      rangeTotalR += trade.realizedR;
+      if (trade.pnlPct > 0) rangeWins++;
+      else if (trade.pnlPct < 0) rangeLosses++;
+    }
+  }
+
+  let sortinoRatio: number | null = null;
+  if (downsideSumSq > 0 && trades.length > 0) {
+    const downsideDev = Math.sqrt(downsideSumSq / trades.length);
+    const meanR = totalR / trades.length;
+    if (downsideDev > 0) {
+      sortinoRatio = Number((meanR / downsideDev).toFixed(2));
+    }
+  }
+
+  const longResolved = longWins + longLosses;
+  const longWR = longResolved > 0 ? Number((longWins / longResolved).toFixed(2)) : 0;
+  const longExpR = longSignals > 0 ? Number((longTotalR / longSignals).toFixed(3)) : 0;
+  const longPF = longLossPct > 0 ? Number((longGainPct / longLossPct).toFixed(2)) : (longGainPct > 0 ? null : 1.0);
+
+  const shortResolved = shortWins + shortLosses;
+  const shortWR = shortResolved > 0 ? Number((shortWins / shortResolved).toFixed(2)) : 0;
+  const shortExpR = shortSignals > 0 ? Number((shortTotalR / shortSignals).toFixed(3)) : 0;
+  const shortPF = shortLossPct > 0 ? Number((shortGainPct / shortLossPct).toFixed(2)) : (shortGainPct > 0 ? null : 1.0);
+
+  const trendResolved = trendWins + trendLosses;
+  const trendWR = trendResolved > 0 ? Number((trendWins / trendResolved).toFixed(2)) : 0;
+  const trendExpR = trendSignals > 0 ? Number((trendTotalR / trendSignals).toFixed(3)) : 0;
+
+  const rangeResolved = rangeWins + rangeLosses;
+  const rangeWR = rangeResolved > 0 ? Number((rangeWins / rangeResolved).toFixed(2)) : 0;
+  const rangeExpR = rangeSignals > 0 ? Number((rangeTotalR / rangeSignals).toFixed(3)) : 0;
+
+  return {
+    maxDrawdownR: Number(maxDrawdownR.toFixed(2)),
+    maxLossStreak,
+    sortinoRatio,
+    longStats: {
+      signals: longSignals,
+      wins: longWins,
+      losses: longLosses,
+      winRate: longWR,
+      expectancyR: longExpR,
+      profitFactor: longPF,
+    },
+    shortStats: {
+      signals: shortSignals,
+      wins: shortWins,
+      losses: shortLosses,
+      winRate: shortWR,
+      expectancyR: shortExpR,
+      profitFactor: shortPF,
+    },
+    regimeStats: {
+      trending: {
+        signals: trendSignals,
+        wins: trendWins,
+        losses: trendLosses,
+        winRate: trendWR,
+        expectancyR: trendExpR,
+      },
+      ranging: {
+        signals: rangeSignals,
+        wins: rangeWins,
+        losses: rangeLosses,
+        winRate: rangeWR,
+        expectancyR: rangeExpR,
+      },
+    },
+  };
+}
+
+export function createFallbackBacktestResult(
+  label: string = 'datos insuficientes',
+  forwardLabel: string = 'ventana 6 velas'
+): BacktestResult {
+  return {
+    totalSignals: 0,
+    wins: 0,
+    losses: 0,
+    timeouts: 0,
+    winRate: 0,
+    resolutionRate: 0,
+    profitFactor: null,
+    expectancy: 0,
+    expectancyR: 0,
+    expectancyPerHour: 0,
+    avgExposureHours: 0,
+    avgDurationCandles: 0,
+    maxDrawdownR: 0,
+    maxLossStreak: 0,
+    sortinoRatio: null,
+    longStats: createEmptyDirectionalStats(),
+    shortStats: createEmptyDirectionalStats(),
+    regimeStats: createEmptyRegimeStats(),
+    neutrals: 0,
+    discards: createEmptyDiscards(),
+    label,
+    forwardLabel,
+    threshold: 0,
+    targetThreshold: 0,
+    targetMultiplier: 1.5,
+    insufficient: true,
+  };
+}
+
 export interface BacktestResult {
   totalSignals: number;
   wins: number;
@@ -71,6 +297,12 @@ export interface BacktestResult {
   expectancyPerHour: number;    // expected R per hour of capital exposure
   avgExposureHours: number;     // average trade duration in hours
   avgDurationCandles: number;   // average trade duration in candles
+  maxDrawdownR: number;         // maximum peak-to-trough drawdown in R units
+  maxLossStreak: number;        // maximum consecutive losing trades
+  sortinoRatio: number | null;  // downside risk-adjusted return (E[R] / downside_dev)
+  longStats: DirectionalStats;  // statistics for BUY (Long) signals
+  shortStats: DirectionalStats; // statistics for SELL (Short) signals
+  regimeStats: RegimeStats;     // statistics by regime (ADX > 25 vs ADX <= 25)
   neutrals: number;             // skipped NEUTRAL candles (sum of all discards)
   discards: DiscardBreakdown;   // Granular discard breakdown for diagnostics
   label: string;                // e.g. "últimas 150 velas"
@@ -324,6 +556,10 @@ export function backtestMultitemporal(
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
     expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
+    maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
+    longStats: createEmptyDirectionalStats(),
+    shortStats: createEmptyDirectionalStats(),
+    regimeStats: createEmptyRegimeStats(),
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `datos insuficientes`,
@@ -404,6 +640,7 @@ export function backtestMultitemporal(
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
   let nextAllowedIdx = 0;
+  const recordedTrades: RecordedTrade[] = [];
 
   // ── Pre-calculate 1D and 1H timestamp lookup maps O(N) ───────────────
   const idx1dMap = new Int32Array(klines5m.length);
@@ -951,6 +1188,15 @@ export function backtestMultitemporal(
     totalRealizedR += sim.realizedR;
     totalDurationCandles += Math.max(1, sim.exitIdx - i);
 
+    const adxVal = idx1h >= 0 && idx1h < adxSeries1h.adx.length ? adxSeries1h.adx[idx1h] : undefined;
+    recordedTrades.push({
+      dir: signal as 'BUY' | 'SELL',
+      realizedR: sim.realizedR,
+      pnlPct: sim.pnlPct,
+      adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      outcome: sim.outcome
+    });
+
     if (sim.pnlPct > 0) {
       wins++;
       totalGainPct += sim.pnlPct;
@@ -978,6 +1224,7 @@ export function backtestMultitemporal(
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
+  const riskMetrics = calculateRiskMetrics(recordedTrades);
 
   const res: BacktestResult = {
     totalSignals,
@@ -992,6 +1239,7 @@ export function backtestMultitemporal(
     expectancyPerHour,
     avgExposureHours,
     avgDurationCandles,
+    ...riskMetrics,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
@@ -1030,6 +1278,10 @@ function runBacktestGenericOptimized(
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
       winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
       expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
+      maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
+      longStats: createEmptyDirectionalStats(),
+      shortStats: createEmptyDirectionalStats(),
+      regimeStats: createEmptyRegimeStats(),
       neutrals: 0,
       discards: createEmptyDiscards(),
       label: `datos insuficientes (${klines.length} velas)`,
@@ -1044,6 +1296,9 @@ function runBacktestGenericOptimized(
   const isSessionBased = hasSessionGaps(klines, interval);
   const latestEvalIdx = klines.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(0, latestEvalIdx - evalWindow + 1);
+
+  const adxSeries  = calculateADXSeries(klines, 14);
+  const recordedTrades: RecordedTrade[] = [];
 
   let totalSignals = 0;
   let wins         = 0;
@@ -1095,6 +1350,15 @@ function runBacktestGenericOptimized(
     totalRealizedR += outcome.realizedR;
     totalDurationCandles += outcome.durationCandles;
 
+    const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
+    recordedTrades.push({
+      dir: signal as 'BUY' | 'SELL',
+      realizedR: outcome.realizedR,
+      pnlPct: outcome.pnlPct,
+      adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      outcome: outcome.result
+    });
+
     if (outcome.pnlPct > 0) {
       wins++;
       totalGainPct += outcome.pnlPct;
@@ -1123,6 +1387,7 @@ function runBacktestGenericOptimized(
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
+  const riskMetrics = calculateRiskMetrics(recordedTrades);
 
   return {
     totalSignals,
@@ -1137,6 +1402,7 @@ function runBacktestGenericOptimized(
     expectancyPerHour,
     avgExposureHours,
     avgDurationCandles,
+    ...riskMetrics,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas`,
@@ -1543,6 +1809,10 @@ export function backtestMultifractalMTF(
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
     expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
+    maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
+    longStats: createEmptyDirectionalStats(),
+    shortStats: createEmptyDirectionalStats(),
+    regimeStats: createEmptyRegimeStats(),
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `últimas 576 velas (5m)`,
@@ -1566,6 +1836,8 @@ export function backtestMultifractalMTF(
   const volBands5M = calculateRevolutionVolatilityBand(klines5m);
   const volComp5M = calculateVolumeComposition(klines5m);
   const dreadBlitz5M = calculateDreadBlitz(klines5m);
+  const adxData5M = calculateADXSeries(klines5m, 14);
+  const recordedTrades: RecordedTrade[] = [];
 
   let totalSignals = 0;
   let wins = 0;
@@ -1709,6 +1981,15 @@ export function backtestMultifractalMTF(
     totalRealizedR += sim.realizedR;
     totalDurationCandles += Math.max(1, sim.exitIdx - i);
 
+    const adxVal = (i >= 0 && i < adxData5M.adx.length) ? adxData5M.adx[i] : undefined;
+    recordedTrades.push({
+      dir: signal as 'BUY' | 'SELL',
+      realizedR: sim.realizedR,
+      pnlPct: sim.pnlPct,
+      adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      outcome: sim.outcome
+    });
+
     if (sim.pnlPct > 0) {
       wins++;
       totalGainPct += sim.pnlPct;
@@ -1730,6 +2011,7 @@ export function backtestMultifractalMTF(
   const avgExposureHours = Number((avgDurationCandles * (5 / 60)).toFixed(2));
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
+  const riskMetrics = calculateRiskMetrics(recordedTrades);
 
   const res: BacktestResult = {
     totalSignals,
@@ -1744,6 +2026,7 @@ export function backtestMultifractalMTF(
     expectancyPerHour,
     avgExposureHours,
     avgDurationCandles,
+    ...riskMetrics,
     neutrals,
     discards,
     label: `últimas ${evalWindow} velas (5m)`,

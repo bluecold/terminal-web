@@ -5,7 +5,9 @@ import {
   backtestMultifractalMTF,
   computeStandardSignalsSeries,
   computeConfluenciaSignalsSeries,
-  computeScoringSignalsSeries
+  computeScoringSignalsSeries,
+  calculateRiskMetrics,
+  type RecordedTrade
 } from '../backtester';
 import {
   calculateVCMESniperSignal,
@@ -1450,6 +1452,101 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(soloZeroLoss.confidence, 'LIMITED');
     assert.strictEqual(soloZeroLoss.profitFactor, null);
     assert.ok(soloZeroLoss.reasoning.includes('PF N/D'), 'Reasoning must display PF N/D for zero-loss sample');
+  });
+
+  // Test 55: calculateRiskMetrics exact mathematical deterministic validation
+  test('calculateRiskMetrics delivers exact MDD in R, loss streak, Sortino ratio and breakdowns', () => {
+    const fixtureTrades: RecordedTrade[] = [
+      { dir: 'BUY',  realizedR: 1.5,  pnlPct: 6.0,  adxAtEntry: 30, outcome: 'win' },  // Eq: 1.5, Peak: 1.5, DD: 0
+      { dir: 'BUY',  realizedR: 2.5,  pnlPct: 10.0, adxAtEntry: 28, outcome: 'win' },  // Eq: 4.0, Peak: 4.0, DD: 0
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, adxAtEntry: 18, outcome: 'loss' }, // Eq: 3.0, Peak: 4.0, DD: 1.0, Streak: 1
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, adxAtEntry: 15, outcome: 'loss' }, // Eq: 2.0, Peak: 4.0, DD: 2.0, Streak: 2
+      { dir: 'BUY',  realizedR: 1.0,  pnlPct: 4.0,  adxAtEntry: 26, outcome: 'win' },  // Eq: 3.0, Peak: 4.0, DD: 1.0, Streak: 0
+    ];
+
+    const metrics = calculateRiskMetrics(fixtureTrades);
+
+    // MDD: Peak was 4.0, lowest was 2.0 -> Drawdown = 2.0R
+    assert.strictEqual(metrics.maxDrawdownR, 2.0);
+    // Streak: 2 consecutive losses (trades 3 & 4)
+    assert.strictEqual(metrics.maxLossStreak, 2);
+    // Sortino: mean = 3.0 / 5 = 0.60R, downsideSumSq = (-1)^2 + (-1)^2 = 2.0, dev = sqrt(2/5) = sqrt(0.4) = 0.632455 -> Sortino = 0.60 / 0.632455 = 0.95
+    assert.strictEqual(metrics.sortinoRatio, 0.95);
+
+    // Directional LONG
+    assert.strictEqual(metrics.longStats.signals, 3);
+    assert.strictEqual(metrics.longStats.wins, 3);
+    assert.strictEqual(metrics.longStats.losses, 0);
+    assert.strictEqual(metrics.longStats.winRate, 1.0);
+    assert.strictEqual(metrics.longStats.expectancyR, 1.667); // (1.5 + 2.5 + 1.0) / 3 = 1.667
+    assert.strictEqual(metrics.longStats.profitFactor, null); // 0 losses
+
+    // Directional SHORT
+    assert.strictEqual(metrics.shortStats.signals, 2);
+    assert.strictEqual(metrics.shortStats.wins, 0);
+    assert.strictEqual(metrics.shortStats.losses, 2);
+    assert.strictEqual(metrics.shortStats.winRate, 0);
+    assert.strictEqual(metrics.shortStats.expectancyR, -1.0);
+
+    // Regime Trending (ADX > 25: trades 1, 2, 5)
+    assert.strictEqual(metrics.regimeStats.trending.signals, 3);
+    assert.strictEqual(metrics.regimeStats.trending.wins, 3);
+    assert.strictEqual(metrics.regimeStats.trending.winRate, 1.0);
+    assert.strictEqual(metrics.regimeStats.trending.expectancyR, 1.667);
+
+    // Regime Ranging (ADX <= 25: trades 3, 4)
+    assert.strictEqual(metrics.regimeStats.ranging.signals, 2);
+    assert.strictEqual(metrics.regimeStats.ranging.wins, 0);
+    assert.strictEqual(metrics.regimeStats.ranging.winRate, 0);
+    assert.strictEqual(metrics.regimeStats.ranging.expectancyR, -1.0);
+  });
+
+  // Test 56: Live Backtest Engine Risk Integration across backtestStandard and backtestMultitemporal
+  test('all backtest engines calculate valid risk metrics, streaks, and partitions', () => {
+    const klines = generateSyntheticKlines(500, 300, 100, 0.05);
+    const stdResult = backtestStandard(klines, '5m', 'TEST_RISK_STD');
+
+    assert.ok(typeof stdResult.maxDrawdownR === 'number');
+    assert.ok(typeof stdResult.maxLossStreak === 'number');
+    assert.ok(stdResult.sortinoRatio === null || typeof stdResult.sortinoRatio === 'number');
+    assert.ok(stdResult.longStats.signals + stdResult.shortStats.signals === stdResult.totalSignals);
+    assert.ok(stdResult.regimeStats.trending.signals + stdResult.regimeStats.ranging.signals === stdResult.totalSignals);
+  });
+
+  // Test 57: Tournament Drawdown Penalty & Sortino Risk Selection
+  test('evaluateStrategyTournament penalizes severe drawdown and rewards higher Sortino consistency', () => {
+    const candidateLowRisk: StrategyCandidate = {
+      key: 'standard',
+      label: 'Smooth Low Drawdown',
+      profitFactor: 2.0,
+      expectancyR: 0.50,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 16,
+      maxDrawdownR: 1.5, // Well below 3.0 threshold
+      sortinoRatio: 2.2, // High consistency bonus
+      forwardWindow: 6
+    };
+
+    const candidateHighRisk: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Violent High Drawdown',
+      profitFactor: 2.0,
+      expectancyR: 0.50,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 16,
+      maxDrawdownR: 7.0, // Severe 7R drawdown penalty
+      sortinoRatio: 0.5,
+      forwardWindow: 6
+    };
+
+    const tourney = evaluateStrategyTournament([candidateLowRisk, candidateHighRisk], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'standard', 'Smooth low-drawdown candidate must beat identical expectancy with 7R drawdown');
+    assert.ok(tourney.reasoning.includes('MDD 1.5R'), 'Reasoning must display MDD');
+    assert.ok(tourney.reasoning.includes('Sortino 2.2'), 'Reasoning must display Sortino');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

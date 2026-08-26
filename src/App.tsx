@@ -10,7 +10,7 @@ import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, type VCMESniperResult, type MultifractalMTFSignalResult } from './utils/indicators';
-import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF } from './utils/backtester';
+import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF, createFallbackBacktestResult, type BacktestResult } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import {
   calculateAlertLevels,
@@ -127,8 +127,8 @@ function App() {
     const btConf = backtestConfluencia(data, tf);
     const btScore = backtestScoring(data, tf);
 
-    let btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
-    let btMF    = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+    let btMulti: BacktestResult = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
+    let btMF: BacktestResult    = createFallbackBacktestResult('datos insuficientes', '12 velas (1 hs max)');
 
     if (allData) {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
@@ -144,11 +144,11 @@ function App() {
     }
 
     const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
+      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), maxDrawdownR: btStd.maxDrawdownR, sortinoRatio: btStd.sortinoRatio, maxLossStreak: btStd.maxLossStreak, longStats: btStd.longStats, shortStats: btStd.shortStats, regimeStats: btStd.regimeStats, forwardWindow: 6 },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), maxDrawdownR: btConf.maxDrawdownR, sortinoRatio: btConf.sortinoRatio, maxLossStreak: btConf.maxLossStreak, longStats: btConf.longStats, shortStats: btConf.shortStats, regimeStats: btConf.regimeStats, forwardWindow: 6 },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), maxDrawdownR: btScore.maxDrawdownR, sortinoRatio: btScore.sortinoRatio, maxLossStreak: btScore.maxLossStreak, longStats: btScore.longStats, shortStats: btScore.shortStats, regimeStats: btScore.regimeStats, forwardWindow: 6 },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), maxDrawdownR: btMulti.maxDrawdownR, sortinoRatio: btMulti.sortinoRatio, maxLossStreak: btMulti.maxLossStreak, longStats: btMulti.longStats, shortStats: btMulti.shortStats, regimeStats: btMulti.regimeStats, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), maxDrawdownR: btMF.maxDrawdownR, sortinoRatio: btMF.sortinoRatio, maxLossStreak: btMF.maxLossStreak, longStats: btMF.longStats, shortStats: btMF.shortStats, regimeStats: btMF.regimeStats, forwardWindow: 12 },
     ];
 
     const tournament = evaluateStrategyTournament(candidates, tf);
@@ -430,7 +430,7 @@ function App() {
           let strategyLabel = '';
           let bestPF: number | null = null;
           let bestConfidence: ConfidenceLevel = 'NONE';
-          let btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+          let btMulti: BacktestResult = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
             const closedData = data.slice(0, -1);
@@ -441,20 +441,20 @@ function App() {
             const btConf = backtestConfluencia(closedData, interval, symbol);
             const btScore = backtestScoring(closedData, interval, undefined, symbol);
 
-            btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+            btMulti = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
             const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
             if (triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+            const btMF: BacktestResult = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : createFallbackBacktestResult('datos insuficientes', '12 velas (1 hs max)');
 
             const candidates: StrategyCandidate[] = [
-              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
-              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
-              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
-              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
+              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), maxDrawdownR: btStd.maxDrawdownR, sortinoRatio: btStd.sortinoRatio, maxLossStreak: btStd.maxLossStreak, longStats: btStd.longStats, shortStats: btStd.shortStats, regimeStats: btStd.regimeStats, forwardWindow: 6 },
+              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), maxDrawdownR: btConf.maxDrawdownR, sortinoRatio: btConf.sortinoRatio, maxLossStreak: btConf.maxLossStreak, longStats: btConf.longStats, shortStats: btConf.shortStats, regimeStats: btConf.regimeStats, forwardWindow: 6 },
+              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), maxDrawdownR: btScore.maxDrawdownR, sortinoRatio: btScore.sortinoRatio, maxLossStreak: btScore.maxLossStreak, longStats: btScore.longStats, shortStats: btScore.shortStats, regimeStats: btScore.regimeStats, forwardWindow: 6 },
+              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), maxDrawdownR: btMulti?.maxDrawdownR, sortinoRatio: btMulti?.sortinoRatio, maxLossStreak: btMulti?.maxLossStreak, longStats: btMulti?.longStats, shortStats: btMulti?.shortStats, regimeStats: btMulti?.regimeStats, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), maxDrawdownR: btMF.maxDrawdownR, sortinoRatio: btMF.sortinoRatio, maxLossStreak: btMF.maxLossStreak, longStats: btMF.longStats, shortStats: btMF.shortStats, regimeStats: btMF.regimeStats, forwardWindow: 12 },
             ];
 
             const tournament = evaluateStrategyTournament(candidates, interval);
@@ -472,7 +472,11 @@ function App() {
             bestPF = cached.pf;
             bestConfidence = cached.confidence || 'HIGH';
             strategyLabel = cached.strategyLabel || (bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard');
-            btMulti = { profitFactor: cached.pf, wins: 0, losses: 0, winRate: cached.winRate || 0.50, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+            btMulti = {
+              ...createFallbackBacktestResult('cached', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)'),
+              profitFactor: cached.pf,
+              winRate: cached.winRate || 0.50,
+            };
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──

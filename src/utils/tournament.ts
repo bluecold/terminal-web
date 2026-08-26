@@ -1,3 +1,5 @@
+import type { DirectionalStats, RegimeStats } from './backtester';
+
 export type ConfidenceLevel = 'HIGH' | 'LIMITED' | 'NONE';
 
 export interface StrategyCandidate {
@@ -12,6 +14,12 @@ export interface StrategyCandidate {
   totalSignals?: number;
   forwardWindow?: number;
   avgExposureHours?: number;
+  maxDrawdownR?: number;
+  maxLossStreak?: number;
+  sortinoRatio?: number | null;
+  longStats?: DirectionalStats;
+  shortStats?: DirectionalStats;
+  regimeStats?: RegimeStats;
 }
 
 export interface TournamentResult {
@@ -22,12 +30,15 @@ export interface TournamentResult {
   profitFactor: number | null;
   expectancyR: number;
   expectancyPerHour: number;
+  maxDrawdownR?: number;
+  sortinoRatio?: number | null;
   reasoning: string;
 }
 
 /**
- * Evaluates candidates using an R-multiple and capital exposure normalized model:
+ * Evaluates candidates using an R-multiple, capital exposure and downside risk-adjusted model:
  * - Normalizes performance by R per trade (E[R]) and velocity (R per hour of exposure)
+ * - Penalizes excessive drawdowns (MDD > 3.0R) and boosts high Sortino ratio systems
  * - Treats zero-loss samples (PF = null / undefined / 99.9) as undefined (PF N/D), preventing single-trade singularities
  * - Applies a sample-size sigmoid penalty curve to balance statistical significance
  * - Requires minimum resolved trades and positive E[R] for HIGH confidence
@@ -46,6 +57,8 @@ export function evaluateStrategyTournament(
       profitFactor: null,
       expectancyR: 0,
       expectancyPerHour: 0,
+      maxDrawdownR: 0,
+      sortinoRatio: null,
       reasoning: 'Sin candidatos para evaluar',
     };
   }
@@ -77,7 +90,7 @@ export function evaluateStrategyTournament(
     return { expR, exposureHours, expPerHour };
   };
 
-  // Helper to calculate composite score normalized by R and hourly velocity
+  // Helper to calculate composite score normalized by R, velocity, and downside risk
   const calcScore = (c: StrategyCandidate): number => {
     const { expR, expPerHour } = getMetrics(c);
 
@@ -108,7 +121,19 @@ export function evaluateStrategyTournament(
     const pfScore = Math.min(2.5, cappedPF * 0.5);
     const wrScore = c.winRate * 2.0;
 
-    const baseScore = (expRScore * 0.35) + (velocityScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15);
+    // Risk penalty for severe drawdown (> 3.0R)
+    const mdd = c.maxDrawdownR ?? 0;
+    const ddPenalty = Math.exp(-Math.max(0, mdd - 3.0) / 4.0);
+
+    // Sortino quality adjustment (bonus for consistent positive downside, penalty for negative)
+    let sortinoMultiplier = 1.0;
+    if (c.sortinoRatio !== null && c.sortinoRatio !== undefined && c.sortinoRatio > 0) {
+      sortinoMultiplier = 1.0 + Math.min(0.20, c.sortinoRatio * 0.05);
+    } else if (c.sortinoRatio !== null && c.sortinoRatio !== undefined && c.sortinoRatio < 0) {
+      sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
+    }
+
+    const baseScore = ((expRScore * 0.35) + (velocityScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier;
     return baseScore * sampleConfidence;
   };
 
@@ -129,6 +154,13 @@ export function evaluateStrategyTournament(
       ? `PF ${winner.profitFactor.toFixed(2)}`
       : 'PF N/D';
 
+    const riskInfo = winner.maxDrawdownR !== undefined && winner.maxDrawdownR > 0
+      ? `, MDD ${winner.maxDrawdownR.toFixed(1)}R`
+      : '';
+    const sortinoInfo = winner.sortinoRatio !== null && winner.sortinoRatio !== undefined
+      ? `, Sortino ${winner.sortinoRatio.toFixed(1)}`
+      : '';
+
     return {
       bestStrategy: winner.key,
       strategyLabel: winner.label,
@@ -137,7 +169,9 @@ export function evaluateStrategyTournament(
       profitFactor: winner.profitFactor,
       expectancyR: Number(expR.toFixed(3)),
       expectancyPerHour: Number(expPerHour.toFixed(3)),
-      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}, ${winner.resolved} trades)`,
+      maxDrawdownR: winner.maxDrawdownR,
+      sortinoRatio: winner.sortinoRatio,
+      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}, ${winner.resolved} trades)`,
     };
   }
 
@@ -169,6 +203,8 @@ export function evaluateStrategyTournament(
       profitFactor: winner.profitFactor,
       expectancyR: Number(expR.toFixed(3)),
       expectancyPerHour: Number(expPerHour.toFixed(3)),
+      maxDrawdownR: winner.maxDrawdownR,
+      sortinoRatio: winner.sortinoRatio,
       reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr})`,
     };
   }
@@ -193,6 +229,8 @@ export function evaluateStrategyTournament(
     profitFactor: fallback.profitFactor,
     expectancyR: Number(expR.toFixed(3)),
     expectancyPerHour: Number(expPerHour.toFixed(3)),
+    maxDrawdownR: fallback.maxDrawdownR,
+    sortinoRatio: fallback.sortinoRatio,
     reasoning: `${fallback.label} (${pfStr}, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R)`,
   };
 }
