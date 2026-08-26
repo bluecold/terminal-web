@@ -63,18 +63,22 @@ export interface BacktestResult {
   wins: number;
   losses: number;
   timeouts: number;
-  winRate: number;          // wins / resolved (wins + losses) — trades that reached an outcome
-  resolutionRate: number;   // resolved / totalSignals — what % of signals reached target or stop
-  profitFactor: number;     // total gains / total losses (>1 = profitable)
-  expectancy: number;       // expected % gain per trade
-  neutrals: number;         // skipped NEUTRAL candles (sum of all discards)
-  discards: DiscardBreakdown; // Granular discard breakdown for diagnostics
-  label: string;            // e.g. "últimas 150 velas"
-  forwardLabel: string;     // e.g. "ventana 6 velas (30 min)"
-  threshold: number;        // stop loss threshold used (adaptive)
-  targetThreshold: number;  // take profit threshold (threshold × targetMultiplier)
-  targetMultiplier: number; // risk/reward ratio (e.g. 1.5 = 1:1.5 R:R)
-  insufficient: boolean;    // true if not enough data
+  winRate: number;              // wins / resolved (wins + losses) — trades that reached an outcome
+  resolutionRate: number;       // resolved / totalSignals — what % of signals reached target or stop
+  profitFactor: number | null;  // total gains / total losses (>1 = profitable, null when losses = 0)
+  expectancy: number;           // expected % gain per trade
+  expectancyR: number;          // expected R per trade
+  expectancyPerHour: number;    // expected R per hour of capital exposure
+  avgExposureHours: number;     // average trade duration in hours
+  avgDurationCandles: number;   // average trade duration in candles
+  neutrals: number;             // skipped NEUTRAL candles (sum of all discards)
+  discards: DiscardBreakdown;   // Granular discard breakdown for diagnostics
+  label: string;                // e.g. "últimas 150 velas"
+  forwardLabel: string;         // e.g. "ventana 6 velas (30 min)"
+  threshold: number;            // stop loss threshold used (adaptive)
+  targetThreshold: number;      // take profit threshold (threshold × targetMultiplier)
+  targetMultiplier: number;     // risk/reward ratio (e.g. 1.5 = 1:1.5 R:R)
+  insufficient: boolean;        // true if not enough data
 }
 
 // ─── Trend Filter ──────────────────────────────────────────────────────────
@@ -184,6 +188,8 @@ function isNearSessionEnd(klines: Kline[], idx: number, interval: string, forwar
 interface TradeOutcome {
   result: 'win' | 'loss' | 'timeout';
   pnlPct: number; // percentage P&L of this trade
+  realizedR: number;
+  durationCandles: number;
 }
 
 function evaluateOutcome(
@@ -208,7 +214,9 @@ function evaluateOutcome(
   });
   return {
     result: sim.outcome,
-    pnlPct: sim.pnlPct
+    pnlPct: sim.pnlPct,
+    realizedR: sim.realizedR,
+    durationCandles: Math.max(1, sim.exitIdx - entryIdx)
   };
 }
 
@@ -314,7 +322,8 @@ export function backtestMultitemporal(
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-    winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+    winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+    expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `datos insuficientes`,
@@ -392,6 +401,8 @@ export function backtestMultitemporal(
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalRealizedR = 0;
+  let totalDurationCandles = 0;
   let nextAllowedIdx = 0;
 
   // ── Pre-calculate 1D and 1H timestamp lookup maps O(N) ───────────────
@@ -937,6 +948,9 @@ export function backtestMultitemporal(
       frictionPct: 0.08
     });
 
+    totalRealizedR += sim.realizedR;
+    totalDurationCandles += Math.max(1, sim.exitIdx - i);
+
     if (sim.pnlPct > 0) {
       wins++;
       totalGainPct += sim.pnlPct;
@@ -954,9 +968,14 @@ export function backtestMultitemporal(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? wins / resolved : 0;
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
-  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? totalGainPct + 1.0 : 0);
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
+  const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
+  const candleHours = style === 'swing' ? (stepSec === 300 ? 5 / 60 : 1.0) : 5 / 60;
+  const avgExposureHours = Number((avgDurationCandles * candleHours).toFixed(2));
+  const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
+  const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
 
@@ -967,8 +986,12 @@ export function backtestMultitemporal(
     timeouts,
     winRate,
     resolutionRate,
-    profitFactor: Number(profitFactor.toFixed(2)),
+    profitFactor,
     expectancy: Number(expectancy.toFixed(3)),
+    expectancyR,
+    expectancyPerHour,
+    avgExposureHours,
+    avgDurationCandles,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
@@ -1005,7 +1028,8 @@ function runBacktestGenericOptimized(
   if (klines.length < minCandles) {
     return {
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-      winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+      winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+      expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
       neutrals: 0,
       discards: createEmptyDiscards(),
       label: `datos insuficientes (${klines.length} velas)`,
@@ -1029,6 +1053,8 @@ function runBacktestGenericOptimized(
   const discards   = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalRealizedR = 0;
+  let totalDurationCandles = 0;
 
   let nextAllowedIdx = 0;
 
@@ -1066,6 +1092,9 @@ function runBacktestGenericOptimized(
     totalSignals++;
     const outcome = evaluateOutcome(klines, i, signal, forwardWindow, entryThreshold, entryTargetThreshold);
 
+    totalRealizedR += outcome.realizedR;
+    totalDurationCandles += outcome.durationCandles;
+
     if (outcome.pnlPct > 0) {
       wins++;
       totalGainPct += outcome.pnlPct;
@@ -1084,9 +1113,14 @@ function runBacktestGenericOptimized(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? wins / resolved : 0;
   const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
-  const profitFactor = totalLossPct > 0 ? totalGainPct / totalLossPct : (totalGainPct > 0 ? totalGainPct + 1.0 : 0);
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
+  const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
+  const candleHours = interval === '5m' ? (5 / 60) : interval === '1h' ? 1.0 : 24.0;
+  const avgExposureHours = Number((avgDurationCandles * candleHours).toFixed(2));
+  const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
+  const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
 
@@ -1097,8 +1131,12 @@ function runBacktestGenericOptimized(
     timeouts,
     winRate,
     resolutionRate,
-    profitFactor: Number(profitFactor.toFixed(2)),
+    profitFactor,
     expectancy: Number(expectancy.toFixed(3)),
+    expectancyR,
+    expectancyPerHour,
+    avgExposureHours,
+    avgDurationCandles,
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas`,
@@ -1503,7 +1541,8 @@ export function backtestMultifractalMTF(
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-    winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
+    winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+    expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `últimas 576 velas (5m)`,
@@ -1536,6 +1575,8 @@ export function backtestMultifractalMTF(
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalRealizedR = 0;
+  let totalDurationCandles = 0;
   let lastSignalIdx = -cooldownPeriod - 1;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
@@ -1665,6 +1706,9 @@ export function backtestMultifractalMTF(
       frictionPct: 0.08
     });
 
+    totalRealizedR += sim.realizedR;
+    totalDurationCandles += Math.max(1, sim.exitIdx - i);
+
     if (sim.pnlPct > 0) {
       wins++;
       totalGainPct += sim.pnlPct;
@@ -1680,8 +1724,12 @@ export function backtestMultifractalMTF(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number((resolved / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? Number((totalGainPct + 1.0).toFixed(2)) : 0);
+  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
+  const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
+  const avgExposureHours = Number((avgDurationCandles * (5 / 60)).toFixed(2));
+  const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
+  const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
   const res: BacktestResult = {
     totalSignals,
@@ -1692,6 +1740,10 @@ export function backtestMultifractalMTF(
     resolutionRate,
     profitFactor,
     expectancy,
+    expectancyR,
+    expectancyPerHour,
+    avgExposureHours,
+    avgDurationCandles,
     neutrals,
     discards,
     label: `últimas ${evalWindow} velas (5m)`,

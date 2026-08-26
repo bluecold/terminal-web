@@ -127,8 +127,8 @@ function App() {
     const btConf = backtestConfluencia(data, tf);
     const btScore = backtestScoring(data, tf);
 
-    let btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
-    let btMF    = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+    let btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
+    let btMF    = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
 
     if (allData) {
       const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
@@ -144,11 +144,11 @@ function App() {
     }
 
     const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
+      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
+      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
+      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
+      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
     ];
 
     const tournament = evaluateStrategyTournament(candidates, tf);
@@ -368,7 +368,7 @@ function App() {
   const lastSignalsRef = useRef<Record<string, string>>({});
 
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number; winRate?: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
+  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number | null; winRate?: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
 
   // 2h Cooldown for notifications/logging per symbol and timeframe
   const alertCooldownsRef = useRef<Record<string, number>>({});
@@ -428,9 +428,9 @@ function App() {
           const cached = bestStrategyRef.current[symbol];
           let bestStrategy: StrategyCandidate['key'] | 'NONE' = 'NONE';
           let strategyLabel = '';
-          let bestPF = 0;
+          let bestPF: number | null = null;
           let bestConfidence: ConfidenceLevel = 'NONE';
-          let btMulti = { profitFactor: 1.0, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, totalSignals: 0 };
+          let btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0.50, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
             const closedData = data.slice(0, -1);
@@ -441,20 +441,20 @@ function App() {
             const btConf = backtestConfluencia(closedData, interval, symbol);
             const btScore = backtestScoring(closedData, interval, undefined, symbol);
 
-            btMulti = { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+            btMulti = { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
             const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
             if (triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
               btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
             }
 
-            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: 0, wins: 0, losses: 0, winRate: 0, expectancy: 0, totalSignals: 0 };
+            const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : { profitFactor: null as number | null, wins: 0, losses: 0, winRate: 0, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
 
             const candidates: StrategyCandidate[] = [
-              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancy: btStd.expectancy,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
-              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancy: btConf.expectancy, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
-              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancy: btScore.expectancy,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
-              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancy: btMulti.expectancy,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancy: btMF.expectancy,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
+              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours,  winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), forwardWindow: 6 },
+              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), forwardWindow: 6 },
+              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours,winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), forwardWindow: 6 },
+              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours,winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours,   winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), forwardWindow: 12 },
             ];
 
             const tournament = evaluateStrategyTournament(candidates, interval);
@@ -472,7 +472,7 @@ function App() {
             bestPF = cached.pf;
             bestConfidence = cached.confidence || 'HIGH';
             strategyLabel = cached.strategyLabel || (bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard');
-            btMulti = { profitFactor: cached.pf, wins: 0, losses: 0, winRate: cached.winRate || 0.50, expectancy: 0, totalSignals: 0 };
+            btMulti = { profitFactor: cached.pf, wins: 0, losses: 0, winRate: cached.winRate || 0.50, expectancy: 0, expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, totalSignals: 0 };
           }
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
@@ -644,8 +644,9 @@ function App() {
 
                 const levelInfo = `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`;
 
+                const pfNotice = bestPF !== null ? `PF ${bestPF.toFixed(1)}` : 'PF N/D';
                 new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
-                  body: `${overallSignal} · vía ${strategyLabel} (PF ${bestPF.toFixed(1)})\n${levelInfo}`,
+                  body: `${overallSignal} · vía ${strategyLabel} (${pfNotice})\n${levelInfo}`,
                   tag: `${symbol}-${signalInterval}`,
                 });
               }
@@ -1156,7 +1157,7 @@ function App() {
                           {alert.signal}
                         </span>
                         <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>
-                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>PF {(alert.pf || 0).toFixed(1)}</span>
+                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{alert.pf !== null && alert.pf !== undefined ? `PF ${alert.pf.toFixed(1)}` : 'PF N/D'}</span>
                         </span>
                       </div>
                       

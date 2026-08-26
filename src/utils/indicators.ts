@@ -2005,7 +2005,7 @@ export function calculateVCMESniperSignal(
   klines1d: Kline[],
   symbol?: string,
   _recentWinRate?: number,
-  _recentProfitFactor?: number,
+  _recentProfitFactor?: number | null,
   style: 'dayTrading' | 'swing' = 'dayTrading',
   triggerMode: 'agresivo' | 'conservador' = 'agresivo',
   executionPrice?: number

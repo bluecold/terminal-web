@@ -11,7 +11,7 @@ export interface AuditAlertItem {
   interval: string;
   signal: string;             // 'BUY' | 'SELL' | 'STRONG BUY' | 'STRONG SELL'
   time: string;
-  pf: number;
+  pf: number | null;
   strategy: string;
   executionStyle?: 'dayTrading' | 'swing';
   confidence?: ConfidenceLevel;

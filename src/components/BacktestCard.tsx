@@ -12,8 +12,9 @@ function getColor(winRate: number, totalSignals: number): string {
   return 'var(--accent-red)';
 }
 
-function getRatingLabel(profitFactor: number, resolved: number): string {
+function getRatingLabel(profitFactor: number | null, resolved: number): string {
   if (resolved < 3) return '— sin datos';
+  if (profitFactor === null) return resolved >= 5 ? '★ 100% Win (0 pérdidas)' : '— Sin pérdidas';
   if (profitFactor >= 2.0)  return '★ Excelente';
   if (profitFactor >= 1.3)  return '↑ Bueno';
   if (profitFactor >= 0.8)  return '~ Regular';
@@ -24,23 +25,23 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
   const isLoading = result === null;
   const isInsufficient = result?.insufficient ?? false;
 
-  const winRate      = result?.winRate ?? 0;
-  const totalSignals = result?.totalSignals ?? 0;
-  const wins         = result?.wins ?? 0;
-  const losses       = result?.losses ?? 0;
-  const timeouts     = result?.timeouts ?? 0;
-  const resolved     = wins + losses;
-  const resRate      = result?.resolutionRate ?? 0;
-  const pf           = result?.profitFactor ?? 0;
-  const expectancy   = result?.expectancy ?? 0;
-  const barColor     = getColor(winRate, resolved);
-  const barPct       = Math.round(winRate * 100);
-  const rating       = getRatingLabel(pf, resolved);
-  const lowConfidence = !isInsufficient && totalSignals > 0 && resolved < 5;
+  const winRate           = result?.winRate ?? 0;
+  const totalSignals      = result?.totalSignals ?? 0;
+  const wins              = result?.wins ?? 0;
+  const losses            = result?.losses ?? 0;
+  const timeouts          = result?.timeouts ?? 0;
+  const resolved          = wins + losses;
+  const pf                = result?.profitFactor ?? null;
+  const expectancyR       = result?.expectancyR ?? (result?.expectancy ? result.expectancy / 1.0 : 0);
+  const expectancyPerHour = result?.expectancyPerHour ?? 0;
+  const barColor          = getColor(winRate, resolved);
+  const barPct            = Math.round(winRate * 100);
+  const rating            = getRatingLabel(pf, resolved);
+  const lowConfidence     = !isInsufficient && totalSignals > 0 && resolved < 5;
 
   let ratingBg = 'rgba(255, 255, 255, 0.02)';
   if (resolved >= 3) {
-    if (pf >= 1.3) ratingBg = 'rgba(16, 185, 129, 0.1)';
+    if (pf === null || pf >= 1.3) ratingBg = 'rgba(16, 185, 129, 0.1)';
     else if (pf >= 0.8) ratingBg = 'rgba(245, 158, 11, 0.1)';
     else ratingBg = 'rgba(244, 63, 94, 0.1)';
   }
@@ -126,7 +127,7 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
             </span>
           </div>
 
-          {/* Metrics row: Profit Factor + Expectancy */}
+          {/* Metrics row: Profit Factor + Expectancy R + Hourly velocity */}
           {resolved >= 3 && (
             <div style={{
               display: 'flex',
@@ -138,14 +139,20 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
               borderRadius: '4px',
               border: '1px solid var(--border-color)',
             }}>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                PF: <span style={{ color: pf >= 1.3 ? 'var(--accent-green)' : pf >= 0.8 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>{pf.toFixed(2)}</span>
+              <span style={{ color: 'var(--text-secondary)' }} title={pf === null ? 'Sin pérdidas registradas en la muestra (indefinido)' : `Profit Factor: ${pf.toFixed(2)}`}>
+                PF: <span style={{ color: pf === null || pf >= 1.3 ? 'var(--accent-green)' : pf >= 0.8 ? '#f0a500' : 'var(--accent-red)', fontWeight: '600' }}>
+                  {pf !== null ? pf.toFixed(2) : 'N/D'}
+                </span>
               </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                E[%]: <span style={{ color: expectancy > 0 ? 'var(--accent-green)' : expectancy < 0 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: '600' }}>{expectancy > 0 ? '+' : ''}{expectancy.toFixed(2)}%</span>
+              <span style={{ color: 'var(--text-secondary)' }} title="Expectancy en R-múltiplos por trade">
+                E[R]: <span style={{ color: expectancyR > 0 ? 'var(--accent-green)' : expectancyR < 0 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: '600' }}>
+                  {expectancyR > 0 ? '+' : ''}{expectancyR.toFixed(2)}R
+                </span>
               </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                Res: <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{Math.round(resRate * 100)}%</span>
+              <span style={{ color: 'var(--text-secondary)' }} title={`Velocidad de capital: ${expectancyPerHour > 0 ? '+' : ''}${expectancyPerHour.toFixed(2)} R por hora de exposición`}>
+                R/h: <span style={{ fontWeight: '600', color: expectancyPerHour > 0 ? 'var(--accent-green)' : expectancyPerHour < 0 ? 'var(--accent-red)' : 'var(--text-primary)' }}>
+                  {expectancyPerHour > 0 ? '+' : ''}{expectancyPerHour.toFixed(2)}
+                </span>
               </span>
             </div>
           )}

@@ -35,7 +35,7 @@ export interface RadarRowData {
   confluenceType: 'BUY_3' | 'SELL_3' | 'PARTIAL' | 'NEUTRAL';
   confluenceScore: number;
   qveStrategy: string;
-  qveProfitFactor: number;
+  qveProfitFactor: number | null;
   qveConfidence: ConfidenceLevel;
   rvol: number;
   volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL';
@@ -260,11 +260,11 @@ export default function MarketRadar({
       const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : null;
 
       const candidates: StrategyCandidate[] = [
-        { key: 'standard', label: 'Estándar', profitFactor: btStd ? btStd.profitFactor : 1.0, expectancy: btStd ? btStd.expectancy : 0, winRate: btStd ? btStd.winRate : 0.5, resolved: btStd ? (btStd.totalSignals > 0 ? btStd.totalSignals : btStd.wins + btStd.losses) : 0, forwardWindow: 6 },
-        { key: 'confluencia', label: 'Confluencia', profitFactor: btConf ? btConf.profitFactor : 1.0, expectancy: btConf ? btConf.expectancy : 0, winRate: btConf ? btConf.winRate : 0.5, resolved: btConf ? (btConf.totalSignals > 0 ? btConf.totalSignals : btConf.wins + btConf.losses) : 0, forwardWindow: 6 },
-        { key: 'scoring', label: 'Scoring', profitFactor: btScore ? btScore.profitFactor : 1.0, expectancy: btScore ? btScore.expectancy : 0, winRate: btScore ? btScore.winRate : 0.5, resolved: btScore ? (btScore.totalSignals > 0 ? btScore.totalSignals : btScore.wins + btScore.losses) : 0, forwardWindow: 6 },
-        { key: 'multitemporal', label: 'VCME Sniper', profitFactor: btMulti ? btMulti.profitFactor : 1.0, expectancy: btMulti ? btMulti.expectancy : 0, winRate: btMulti ? btMulti.winRate : 0.5, resolved: btMulti ? (btMulti.totalSignals > 0 ? btMulti.totalSignals : btMulti.wins + btMulti.losses) : 0, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-        { key: 'multifractal', label: 'Multifractal MTF', profitFactor: btMF ? btMF.profitFactor : 1.0, expectancy: btMF ? btMF.expectancy : 0, winRate: btMF ? btMF.winRate : 0.5, resolved: btMF ? (btMF.totalSignals > 0 ? btMF.totalSignals : btMF.wins + btMF.losses) : 0, forwardWindow: 12 },
+        { key: 'standard', label: 'Estándar', profitFactor: btStd ? btStd.profitFactor : null, expectancyR: btStd ? btStd.expectancyR : 0, expectancyPerHour: btStd ? btStd.expectancyPerHour : 0, avgExposureHours: btStd ? btStd.avgExposureHours : 0, winRate: btStd ? btStd.winRate : 0.5, resolved: btStd ? (btStd.totalSignals > 0 ? btStd.totalSignals : btStd.wins + btStd.losses) : 0, forwardWindow: 6 },
+        { key: 'confluencia', label: 'Confluencia', profitFactor: btConf ? btConf.profitFactor : null, expectancyR: btConf ? btConf.expectancyR : 0, expectancyPerHour: btConf ? btConf.expectancyPerHour : 0, avgExposureHours: btConf ? btConf.avgExposureHours : 0, winRate: btConf ? btConf.winRate : 0.5, resolved: btConf ? (btConf.totalSignals > 0 ? btConf.totalSignals : btConf.wins + btConf.losses) : 0, forwardWindow: 6 },
+        { key: 'scoring', label: 'Scoring', profitFactor: btScore ? btScore.profitFactor : null, expectancyR: btScore ? btScore.expectancyR : 0, expectancyPerHour: btScore ? btScore.expectancyPerHour : 0, avgExposureHours: btScore ? btScore.avgExposureHours : 0, winRate: btScore ? btScore.winRate : 0.5, resolved: btScore ? (btScore.totalSignals > 0 ? btScore.totalSignals : btScore.wins + btScore.losses) : 0, forwardWindow: 6 },
+        { key: 'multitemporal', label: 'VCME Sniper', profitFactor: btMulti ? btMulti.profitFactor : null, expectancyR: btMulti ? btMulti.expectancyR : 0, expectancyPerHour: btMulti ? btMulti.expectancyPerHour : 0, avgExposureHours: btMulti ? btMulti.avgExposureHours : 0, winRate: btMulti ? btMulti.winRate : 0.5, resolved: btMulti ? (btMulti.totalSignals > 0 ? btMulti.totalSignals : btMulti.wins + btMulti.losses) : 0, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
+        { key: 'multifractal', label: 'Multifractal MTF', profitFactor: btMF ? btMF.profitFactor : null, expectancyR: btMF ? btMF.expectancyR : 0, expectancyPerHour: btMF ? btMF.expectancyPerHour : 0, avgExposureHours: btMF ? btMF.avgExposureHours : 0, winRate: btMF ? btMF.winRate : 0.5, resolved: btMF ? (btMF.totalSignals > 0 ? btMF.totalSignals : btMF.wins + btMF.losses) : 0, forwardWindow: 12 },
       ];
 
       const tourney = evaluateStrategyTournament(candidates, '5m');
@@ -477,7 +477,7 @@ export default function MarketRadar({
       confluenceType: 'NEUTRAL' as const,
       confluenceScore: 0,
       qveStrategy: '...',
-      qveProfitFactor: 0,
+      qveProfitFactor: null,
       qveConfidence: 'NONE' as ConfidenceLevel,
       rvol: 1.0,
       volatilityStatus: 'NORMAL' as const,
@@ -505,13 +505,18 @@ export default function MarketRadar({
 
     // 3. Sorting
     return [...filtered].sort((a, b) => {
-      const valA: string | number = a[sortCol] ?? 0;
-      const valB: string | number = b[sortCol] ?? 0;
+      const rawA = a[sortCol];
+      const rawB = b[sortCol];
 
-      if (typeof valA === 'string') {
-        return sortAsc ? valA.localeCompare(valB as string) : (valB as string).localeCompare(valA);
+      if (typeof rawA === 'string' || typeof rawB === 'string') {
+        const valA = String(rawA ?? '');
+        const valB = String(rawB ?? '');
+        return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
       }
-      return sortAsc ? (valA as number) - (valB as number) : (valB as number) - (valA as number);
+
+      const numA = rawA === null || rawA === undefined ? -Infinity : Number(rawA);
+      const numB = rawB === null || rawB === undefined ? -Infinity : Number(rawB);
+      return sortAsc ? numA - numB : numB - numA;
     });
   }, [symbolsToScan, radarData, searchQuery, activeFilter, sortCol, sortAsc, activeSignals]);
 
@@ -907,10 +912,10 @@ export default function MarketRadar({
                             <span style={{
                               fontFamily: 'var(--font-mono)',
                               fontSize: '0.62rem',
-                              color: row.qveProfitFactor >= 1.3 ? 'var(--accent-green)' : 'var(--text-secondary)',
+                              color: row.qveProfitFactor === null || row.qveProfitFactor >= 1.3 ? 'var(--accent-green)' : 'var(--text-secondary)',
                               fontWeight: '700',
                             }}>
-                              PF {row.qveProfitFactor.toFixed(1)}
+                              {row.qveProfitFactor !== null ? `PF ${row.qveProfitFactor.toFixed(1)}` : 'PF N/D'}
                             </span>
                             {row.qveConfidence === 'HIGH' && (
                               <span title="Alta Confianza (Muestra representativa)">

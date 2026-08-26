@@ -988,16 +988,18 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const result = backtestMultifractalMTF(klines5m, klines1h, klines1d, 'MR_TEST');
     assert.strictEqual(result.insufficient, false);
     assert(typeof result.winRate === 'number');
-    assert(typeof result.profitFactor === 'number');
+    assert(result.profitFactor === null || typeof result.profitFactor === 'number');
+    assert(typeof result.expectancyR === 'number');
+    assert(typeof result.expectancyPerHour === 'number');
   });
 
   // Test 33: Tournament Zero-Loss / Single Trade Singularity Rejection
   test('evaluateStrategyTournament prevents single-trade zero-loss candidates from beating robust samples', () => {
     const candidates: StrategyCandidate[] = [
-      // 1 single lucky trade with 0 losses
-      { key: 'standard', label: 'Lucky Single Trade', profitFactor: 99.9, expectancy: 1.5, winRate: 1.0, resolved: 1, forwardWindow: 6 },
+      // 1 single lucky trade with 0 losses (PF = null / undefined)
+      { key: 'standard', label: 'Lucky Single Trade', profitFactor: null, expectancyR: 1.5, expectancyPerHour: 3.0, winRate: 1.0, resolved: 1, forwardWindow: 6, avgExposureHours: 0.5 },
       // 20 robust trades with strong stats
-      { key: 'confluencia', label: 'Robust Confluencia', profitFactor: 2.2, expectancy: 0.6, winRate: 0.65, resolved: 20, forwardWindow: 6 }
+      { key: 'confluencia', label: 'Robust Confluencia', profitFactor: 2.2, expectancyR: 0.6, expectancyPerHour: 1.2, winRate: 0.65, resolved: 20, forwardWindow: 6, avgExposureHours: 0.5 }
     ];
 
     const result = evaluateStrategyTournament(candidates, '5m');
@@ -1008,10 +1010,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
   // Test 34: Tournament Time-Horizon Expectancy Normalization
   test('evaluateStrategyTournament fairly scales expectancy across different forward windows', () => {
     const candidates: StrategyCandidate[] = [
-      // Fast strategy (6 candles): +0.35% in 30 min (E_norm = 0.35%)
-      { key: 'standard', label: 'Fast Scalp (6 candles)', profitFactor: 1.8, expectancy: 0.35, winRate: 0.60, resolved: 20, forwardWindow: 6 },
-      // Slow strategy (72 candles): +0.40% in 6 hrs (E_norm = 0.40 / sqrt(12) = 0.115%)
-      { key: 'multitemporal', label: 'Slow Drift (72 candles)', profitFactor: 1.8, expectancy: 0.40, winRate: 0.60, resolved: 20, forwardWindow: 72 }
+      // Fast strategy (6 candles = 0.5h): E[R] = +0.35R, velocity = +0.70 R/h
+      { key: 'standard', label: 'Fast Scalp (6 candles)', profitFactor: 1.8, expectancyR: 0.35, expectancyPerHour: 0.70, avgExposureHours: 0.5, winRate: 0.60, resolved: 20, forwardWindow: 6 },
+      // Slow strategy (72 candles = 6h): E[R] = +0.40R, velocity = +0.067 R/h
+      { key: 'multitemporal', label: 'Slow Drift (72 candles)', profitFactor: 1.8, expectancyR: 0.40, expectancyPerHour: 0.067, avgExposureHours: 6.0, winRate: 0.60, resolved: 20, forwardWindow: 72 }
     ];
 
     const result = evaluateStrategyTournament(candidates, '5m');
@@ -1153,8 +1155,9 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const btResult = backtestMultitemporal(zeroVol5m, zeroVol1h, zeroVol1d, '5m', 'ZERO_VOL', 'dayTrading');
     assert.strictEqual(btResult.insufficient, false, 'Backtester should run without crashing on zero volume');
     // On zero volume, rvol is 1.0 (default fallback) and cannot pass >= 1.5 volume spikes artificially
-    assert.ok(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+    assert.ok(btResult.profitFactor === null || Number.isFinite(btResult.profitFactor), 'Profit factor must be finite or null');
     assert.ok(Number.isFinite(btResult.expectancy), 'Expectancy must be finite');
+    assert.ok(Number.isFinite(btResult.expectancyR), 'ExpectancyR must be finite');
 
     const liveResult = calculateVCMESniperSignal(zeroVol5m, zeroVol1h, zeroVol1d, 'ZERO_VOL');
     assert.ok(Number.isFinite(liveResult.stopLoss), 'Stop loss must be finite');
@@ -1228,7 +1231,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const btResult = backtestMultitemporal(klines5m, klines1h, klines1d_160, '5m', 'DAILY_160_TEST', 'dayTrading');
     assert.strictEqual(btResult.insufficient, false, 'Backtest must not be marked as insufficient');
-    assert(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+    assert.ok(btResult.profitFactor === null || Number.isFinite(btResult.profitFactor), 'Profit factor must be finite or null');
 
     const liveResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d_160, 'DAILY_160_TEST');
     assert(['ALCISTA', 'BAJISTA', 'NEUTRAL'].includes(liveResult.bias1D), 'bias1D must be valid');
@@ -1242,7 +1245,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const btResult = backtestMultitemporal(klines5m, klines1h_90, klines1d, '5m', 'H1_90_TEST', 'dayTrading');
     assert.strictEqual(btResult.insufficient, false, '90 1H bars must evaluate without insufficient flag');
-    assert(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+    assert.ok(btResult.profitFactor === null || Number.isFinite(btResult.profitFactor), 'Profit factor must be finite or null');
 
     const liveResult = calculateVCMESniperSignal(klines5m, klines1h_90, klines1d, 'H1_90_TEST');
     assert.strictEqual(typeof liveResult.signal, 'string');
@@ -1406,6 +1409,47 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res3.status, 'EXPIRED');
     assert.strictEqual(res3.grossPnlPct, -3.0);
     assert.strictEqual(res3.pnlPct, -3.08);
+  });
+
+  // Test 54: R-multiple and exposure velocity tournament evaluation with null PF handling
+  test('evaluateStrategyTournament normalizes by R and exposure velocity and excludes null PF singularities', () => {
+    // Zero losses with single trade: PF must be null and treated as unproven
+    const zeroLossCandidate: StrategyCandidate = {
+      key: 'standard',
+      label: 'Zero Loss 1-Trade',
+      profitFactor: null,
+      expectancyR: 1.5,
+      expectancyPerHour: 3.0,
+      avgExposureHours: 0.5,
+      winRate: 1.0,
+      resolved: 1,
+      forwardWindow: 6
+    };
+
+    const robustCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Robust 18-Trades',
+      profitFactor: 2.1,
+      expectancyR: 0.55,
+      expectancyPerHour: 1.1,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 18,
+      forwardWindow: 6
+    };
+
+    const tourney = evaluateStrategyTournament([zeroLossCandidate, robustCandidate], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'confluencia');
+    assert.strictEqual(tourney.confidence, 'HIGH');
+    assert.ok(tourney.reasoning.includes('E[R] +0.55R'), 'Reasoning must display E[R]');
+    assert.ok(tourney.reasoning.includes('1.10R/h'), 'Reasoning must display hourly velocity');
+    assert.ok(tourney.reasoning.includes('PF 2.10'), 'Reasoning must display valid PF');
+
+    // Test formatting when winner has null PF
+    const soloZeroLoss = evaluateStrategyTournament([zeroLossCandidate], '5m');
+    assert.strictEqual(soloZeroLoss.confidence, 'LIMITED');
+    assert.strictEqual(soloZeroLoss.profitFactor, null);
+    assert.ok(soloZeroLoss.reasoning.includes('PF N/D'), 'Reasoning must display PF N/D for zero-loss sample');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
