@@ -1669,6 +1669,32 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(soloDegraded.reasoning.includes('WF OOS falló'));
   });
 
+  // Test 61: VCME distScore Option A triangular bell curve validation
+  test('VCME distScore rewards optimal 0.5 ATR bounce and penalizes overextension > 1.5 ATR', () => {
+    const calcDistScore = (close: number, ema21: number, atr: number) => {
+      const distRatio = Math.abs(close - ema21) / (atr || 1);
+      return Number((0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0)).toFixed(4));
+    };
+
+    const atr = 2.0;
+    const ema21 = 100.0;
+
+    // 1. Exactly 0.5 ATR away (close = 101.0) -> Maximum score 0.15
+    assert.strictEqual(calcDistScore(101.0, ema21, atr), 0.15);
+
+    // 2. Exactly on EMA21 (close = 100.0) -> 0.075 (substantial reward for value entry)
+    assert.strictEqual(calcDistScore(100.0, ema21, atr), 0.075);
+
+    // 3. 1.0 ATR away (close = 102.0) -> 0.075
+    assert.strictEqual(calcDistScore(102.0, ema21, atr), 0.075);
+
+    // 4. 1.5 ATR away (close = 103.0) -> 0.00
+    assert.strictEqual(calcDistScore(103.0, ema21, atr), 0.0);
+
+    // 5. 2.0 ATR away (close = 104.0, severe chasing) -> 0.00
+    assert.strictEqual(calcDistScore(104.0, ema21, atr), 0.0);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

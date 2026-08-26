@@ -1174,7 +1174,8 @@ export function backtestMultitemporal(
     const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
     const macroScore = 0.25 * (signal === 'BUY' ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
     const macdScore = 0.20 * (signal === 'BUY' ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
-    const distScore = 0.15 * Math.min(Math.abs(curr.close - ema21Val) / (atr5m || 1), 1.0);
+    const distRatio = Math.abs(curr.close - ema21Val) / (atr5m || 1);
+    const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
     const vwapScore = 0.10 * (signal === 'BUY' ? (curr.close > vwap5m ? 1 : 0) : (curr.close < vwap5m ? 1 : 0));
     const confidenceScore = Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
 

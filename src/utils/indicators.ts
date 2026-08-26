@@ -2431,7 +2431,8 @@ export function calculateVCMESniperSignal(
     const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
     const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
     const macdScore = 0.20 * (isLong ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
-    const distScore = 0.15 * Math.min(Math.abs(curr5m.close - ema21Val) / (atr5m || 1), 1.0);
+    const distRatio = Math.abs(curr5m.close - ema21Val) / (atr5m || 1);
+    const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
     const vwapScore = 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0));
     return Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
   };
