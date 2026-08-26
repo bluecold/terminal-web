@@ -659,21 +659,18 @@ export function isCandleAlertFired(
   
   if (signal) {
     const key = generateCandleAlertKey(symbol, interval, candleTimestamp, strategy, signal);
-    if (registry[key]) return true;
+    return Boolean(registry[key]);
   }
 
-  // Also check if an alert for the same symbol, interval, and exact candle timestamp was already registered
+  // If no specific signal requested, check if ANY signal fired for THIS specific strategy
   const normSymbol = (symbol || '').toUpperCase().trim();
   const normInterval = (interval || '').toLowerCase().trim();
   const normStrat = (strategy || '').toLowerCase().trim();
-  const prefix = `${normSymbol}:${normInterval}:${candleTimestamp}:`;
+  const prefix = `${normSymbol}:${normInterval}:${candleTimestamp}:${normStrat}:`;
 
   for (const k in registry) {
     if (k.startsWith(prefix)) {
-      const entry = registry[k];
-      if (entry && (entry.strategy.toLowerCase() === normStrat || (signal && entry.signal === signal))) {
-        return true;
-      }
+      return true;
     }
   }
 

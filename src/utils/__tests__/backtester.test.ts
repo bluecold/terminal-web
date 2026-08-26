@@ -1169,6 +1169,29 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(result.insufficient, false);
   });
 
+  // Test 45: Strategy Isolation in Candle Alert Deduplication Registry
+  test('isCandleAlertFired strictly isolates alerts per strategy preventing cross-strategy blocking', () => {
+    const candleTs = 1700005000;
+    
+    // Register BUY alert for Multifractal MTF
+    registerFiredCandleAlert({
+      symbol: 'BTCUSDT',
+      interval: '5m',
+      candleTimestamp: candleTs,
+      strategy: 'Multifractal MTF',
+      signal: 'BUY'
+    });
+
+    // Verify Multifractal BUY is recorded as fired
+    assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'Multifractal MTF', 'BUY'), true);
+
+    // Verify VCME Sniper BUY on the EXACT SAME candle timestamp is NOT blocked!
+    assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'VCME Sniper', 'BUY'), false, 'Multifractal BUY must NOT block VCME Sniper BUY on same candle');
+
+    // Verify Standard BUY on the same candle is also NOT blocked
+    assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'Standard', 'BUY'), false, 'Multifractal BUY must NOT block Standard BUY on same candle');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
