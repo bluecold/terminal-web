@@ -30,6 +30,7 @@ import {
 } from '../alertTracker';
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
 import { evaluateStrategyTournament, type StrategyCandidate } from '../tournament';
+import { simulateTrade, type TradeLevels, type ExitPolicy } from '../tradeSimulator';
 import type { Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -1349,6 +1350,62 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const fallback = backtestMultitemporal([], [], [], '5m', 'EMPTY', 'dayTrading');
     assert(fallback.discards !== undefined, 'Fallback result must include empty discards structure');
     assert.strictEqual(fallback.neutrals, 0);
+  });
+
+  // Test 53: Unified simulateTrade execution engine deterministic parity
+  test('simulateTrade delivers exact target scaling, chandelier stops, emergency exits and friction accounting', () => {
+    // 1. Single target standard trade
+    const baseKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 110.5, low: 99.0, close: 108, volume: 1200 }
+    ];
+    const levels1: TradeLevels = { entryPrice: 100, stopLoss: 95, takeProfit1: 110 };
+    const res1 = simulateTrade(baseKlines, 0, 'BUY', levels1, { forwardWindow: 5, enablePartials: false, frictionPct: 0.08 });
+    assert.strictEqual(res1.outcome, 'win');
+    assert.strictEqual(res1.exitReason, 'TP1');
+    assert.strictEqual(res1.grossPnlPct, 10.0);
+    assert.strictEqual(res1.pnlPct, 9.92);
+    assert.strictEqual(res1.realizedR, 2.0);
+
+    // 2. VCME Multi-target with Chandelier Trailing runner
+    const multiKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100, low: 100, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 106.5, low: 99, close: 105, volume: 1000 }, // Hits TP1 (106)
+      { time: 1700000600, open: 105, high: 111.0, low: 104, close: 110, volume: 1000 }, // Hits TP2 (110)
+      { time: 1700000900, open: 110, high: 110.5, low: 104.5, close: 105, volume: 1000 } // Chandelier stop breach @ 105
+    ];
+    const levels2: TradeLevels = { entryPrice: 100, stopLoss: 96, takeProfit1: 106, takeProfit2: 110, takeProfit3: 120 };
+    const res2 = simulateTrade(multiKlines, 0, 'BUY', levels2, {
+      forwardWindow: 10,
+      enablePartials: 'vcme-runner',
+      trailingStop: 'chandelier',
+      atrSeries: [2, 2, 2, 2], // Chandelier SL = 111.0 - 2.5 * 2 = 106.0. Close 105 breaches it.
+      frictionPct: 0.08
+    });
+    assert.strictEqual(res2.outcome, 'win');
+    assert.strictEqual(res2.exitReason, 'TP2');
+    assert.strictEqual(res2.status, 'TP2_CLOSED');
+    // Active SL was trailed to TP1 (106). Low 104.5 fills stop at 106:
+    // 50% * 6% (TP1) + 25% * 10% (TP2) + 25% * 6% (TP1 SL) = 3.0 + 2.5 + 1.5 = 7.0% gross, 6.92% net
+    assert.strictEqual(res2.grossPnlPct, 7.0);
+    assert.strictEqual(res2.pnlPct, 6.92);
+    assert.strictEqual(res2.realizedR, 1.75);
+
+    // 3. Emergency Exit VWAP breach
+    const emergKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100, low: 100, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 101, low: 96.5, close: 97, volume: 1000 }
+    ];
+    const res3 = simulateTrade(emergKlines, 0, 'BUY', levels1, {
+      forwardWindow: 5,
+      emergencyExitFn: () => true, // Emergency triggered immediately
+      frictionPct: 0.08
+    });
+    assert.strictEqual(res3.outcome, 'loss');
+    assert.strictEqual(res3.exitReason, 'EMERGENCY_EXIT');
+    assert.strictEqual(res3.status, 'EXPIRED');
+    assert.strictEqual(res3.grossPnlPct, -3.0);
+    assert.strictEqual(res3.pnlPct, -3.08);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

@@ -1,4 +1,5 @@
 import type { Kline } from '../services/api';
+import { simulateTrade, type TradeLevels } from './tradeSimulator';
 import {
   calculateEMA,
   calculateRSISeries,
@@ -193,39 +194,22 @@ function evaluateOutcome(
   stopThreshold: number,
   targetThreshold: number
 ): TradeOutcome {
-  // Realistic execution: entry at next candle open + 0.08% friction (commission + slippage)
   const nextIdx = entryIdx + 1 < klines.length ? entryIdx + 1 : entryIdx;
   const entry = klines[nextIdx].open || klines[entryIdx].close;
-  const frictionPct = 0.08;
-
-  const target = signal === 'BUY'
-    ? entry * (1 + targetThreshold)
-    : entry * (1 - targetThreshold);
-  const stop = signal === 'BUY'
-    ? entry * (1 - stopThreshold)
-    : entry * (1 + stopThreshold);
-
-  for (let f = entryIdx + 1; f <= entryIdx + forwardWindow && f < klines.length; f++) {
-    const { high, low } = klines[f];
-
-    if (signal === 'BUY') {
-      // Check stop first (pessimistic)
-      if (low <= stop)    return { result: 'loss', pnlPct: -stopThreshold * 100 - frictionPct };
-      if (high >= target) return { result: 'win',  pnlPct: targetThreshold * 100 - frictionPct };
-    } else {
-      if (high >= stop)  return { result: 'loss', pnlPct: -stopThreshold * 100 - frictionPct };
-      if (low <= target) return { result: 'win',  pnlPct: targetThreshold * 100 - frictionPct };
-    }
-  }
-
-  // Timeout: calculate actual P&L at end of window
-  const lastIdx = Math.min(entryIdx + forwardWindow, klines.length - 1);
-  const exitPrice = klines[lastIdx].close;
-  const rawPnl = signal === 'BUY'
-    ? (exitPrice - entry) / entry * 100
-    : (entry - exitPrice) / entry * 100;
-
-  return { result: 'timeout', pnlPct: rawPnl - frictionPct };
+  const levels: TradeLevels = {
+    entryPrice: entry,
+    stopLoss: signal === 'BUY' ? entry * (1 - stopThreshold) : entry * (1 + stopThreshold),
+    takeProfit1: signal === 'BUY' ? entry * (1 + targetThreshold) : entry * (1 - targetThreshold)
+  };
+  const sim = simulateTrade(klines, entryIdx, signal, levels, {
+    forwardWindow,
+    enablePartials: false,
+    frictionPct: 0.08
+  });
+  return {
+    result: sim.outcome,
+    pnlPct: sim.pnlPct
+  };
 }
 
 // ─── Cache Layer for Backtesting Performance ──────────────────────────────
@@ -927,225 +911,44 @@ export function backtestMultitemporal(
 
     totalSignals++;
 
-    // ── Simulate Multi-Target position ───────────────────────────────────
-    let pnlPct = 0;
-    let tradeOutcome: 'win' | 'loss' | 'timeout' = 'timeout';
-    let exitIdx = i;
-    
-    let tp1Hit = false;
-    let tp2Hit = false;
-    let activeSL = stopLoss;
-    let highestHigh = entry;
-    let lowestLow = entry;
+    const levels: TradeLevels = {
+      entryPrice: entry,
+      stopLoss,
+      takeProfit1: tp1,
+      takeProfit2: tp2,
+      takeProfit3: tp3
+    };
 
-    for (let f = i + 1; f <= i + forwardWindow && f < klines5m.length; f++) {
-      const k = klines5m[f];
+    const sim = simulateTrade(klines5m, i, signal, levels, {
+      forwardWindow,
+      enablePartials: true,
+      moveSlToBreakevenOnTp1: true,
+      timeStopBars: tradeType === 'DAY' ? 8 : 0,
+      trailingStop: 'chandelier',
+      emergencyExitFn: (k, idx, dir) => {
+        return dir === 'BUY'
+          ? (k.close < vwapSeries5m[idx] && k.close < ema21_5m[idx])
+          : (k.close > vwapSeries5m[idx] && k.close > ema21_5m[idx]);
+      },
+      sessionGapCutoff: isSessionBased,
+      stepSec,
+      atrSeries: atrSeries5m,
+      ema9Series: ema9_5m,
+      frictionPct: 0.08
+    });
 
-      if (isSessionBased && f > i + 1) {
-        const gap = klines5m[f].time - klines5m[f - 1].time;
-        const expectedGapSec = tf === '5m' ? 300 : 3600;
-        if (gap > expectedGapSec * 3) {
-          // Intraday EOD exit before overnight session gap
-          const exitPrice = klines5m[f - 1].close;
-          const tp1P = tp1Hit ? 0.50 * (signal === 'BUY' ? (tp1 - entry) / entry * 100 : (entry - tp1) / entry * 100) : 0;
-          const tp2P = tp2Hit ? 0.25 * (signal === 'BUY' ? (tp2 - entry) / entry * 100 : (entry - tp2) / entry * 100) : 0;
-          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
-          const openPortionPnl = signal === 'BUY' ? (exitPrice - entry) / entry * 100 : (entry - exitPrice) / entry * 100;
-          pnlPct = tp1P + tp2P + leftWeight * openPortionPnl;
-          tradeOutcome = 'timeout';
-          exitIdx = f - 1;
-          break;
-        }
-      }
-
-      if (k.high > highestHigh) highestHigh = k.high;
-      if (k.low < lowestLow) lowestLow = k.low;
-
-      const isLongEmergency = k.close < vwapSeries5m[f] && k.close < ema21_5m[f];
-      const isShortEmergency = k.close > vwapSeries5m[f] && k.close > ema21_5m[f];
-
-      if (signal === 'BUY') {
-        // SL check
-        if (k.low <= activeSL) {
-          if (tp2Hit) {
-            const tp1P = 0.50 * ((tp1 - entry) / entry * 100);
-            const tp2P = 0.25 * ((tp2 - entry) / entry * 100);
-            const tp3P = 0.25 * ((activeSL - entry) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-          } else if (tp1Hit) {
-            const tp1P = 0.50 * ((tp1 - entry) / entry * 100);
-            pnlPct = tp1P;
-            tradeOutcome = 'win';
-          } else {
-            pnlPct = -risk / entry * 100;
-            tradeOutcome = 'loss';
-          }
-          exitIdx = f;
-          break;
-        }
-
-        // Target 1 (Limit order filled intra-candle)
-        if (!tp1Hit && k.high >= tp1) {
-          tp1Hit = true;
-          activeSL = entry;
-        }
-
-        // Target 2 (Limit order filled intra-candle)
-        if (tp1Hit && !tp2Hit && k.high >= tp2) {
-          tp2Hit = true;
-        }
-
-        // Time Stop for DAY trades: 8 candles (40 min)
-        if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
-          const currentPnl = k.close - entry;
-          if (currentPnl < 0.5 * risk) {
-            pnlPct = (currentPnl / entry) * 100;
-            tradeOutcome = 'timeout';
-            exitIdx = f;
-            break;
-          }
-        }
-
-        // Emergency Exit (Evaluated at candle close)
-        if (isLongEmergency) {
-          const tp1P = tp1Hit ? 0.50 * ((tp1 - entry) / entry * 100) : 0;
-          const tp2P = tp2Hit ? 0.25 * ((tp2 - entry) / entry * 100) : 0;
-          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
-          pnlPct = tp1P + tp2P + leftWeight * ((k.close - entry) / entry * 100);
-          tradeOutcome = 'timeout';
-          exitIdx = f;
-          break;
-        }
-
-        // Target 3: Trailing exit with Chandelier (highestHigh - 2.5 * ATR) or EMA 9
-        if (tp2Hit) {
-          const chandelierSL = highestHigh - 2.5 * atrSeries5m[f];
-          const ema9Valf = ema9_5m[f];
-          
-          if (k.close <= chandelierSL || (!isNaN(ema9Valf) && k.close < ema9Valf)) {
-            const tp1P = 0.50 * ((tp1 - entry) / entry * 100);
-            const tp2P = 0.25 * ((tp2 - entry) / entry * 100);
-            const tp3P = 0.25 * ((k.close - entry) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-            exitIdx = f;
-            break;
-          } else if (k.high >= tp3) {
-            const tp1P = 0.50 * ((tp1 - entry) / entry * 100);
-            const tp2P = 0.25 * ((tp2 - entry) / entry * 100);
-            const tp3P = 0.25 * ((tp3 - entry) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-            exitIdx = f;
-            break;
-          }
-        }
-      } else {
-        // SHORT
-        if (k.high >= activeSL) {
-          if (tp2Hit) {
-            const tp1P = 0.50 * ((entry - tp1) / entry * 100);
-            const tp2P = 0.25 * ((entry - tp2) / entry * 100);
-            const tp3P = 0.25 * ((entry - activeSL) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-          } else if (tp1Hit) {
-            const tp1P = 0.50 * ((entry - tp1) / entry * 100);
-            pnlPct = tp1P;
-            tradeOutcome = 'win';
-          } else {
-            pnlPct = -risk / entry * 100;
-            tradeOutcome = 'loss';
-          }
-          exitIdx = f;
-          break;
-        }
-
-        // Target 1 (Limit order filled intra-candle)
-        if (!tp1Hit && k.low <= tp1) {
-          tp1Hit = true;
-          activeSL = entry;
-        }
-
-        // Target 2 (Limit order filled intra-candle)
-        if (tp1Hit && !tp2Hit && k.low <= tp2) {
-          tp2Hit = true;
-        }
-
-        // Time Stop for DAY trades: 8 candles (40 min)
-        if (tradeType === 'DAY' && !tp1Hit && (f - i) >= 8) {
-          const currentPnl = entry - k.close;
-          if (currentPnl < 0.5 * risk) {
-            pnlPct = (currentPnl / entry) * 100;
-            tradeOutcome = 'timeout';
-            exitIdx = f;
-            break;
-          }
-        }
-
-        // Emergency Exit (Evaluated at candle close)
-        if (isShortEmergency) {
-          const tp1P = tp1Hit ? 0.50 * ((entry - tp1) / entry * 100) : 0;
-          const tp2P = tp2Hit ? 0.25 * ((entry - tp2) / entry * 100) : 0;
-          const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
-          pnlPct = tp1P + tp2P + leftWeight * ((entry - k.close) / entry * 100);
-          tradeOutcome = 'timeout';
-          exitIdx = f;
-          break;
-        }
-
-        if (tp2Hit) {
-          const chandelierSL = lowestLow + 2.5 * atrSeries5m[f];
-          const ema9Valf = ema9_5m[f];
-
-          if (k.close >= chandelierSL || (!isNaN(ema9Valf) && k.close > ema9Valf)) {
-            const tp1P = 0.50 * ((entry - tp1) / entry * 100);
-            const tp2P = 0.25 * ((entry - tp2) / entry * 100);
-            const tp3P = 0.25 * ((entry - k.close) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-            exitIdx = f;
-            break;
-          } else if (k.low <= tp3) {
-            const tp1P = 0.50 * ((entry - tp1) / entry * 100);
-            const tp2P = 0.25 * ((entry - tp2) / entry * 100);
-            const tp3P = 0.25 * ((entry - tp3) / entry * 100);
-            pnlPct = tp1P + tp2P + tp3P;
-            tradeOutcome = 'win';
-            exitIdx = f;
-            break;
-          }
-        }
-      }
-    }
-
-    if (tradeOutcome === 'timeout' && pnlPct === 0) {
-      const lastIdx = Math.min(i + forwardWindow, klines5m.length - 1);
-      const exitPrice = klines5m[lastIdx].close;
-      const tp1P = tp1Hit ? 0.50 * (signal === 'BUY' ? (tp1 - entry) / entry * 100 : (entry - tp1) / entry * 100) : 0;
-      const tp2P = tp2Hit ? 0.25 * (signal === 'BUY' ? (tp2 - entry) / entry * 100 : (entry - tp2) / entry * 100) : 0;
-      const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit ? 0.25 : 0);
-      const openPortionPnl = signal === 'BUY' ? (exitPrice - entry) / entry * 100 : (entry - exitPrice) / entry * 100;
-      pnlPct = tp1P + tp2P + leftWeight * openPortionPnl;
-      exitIdx = lastIdx;
-    }
-
-    const frictionPct = 0.08;
-    pnlPct -= frictionPct;
-
-    if (pnlPct > 0) {
+    if (sim.pnlPct > 0) {
       wins++;
-      totalGainPct += pnlPct;
-    } else if (pnlPct < 0) {
+      totalGainPct += sim.pnlPct;
+    } else if (sim.pnlPct < 0) {
       losses++;
-      totalLossPct += Math.abs(pnlPct);
+      totalLossPct += Math.abs(sim.pnlPct);
     }
-    if (tradeOutcome === 'timeout') {
+    if (sim.outcome === 'timeout' || sim.exitReason === 'TIMEOUT' || sim.exitReason === 'TIME_STOP' || sim.exitReason === 'EMERGENCY_EXIT' || sim.exitReason === 'SESSION_GAP') {
       timeouts++;
     }
 
-    nextAllowedIdx = exitIdx + cooldownPeriod;
+    nextAllowedIdx = sim.exitIdx + cooldownPeriod;
   }
 
   const resolved = wins + losses;
@@ -1843,78 +1646,34 @@ export function backtestMultifractalMTF(
     // Realistic execution: entry at next open + 0.08% friction
     const nextIdx = i + 1 < klines5m.length ? i + 1 : i;
     const entryPrice = klines5m[nextIdx].open || curr.close;
-    const frictionPct = 0.08;
     const risk = Math.abs(entryPrice - stopLossPrice);
     const takeProfitPrice = signal === 'BUY'
       ? entryPrice + risk * 1.5
       : entryPrice - risk * 1.5;
 
-    let outcome: 'WIN' | 'LOSS' | 'TIMEOUT' = 'TIMEOUT';
+    const levels: TradeLevels = {
+      entryPrice,
+      stopLoss: stopLossPrice,
+      takeProfit1: takeProfitPrice
+    };
 
-    for (let f = 1; f <= forwardWindow; f++) {
-      const fIdx = i + f;
-      if (fIdx >= klines5m.length) break;
-      const fCandle = klines5m[fIdx];
+    const sim = simulateTrade(klines5m, i, signal, levels, {
+      forwardWindow: 12,
+      enablePartials: false,
+      earlyAdverseCutoffBars: 3,
+      earlyAdverseCutoffR: 0.5,
+      frictionPct: 0.08
+    });
 
-      // Early invalidation in candles 1..3 on adverse move > 0.5R (matches alertTracker)
-      if (f <= 3) {
-        const adverseMove = signal === 'BUY'
-          ? entryPrice - fCandle.close
-          : fCandle.close - entryPrice;
-
-        if (adverseMove > 0.5 * risk) {
-          outcome = 'LOSS';
-          const lossPct = (adverseMove / entryPrice * 100) + frictionPct;
-          totalLossPct += lossPct;
-          break;
-        }
-      }
-
-      if (signal === 'BUY') {
-        if (fCandle.low <= stopLossPrice) {
-          outcome = 'LOSS';
-          const lossPct = Math.abs((stopLossPrice - entryPrice) / entryPrice * 100) + frictionPct;
-          totalLossPct += lossPct;
-          break;
-        }
-        if (fCandle.high >= takeProfitPrice) {
-          outcome = 'WIN';
-          const gainPct = Math.abs((takeProfitPrice - entryPrice) / entryPrice * 100) - frictionPct;
-          totalGainPct += Math.max(0, gainPct);
-          break;
-        }
-      } else {
-        if (fCandle.high >= stopLossPrice) {
-          outcome = 'LOSS';
-          const lossPct = Math.abs((entryPrice - stopLossPrice) / entryPrice * 100) + frictionPct;
-          totalLossPct += lossPct;
-          break;
-        }
-        if (fCandle.low <= takeProfitPrice) {
-          outcome = 'WIN';
-          const gainPct = Math.abs((entryPrice - takeProfitPrice) / entryPrice * 100) - frictionPct;
-          totalGainPct += Math.max(0, gainPct);
-          break;
-        }
-      }
-    }
-
-    if (outcome === 'WIN') {
+    if (sim.pnlPct > 0) {
       wins++;
-    } else if (outcome === 'LOSS') {
+      totalGainPct += sim.pnlPct;
+    } else if (sim.pnlPct < 0) {
       losses++;
-    } else {
+      totalLossPct += Math.abs(sim.pnlPct);
+    }
+    if (sim.exitReason === 'TIMEOUT') {
       timeouts++;
-      const lastIdx = Math.min(i + forwardWindow, klines5m.length - 1);
-      const endPrice = klines5m[lastIdx].close;
-      const timeoutPnl = (signal === 'BUY' ? (endPrice - entryPrice) / entryPrice : (entryPrice - endPrice) / entryPrice) * 100 - frictionPct;
-      if (timeoutPnl > 0) {
-        wins++;
-        totalGainPct += timeoutPnl;
-      } else if (timeoutPnl < 0) {
-        losses++;
-        totalLossPct += Math.abs(timeoutPnl);
-      }
     }
   }
 
