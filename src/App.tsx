@@ -581,7 +581,15 @@ function App() {
             // Set alert cooldown timestamp
             alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
 
-            const entryPrice = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0;
+            // Extract the true execution open price of the newly opened candle (1:1 with backtester.ts entry)
+            const liveCandle = signalInterval === '5m'
+              ? (data5m.length > 0 ? data5m[data5m.length - 1] : null)
+              : (data.length > 0 ? data[data.length - 1] : null);
+            const nextOpen = (liveCandle && liveCandle.open > 0)
+              ? liveCandle.open
+              : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
+            const entryPrice = nextOpen > 0 ? nextOpen : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
+
             const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
             const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
             let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR);
@@ -596,7 +604,8 @@ function App() {
                 btMulti.winRate,
                 btMulti.profitFactor,
                 executionStyle,
-                triggerMode
+                triggerMode,
+                entryPrice
               );
               const isBuySig = overallSignal.includes('BUY');
               const isValidRisk = isBuySig ? vcmeRes.stopLoss < entryPrice : vcmeRes.stopLoss > entryPrice;
@@ -609,7 +618,7 @@ function App() {
               }
             } else if (bestStrategy === 'multifractal') {
               const isBuySig = overallSignal.includes('BUY');
-              const mfRes = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol);
+              const mfRes = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol, entryPrice);
               if (mfRes.stopLoss > 0) {
                 const entryP = mfRes.triggerPrice || entryPrice;
                 const riskDist = Math.abs(entryP - mfRes.stopLoss);

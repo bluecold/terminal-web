@@ -2072,7 +2072,8 @@ export function calculateVCMESniperSignal(
   _recentWinRate?: number,
   _recentProfitFactor?: number,
   style: 'dayTrading' | 'swing' = 'dayTrading',
-  triggerMode: 'agresivo' | 'conservador' = 'agresivo'
+  triggerMode: 'agresivo' | 'conservador' = 'agresivo',
+  executionPrice?: number
 ): VCMESniperResult {
   const fallback: VCMESniperResult = {
     signal: 'NEUTRAL', mode: 'NONE', tradeType: 'DAY',
@@ -2583,7 +2584,7 @@ export function calculateVCMESniperSignal(
   let riskRewardRatio = 0;
   let chandelierExit = 0;
 
-  const entry = curr5m.close;
+  const entry = (executionPrice && executionPrice > 0) ? executionPrice : curr5m.close;
   
   const lookbackS = Math.max(0, lastIdx - (tradeType === 'SWING' ? 5 : 10));
   let swingLow = Infinity;
@@ -3042,7 +3043,8 @@ export function calculateMultifractalMTFSignal(
   klines5m: Kline[],
   klines1h: Kline[],
   klines1d: Kline[],
-  _symbol: string = 'ASSET'
+  _symbol: string = 'ASSET',
+  executionPrice?: number
 ): MultifractalMTFSignalResult {
   if (!klines5m || klines5m.length < 20) {
     return {
@@ -3170,7 +3172,7 @@ export function calculateMultifractalMTFSignal(
     signal,
     strategy,
     stopLoss,
-    triggerPrice: currCandle.close,
+    triggerPrice: (executionPrice && executionPrice > 0) ? executionPrice : currCandle.close,
     isCompressed1H,
     bias1D,
     activeVolumePercent5M: activeVolPercent,

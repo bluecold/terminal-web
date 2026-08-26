@@ -288,6 +288,9 @@ export default function SignalPanel({
   const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
   const multi: VCMESniperResult = useMemo(() => {
     const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
+    const liveKlines = executionStyle === 'swing' ? klines1h : klines5m;
+    const liveCandle = liveKlines.length > 0 ? liveKlines[liveKlines.length - 1] : null;
+    const execPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : undefined;
     return calculateVCMESniperSignal(
       triggerKlines,
       closedKlines1h,
@@ -296,13 +299,16 @@ export default function SignalPanel({
       btMultitemporal ? btMultitemporal.winRate : undefined,
       btMultitemporal ? btMultitemporal.profitFactor : undefined,
       executionStyle,
-      triggerMode
+      triggerMode,
+      execPrice
     );
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, btMultitemporal, executionStyle, triggerMode]);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, klines1h, symbol, btMultitemporal, executionStyle, triggerMode]);
 
   const multifractal: MultifractalMTFSignalResult = useMemo(() => {
-    return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol);
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol]);
+    const liveCandle = klines5m.length > 0 ? klines5m[klines5m.length - 1] : null;
+    const execPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : undefined;
+    return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol, execPrice);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, symbol]);
 
   // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
   const tournamentResult = useMemo(() => {
@@ -395,7 +401,8 @@ export default function SignalPanel({
   }, [overallSignal]);
 
   const isCrypto = symbol.endsWith('USDT') || symbol.endsWith('BTC');
-  const entryPrice = closes.length > 0 ? closes[closes.length - 1] : 0;
+  const liveCandle = klines.length > 0 ? klines[klines.length - 1] : null;
+  const entryPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : (closes.length > 0 ? closes[closes.length - 1] : 0);
 
   // Calculate stop/target percentage based on active backtest thresholds, fallback to default if not calculated yet
   const activeSlPct = btStandard ? btStandard.threshold : 0.015;
@@ -407,6 +414,10 @@ export default function SignalPanel({
   if (bestStrategy === 'multitemporal' && multi.stopLoss > 0 && multi.signal === calcDirection) {
     slPrice = multi.stopLoss;
     tpPrice = multi.takeProfit1;
+  } else if (bestStrategy === 'multifractal' && multifractal.stopLoss > 0 && multifractal.signal === calcDirection) {
+    const riskDist = Math.abs(entryPrice - multifractal.stopLoss);
+    slPrice = multifractal.stopLoss;
+    tpPrice = calcDirection === 'BUY' ? entryPrice + 1.5 * riskDist : entryPrice - 1.5 * riskDist;
   } else {
     slPrice = calcDirection === 'BUY' ? entryPrice * (1 - activeSlPct) : entryPrice * (1 + activeSlPct);
     tpPrice = calcDirection === 'BUY' ? entryPrice * (1 + activeTpPct) : entryPrice * (1 - activeTpPct);

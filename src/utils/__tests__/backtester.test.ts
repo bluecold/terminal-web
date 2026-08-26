@@ -1025,6 +1025,36 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(rvol, 3.0, 'RVOL must be exactly 3.0x');
   });
 
+  // Test 37: Live Execution Price Parity with Backtest (Open of next bar vs Close of signal bar)
+  test('calculateVCMESniperSignal anchors levels to explicit executionPrice (open_{i+1}) matching backtester', () => {
+    // Generate synthetic series with confirmed signal
+    const klines5m: Kline[] = [];
+    const klines1h: Kline[] = [];
+    const klines1d: Kline[] = [];
+
+    for (let i = 0; i < 40; i++) {
+      klines1d.push({ time: 1700000000 + i * 86400, open: 100 + i * 2, high: 105 + i * 2, low: 98 + i * 2, close: 104 + i * 2, volume: 100000 });
+    }
+    for (let i = 0; i < 80; i++) {
+      klines1h.push({ time: 1700000000 + i * 3600, open: 100 + i * 0.5, high: 102 + i * 0.5, low: 99 + i * 0.5, close: 101.5 + i * 0.5, volume: 10000 });
+    }
+    for (let i = 0; i < 60; i++) {
+      klines5m.push({ time: 1700000000 + i * 300, open: 100 + i * 0.1, high: 100.8 + i * 0.1, low: 99.8 + i * 0.1, close: 100.5 + i * 0.1, volume: 2000 });
+    }
+
+    const defaultResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'BTCUSDT');
+    // If signal triggered, verify that providing an execution price shifts entry reference
+    const customExecPrice = 110.0;
+    const customResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'BTCUSDT', undefined, undefined, 'dayTrading', 'agresivo', customExecPrice);
+    
+    if (customResult.signal !== 'NEUTRAL' && customResult.stopLoss > 0) {
+      assert.ok(customResult.takeProfit1 > customExecPrice, 'TP1 must be above execution price for BUY');
+    }
+    // Multifractal explicit executionPrice check
+    const mfCustom = calculateMultifractalMTFSignal(klines5m, klines1h, klines1d, 'BTCUSDT', customExecPrice);
+    assert.strictEqual(mfCustom.triggerPrice, customExecPrice, 'Multifractal triggerPrice must strictly equal customExecPrice');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
