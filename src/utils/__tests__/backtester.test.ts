@@ -1158,6 +1158,17 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert(typeof btResult.totalSignals === 'number', 'totalSignals must be a valid number');
   });
 
+  // Test 44: Classic Strategy 2-Hour (24 Candle) Cooldown Parity
+  test('backtestStandard enforces documented 2-hour (24 candles) cooldown on 5m', () => {
+    // Generate trending klines of 600 bars
+    const klines = generateSyntheticKlines(600, 300, 100, 0.10);
+    const result = backtestStandard(klines, '5m', 'COOLDOWN_TEST');
+
+    // In a 576-bar eval window, max possible signals with 24-candle cooldown is 576 / 24 = 24
+    assert.ok(result.totalSignals <= 24, `Total signals (${result.totalSignals}) must not exceed window / cooldown (24)`);
+    assert.strictEqual(result.insufficient, false);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

@@ -70,6 +70,7 @@ interface BacktestParams {
   fallbackThreshold: number;   // fallback if ATR can't be calculated
   atrMultiplier: number;       // ATR × this = stop threshold
   targetMultiplier: number;    // risk/reward: target = stop × this
+  cooldownPeriod: number;      // 2h/24 candles for 5m, 4h/4 candles for 1h, 3d/3 candles for 1d
 }
 
 function getParams(interval: string): BacktestParams {
@@ -82,6 +83,7 @@ function getParams(interval: string): BacktestParams {
         fallbackThreshold: 0.008,
         atrMultiplier: 1.2,
         targetMultiplier: 1.5,
+        cooldownPeriod: 24,            // 2 hours = 24 candles of 5m (matches AI_CONTEXT.md & App.tsx)
       };
     case '1d':
       return {
@@ -91,6 +93,7 @@ function getParams(interval: string): BacktestParams {
         fallbackThreshold: 0.015,
         atrMultiplier: 1.0,
         targetMultiplier: 1.5,
+        cooldownPeriod: 3,             // 3 days
       };
     case '1h':
     default:
@@ -101,6 +104,7 @@ function getParams(interval: string): BacktestParams {
         fallbackThreshold: 0.012,
         atrMultiplier: 1.2,
         targetMultiplier: 1.5,
+        cooldownPeriod: 4,             // 4 hours = 4 candles of 1h
       };
   }
 }
@@ -1219,7 +1223,7 @@ function runBacktestGenericOptimized(
       }
     }
 
-    nextAllowedIdx = i + forwardWindow + 1;
+    nextAllowedIdx = i + Math.max(forwardWindow + 1, params.cooldownPeriod);
   }
 
   const resolved = wins + losses;
