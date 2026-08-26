@@ -31,6 +31,32 @@ import {
 
 // ─── Result Interface ──────────────────────────────────────────────────────
 
+export interface DiscardBreakdown {
+  cooldown: number;                 // En período de enfriamiento post-operación
+  sessionGap: number;               // Descartado por ventana de apertura NYSE / corte de sesión
+  insufficientData: number;          // Warmup/barras insuficientes para calcular indicadores
+  regimeFilter: number;              // Filtro macro no superado (ADX < 20, slope <= 0, RSI fuera de rango)
+  noSetup: number;                   // Sin patrón técnico / señal NEUTRAL
+  setupExpiredOrInvalidated: number; // Setup de 3h expiró o perdió VWAP/EMA21 antes del trigger
+  volumeFilter: number;              // RVOL insuficiente (< 0.9x o < 1.1x)
+  candleAnatomy: number;             // Anatomía desfavorable (Close Position / mechas)
+  riskFilter: number;                // Riesgo fuera de bandas permitidas (minRisk / maxRisk)
+}
+
+export function createEmptyDiscards(): DiscardBreakdown {
+  return {
+    cooldown: 0,
+    sessionGap: 0,
+    insufficientData: 0,
+    regimeFilter: 0,
+    noSetup: 0,
+    setupExpiredOrInvalidated: 0,
+    volumeFilter: 0,
+    candleAnatomy: 0,
+    riskFilter: 0,
+  };
+}
+
 export interface BacktestResult {
   totalSignals: number;
   wins: number;
@@ -40,7 +66,8 @@ export interface BacktestResult {
   resolutionRate: number;   // resolved / totalSignals — what % of signals reached target or stop
   profitFactor: number;     // total gains / total losses (>1 = profitable)
   expectancy: number;       // expected % gain per trade
-  neutrals: number;         // skipped NEUTRAL candles
+  neutrals: number;         // skipped NEUTRAL candles (sum of all discards)
+  discards: DiscardBreakdown; // Granular discard breakdown for diagnostics
   label: string;            // e.g. "últimas 150 velas"
   forwardLabel: string;     // e.g. "ventana 6 velas (30 min)"
   threshold: number;        // stop loss threshold used (adaptive)
@@ -305,6 +332,7 @@ export function backtestMultitemporal(
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
+    discards: createEmptyDiscards(),
     label: `datos insuficientes`,
     forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
@@ -377,6 +405,7 @@ export function backtestMultitemporal(
   let losses = 0;
   let timeouts = 0;
   let neutrals = 0;
+  const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
   let nextAllowedIdx = 0;
@@ -439,11 +468,13 @@ export function backtestMultitemporal(
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
+      discards.cooldown++;
       neutrals++;
       continue;
     }
 
     if (isSessionBased && isNearSessionEnd(klines5m, i, tf, 6)) {
+      discards.sessionGap++;
       neutrals++;
       continue;
     }
@@ -453,7 +484,7 @@ export function backtestMultitemporal(
 
     // ── LAYER 1: Daily Bias 1D ───────────────────────────────────────────
     const idx1d = idx1dMap[i];
-    if (idx1d < 27) { neutrals++; continue; } // ADX(14) needs ~28 bars to converge
+    if (idx1d < 27) { discards.insufficientData++; neutrals++; continue; } // ADX(14) needs ~28 bars to converge
 
     const lastEma200_1d = ema200_1d[idx1d];
     const lastEma50_1d = ema50_1d[idx1d];
@@ -463,7 +494,7 @@ export function backtestMultitemporal(
     const lastPlusDI1d = adxData1d.plusDI[idx1d];
     const lastMinusDI1d = adxData1d.minusDI[idx1d];
 
-    if (isNaN(lastAdx1d)) { neutrals++; continue; }
+    if (isNaN(lastAdx1d)) { discards.insufficientData++; neutrals++; continue; }
 
     let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
     const hasDailyTrend = !isNaN(lastEma200_1d) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
@@ -477,7 +508,7 @@ export function backtestMultitemporal(
 
     // ── LAYER 2: 1H Setup (Stateless State Machine + ADX/EMA200 Slope Regime) ──
     const idx1h = idx1hMap[i];
-    if (idx1h < 50) { neutrals++; continue; }
+    if (idx1h < 50) { discards.insufficientData++; neutrals++; continue; }
 
     const rsiVal1h = rsiSeries1h[idx1h];
     const atrVal1h = atrSeries1h[idx1h];
@@ -486,7 +517,9 @@ export function backtestMultitemporal(
     const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
 
     if (isNaN(vwapVal1h) || isNaN(rsiVal1h) || isNaN(atrVal1h)) {
-      neutrals++; continue;
+      discards.insufficientData++;
+      neutrals++;
+      continue;
     }
 
     const isSetupLongCandle = (hIdx: number) => {
@@ -562,7 +595,7 @@ export function backtestMultitemporal(
     // ── LAYER 3: Trigger Timeframe Indicators ──────────────────────────
     const bbIdx = i - 19;
     const bb = bbIdx >= 0 && bbIdx < bbSeries5m.length ? bbSeries5m[bbIdx] : null;
-    if (!bb) { neutrals++; continue; }
+    if (!bb) { discards.insufficientData++; neutrals++; continue; }
 
     const vwap5m = vwapSeries5m[i];
     const ema9Val = ema9_5m[i];
@@ -576,7 +609,7 @@ export function backtestMultitemporal(
     const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
 
     if (isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
-      neutrals++; continue;
+      discards.insufficientData++; neutrals++; continue;
     }
 
     // Bollinger Band Width Squeeze (20th percentile)
@@ -795,6 +828,15 @@ export function backtestMultitemporal(
     }
 
     if (signal === 'NEUTRAL') {
+      if (!setupArmedLong && !setupArmedShort) {
+        discards.regimeFilter++;
+      } else if (rvol < (isCryptoAsset ? 1.5 : 1.2)) {
+        discards.volumeFilter++;
+      } else if (upperWickRatio(curr) > 0.35 || lowerWickRatio(curr) > 0.35 || candleBodyRatio(curr) < 0.3) {
+        discards.candleAnatomy++;
+      } else {
+        discards.noSetup++;
+      }
       neutrals++;
       continue;
     }
@@ -832,6 +874,7 @@ export function backtestMultitemporal(
       stopLoss = Math.min(slATR, slStruct);
       let risk = entry - stopLoss;
       if (risk <= 0) {
+        discards.riskFilter++;
         neutrals++;
         continue;
       }
@@ -846,6 +889,7 @@ export function backtestMultitemporal(
       const riskPercent = risk / entry;
       const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
+        discards.riskFilter++;
         neutrals++;
         continue;
       }
@@ -855,6 +899,7 @@ export function backtestMultitemporal(
       stopLoss = Math.max(slATR, slStruct);
       let risk = stopLoss - entry;
       if (risk <= 0) {
+        discards.riskFilter++;
         neutrals++;
         continue;
       }
@@ -869,6 +914,7 @@ export function backtestMultitemporal(
       const riskPercent = risk / entry;
       const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
+        discards.riskFilter++;
         neutrals++;
         continue;
       }
@@ -1121,6 +1167,7 @@ export function backtestMultitemporal(
     profitFactor: Number(profitFactor.toFixed(2)),
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
+    discards,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
     forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
@@ -1157,6 +1204,7 @@ function runBacktestGenericOptimized(
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
       winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
       neutrals: 0,
+      discards: createEmptyDiscards(),
       label: `datos insuficientes (${klines.length} velas)`,
       forwardLabel,
       threshold,
@@ -1175,6 +1223,7 @@ function runBacktestGenericOptimized(
   let losses       = 0;
   let timeouts     = 0;
   let neutrals     = 0;
+  const discards   = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
 
@@ -1182,12 +1231,14 @@ function runBacktestGenericOptimized(
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
+      discards.cooldown++;
       neutrals++;
       continue;
     }
 
     if (isSessionBased && (interval === '5m' || interval === '1h')) {
       if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
+        discards.sessionGap++;
         neutrals++;
         continue;
       }
@@ -1196,6 +1247,7 @@ function runBacktestGenericOptimized(
     const signal = signals[i] || 'NEUTRAL';
 
     if (signal === 'NEUTRAL') {
+      discards.noSetup++;
       neutrals++;
       continue;
     }
@@ -1245,6 +1297,7 @@ function runBacktestGenericOptimized(
     profitFactor: Number(profitFactor.toFixed(2)),
     expectancy: Number(expectancy.toFixed(3)),
     neutrals,
+    discards,
     label: `últimas ${actualWindow} velas`,
     forwardLabel,
     threshold,
@@ -1649,6 +1702,7 @@ export function backtestMultifractalMTF(
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
     winRate: 0, resolutionRate: 0, profitFactor: 0, expectancy: 0,
     neutrals: 0,
+    discards: createEmptyDiscards(),
     label: `últimas 576 velas (5m)`,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0,
@@ -1676,6 +1730,7 @@ export function backtestMultifractalMTF(
   let losses = 0;
   let timeouts = 0;
   let neutrals = 0;
+  const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
   let lastSignalIdx = -cooldownPeriod - 1;
@@ -1709,11 +1764,13 @@ export function backtestMultifractalMTF(
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i - lastSignalIdx < cooldownPeriod) {
+      discards.cooldown++;
       neutrals++;
       continue;
     }
 
     if (isSessionBased && isNearSessionEnd(klines5m, i, '5m', forwardWindow)) {
+      discards.sessionGap++;
       neutrals++;
       continue;
     }
@@ -1749,6 +1806,7 @@ export function backtestMultifractalMTF(
     const prevDread = dreadBlitz5M[i - 1] || dread;
 
     if (!band5M || !volComp || !dread) {
+      discards.insufficientData++;
       neutrals++;
       continue;
     }
@@ -1774,6 +1832,7 @@ export function backtestMultifractalMTF(
     }
 
     if (signal === 'NEUTRAL') {
+      discards.noSetup++;
       neutrals++;
       continue;
     }
@@ -1875,6 +1934,7 @@ export function backtestMultifractalMTF(
     profitFactor,
     expectancy,
     neutrals,
+    discards,
     label: `últimas ${evalWindow} velas (5m)`,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0.01,

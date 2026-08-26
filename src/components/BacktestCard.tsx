@@ -45,6 +45,17 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
     else ratingBg = 'rgba(244, 63, 94, 0.1)';
   }
 
+  const discardsTooltip = result?.discards ? [
+    result.discards.regimeFilter > 0 ? `Régimen: ${result.discards.regimeFilter}` : null,
+    result.discards.noSetup > 0 ? `Sin Setup: ${result.discards.noSetup}` : null,
+    result.discards.volumeFilter > 0 ? `Volumen: ${result.discards.volumeFilter}` : null,
+    result.discards.candleAnatomy > 0 ? `Anatomía: ${result.discards.candleAnatomy}` : null,
+    result.discards.riskFilter > 0 ? `Riesgo: ${result.discards.riskFilter}` : null,
+    result.discards.cooldown > 0 ? `Cooldown: ${result.discards.cooldown}` : null,
+    result.discards.sessionGap > 0 ? `Sesión/Apertura: ${result.discards.sessionGap}` : null,
+    result.discards.insufficientData > 0 ? `Datos: ${result.discards.insufficientData}` : null,
+  ].filter(Boolean).join(' · ') : '';
+
   return (
     <div style={{
       backgroundColor: 'rgba(255, 255, 255, 0.01)',
@@ -100,14 +111,17 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
           </div>
 
           {/* Stats row */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+          <div 
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}
+            title={discardsTooltip ? `Descartes: ${discardsTooltip}` : undefined}
+          >
             <span style={{ color: barColor, fontWeight: '700', fontSize: '0.85rem' }}>
               {barPct}%
             </span>
             <span style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>
               <span style={{ color: 'var(--accent-green)' }}>{wins}✓</span> <span style={{ color: 'var(--accent-red)' }}>{losses}✗</span> {timeouts > 0 ? <span style={{ color: 'var(--text-muted)' }}>{timeouts}~</span> : ''}
             </span>
-            <span style={{ color: 'var(--text-muted)' }}>
+            <span style={{ color: 'var(--text-muted)' }} title={discardsTooltip ? `Resueltos: ${resolved} / Señales: ${totalSignals}\nDescartes: ${discardsTooltip}` : undefined}>
               {resolved}/{totalSignals}
             </span>
           </div>
@@ -148,6 +162,22 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
               borderRadius: '4px'
             }}>
               ⚠ Pocas señales — baja confianza estadística
+            </div>
+          )}
+
+          {/* Zero signals diagnostic row */}
+          {totalSignals === 0 && !isInsufficient && (
+            <div style={{ 
+              fontSize: '0.62rem', 
+              color: 'var(--text-muted)', 
+              marginTop: '2px',
+              padding: '4px 8px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '4px',
+              fontFamily: 'var(--font-mono)'
+            }} title={discardsTooltip}>
+              0 señales {discardsTooltip ? `(${discardsTooltip})` : ''}
             </div>
           )}
 

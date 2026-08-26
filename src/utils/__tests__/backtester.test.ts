@@ -1333,6 +1333,24 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }
   });
 
+  // Test 52: Granular discards breakdown accurately classifies filtered bars and equals neutrals
+  test('discards breakdown accurately classifies filtered bars and equals neutrals', () => {
+    const klines5m = generateSyntheticKlines(700, 300, 100, 0.02);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.02);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.02);
+
+    const result = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'DISCARDS_TEST', 'dayTrading');
+    assert(result.discards !== undefined, 'Result must contain discards diagnostic breakdown');
+    
+    const discardsSum = Object.values(result.discards).reduce((acc, val) => acc + val, 0);
+    assert.strictEqual(result.neutrals, discardsSum, `neutrals (${result.neutrals}) must equal sum of all discards (${discardsSum})`);
+
+    // Verify fallback result also includes discards structure
+    const fallback = backtestMultitemporal([], [], [], '5m', 'EMPTY', 'dayTrading');
+    assert(fallback.discards !== undefined, 'Fallback result must include empty discards structure');
+    assert.strictEqual(fallback.neutrals, 0);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
