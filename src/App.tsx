@@ -621,10 +621,11 @@ function App() {
                 const riskDist = Math.abs(entryP - mfResult.stopLoss);
                 const isValidRisk = isBuySig ? mfResult.stopLoss < entryP : mfResult.stopLoss > entryP;
                 if (isValidRisk && riskDist > 0) {
+                  const tpPrice = isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist;
                   levels = {
                     stopLoss: mfResult.stopLoss,
-                    takeProfit1: isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist,
-                    takeProfit2: isBuySig ? entryP + 2.5 * riskDist : entryP - 2.5 * riskDist,
+                    takeProfit1: tpPrice,
+                    takeProfit2: tpPrice,
                   };
                 }
               }

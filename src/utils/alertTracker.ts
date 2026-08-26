@@ -55,6 +55,7 @@ export interface SessionStats {
 
 /**
  * Calculates stop loss, TP1, and TP2 targets based on interval & direction.
+ * Exact 1:1 mathematical synchronization with backtester.ts getParams & getAdaptiveThreshold.
  */
 export function calculateAlertLevels(
   signal: string,
@@ -64,30 +65,35 @@ export function calculateAlertLevels(
 ): { stopLoss: number; takeProfit1: number; takeProfit2: number } {
   const isBuy = signal.includes('BUY');
   
-  // Dynamic ATR or percentage fallback per timeframe
-  let stopPct = 0.006; // 0.6% for 5m
+  // Parity with backtester.ts getParams:
+  const atrMultiplier = interval === '1d' ? 1.0 : 1.2;
+  const fallbackThreshold = interval === '1d' ? 0.015 : interval === '1h' ? 0.012 : 0.008;
+  
+  let stopPct = fallbackThreshold;
   if (atr && atr > 0 && entryPrice > 0) {
-    stopPct = Math.max(0.003, (atr * 1.5) / entryPrice);
-  } else if (interval === '1h') {
-    stopPct = 0.018;   // 1.8% for 1h
-  } else if (interval === '1d') {
-    stopPct = 0.035;   // 3.5% for 1d
+    const atrPct = atr / entryPrice;
+    stopPct = atrPct * atrMultiplier;
   }
+  // Clamp to [0.2%, 8%] exactly as getAdaptiveThreshold in backtester.ts:119
+  stopPct = Math.max(0.002, Math.min(0.08, stopPct));
 
-  const tp1Pct = stopPct * 1.5; // 1:1.5 R:R
-  const tp2Pct = stopPct * 2.5; // 1:2.5 R:R
+  const targetPct = stopPct * 1.5; // Single objective at +1.5R (targetMultiplier: 1.5)
 
   if (isBuy) {
+    const sl = entryPrice * (1 - stopPct);
+    const tp = entryPrice * (1 + targetPct);
     return {
-      stopLoss: entryPrice * (1 - stopPct),
-      takeProfit1: entryPrice * (1 + tp1Pct),
-      takeProfit2: entryPrice * (1 + tp2Pct),
+      stopLoss: sl,
+      takeProfit1: tp,
+      takeProfit2: tp, // Single target parity
     };
   } else {
+    const sl = entryPrice * (1 + stopPct);
+    const tp = entryPrice * (1 - targetPct);
     return {
-      stopLoss: entryPrice * (1 + stopPct),
-      takeProfit1: entryPrice * (1 - tp1Pct),
-      takeProfit2: entryPrice * (1 - tp2Pct),
+      stopLoss: sl,
+      takeProfit1: tp,
+      takeProfit2: tp, // Single target parity
     };
   }
 }
