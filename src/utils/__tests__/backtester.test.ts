@@ -1130,6 +1130,23 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(hugeATRLevels.stopLoss, 100.0 * (1 - 0.08), 'Huge ATR must clamp to 8.0% maximum');
   });
 
+  // Test 42: Strict Zero-Volume Immunity (Zero-Division & Infinity Guard)
+  test('VCME backtester and indicators handle zero-volume datasets safely without Infinity surge triggers', () => {
+    // Generate synthetic series where volume is identically 0
+    const zeroVol5m = generateSyntheticKlines(700, 300, 100).map(k => ({ ...k, volume: 0 }));
+    const zeroVol1h = generateSyntheticKlines(200, 3600, 100).map(k => ({ ...k, volume: 0 }));
+    const zeroVol1d = generateSyntheticKlines(60, 86400, 100).map(k => ({ ...k, volume: 0 }));
+
+    const btResult = backtestMultitemporal(zeroVol5m, zeroVol1h, zeroVol1d, '5m', 'ZERO_VOL', 'dayTrading');
+    assert.strictEqual(btResult.insufficient, false, 'Backtester should run without crashing on zero volume');
+    // On zero volume, rvol is 1.0 (default fallback) and cannot pass >= 1.5 volume spikes artificially
+    assert.ok(Number.isFinite(btResult.profitFactor), 'Profit factor must be finite');
+    assert.ok(Number.isFinite(btResult.expectancy), 'Expectancy must be finite');
+
+    const liveResult = calculateVCMESniperSignal(zeroVol5m, zeroVol1h, zeroVol1d, 'ZERO_VOL');
+    assert.ok(Number.isFinite(liveResult.stopLoss), 'Stop loss must be finite');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

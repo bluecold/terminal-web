@@ -564,8 +564,9 @@ export function backtestMultitemporal(
     const atr5m = atrSeries5m[i];
     const volCurr5m = vol5m[i];
     
-    // Rolling Volume SMA-20 RVOL O(1)
+    // Rolling Volume SMA-20 RVOL O(1) with strict zero guard
     const volAvg5m = volSma5m[i] > 0 ? volSma5m[i] : (volCurr5m || 1);
+    const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
 
     if (isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
       neutrals++; continue;
@@ -589,7 +590,7 @@ export function backtestMultitemporal(
       const prevB = (bbIndex - 1) >= 0 && (bbIndex - 1) < bbSeries5m.length ? bbSeries5m[bbIndex - 1] : null;
       const rsi = rsiSeries5m[idx];
       const vw = vwapSeries5m[idx];
-      const rvol = k.volume / (volSma5m[idx] || 1);
+      const rvol = (volSma5m[idx] && volSma5m[idx] > 0) ? k.volume / volSma5m[idx] : 1.0;
 
       if (!b || !prevB || isNaN(rsi) || isNaN(vw)) return false;
 
@@ -640,7 +641,7 @@ export function backtestMultitemporal(
                              (hasPullbackLong(i) || hasPullbackLong(i - 1) || hasPullbackLong(i - 2)) &&
                              curr.close > maxPrevHigh3 &&
                              curr.close > curr.open &&
-                             volCurr5m / volAvg5m >= 1.5 &&
+                             rvol >= 1.5 &&
                              curr.close > vwap5m;
 
     const minPrevLow3 = Math.min(klines5m[i - 1].low, klines5m[i - 2].low, klines5m[i - 3].low);
@@ -648,7 +649,7 @@ export function backtestMultitemporal(
                               (hasPullbackShort(i) || hasPullbackShort(i - 1) || hasPullbackShort(i - 2)) &&
                               curr.close < minPrevLow3 &&
                               curr.close < curr.open &&
-                              volCurr5m / volAvg5m >= 1.8 &&
+                              rvol >= 1.8 &&
                               curr.close < vwap5m;
 
     // B. Breakout Trigger
@@ -699,20 +700,22 @@ export function backtestMultitemporal(
       const orb = openingRangeMap[i];
       const prevOrb = i > 0 ? openingRangeMap[i - 1] : orb;
 
+      const rvolBreakoutLong = (volSma5m[i - 1] && volSma5m[i - 1] > 0) ? vol5m[i - 1] / volSma5m[i - 1] : 1.0;
       const breakoutLongPrev = prevOrb.isActive &&
                                prev.close > prevOrb.high + 0.10 * atrSeries5m[i - 1] &&
                                bbIdx > 0 && prev.close > bbSeries5m[bbIdx - 1].upper &&
-                               (vol5m[i - 1] / volSma5m[i - 1]) >= 1.5 &&
+                               rvolBreakoutLong >= 1.5 &&
                                (prev.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[i - 1];
 
       // Bug #1 fix: changed curr.low > orb.high to curr.close > orb.high.
       // Requiring the candle LOW to be above the ORB is nearly impossible in practice.
       condBreakoutLong = squeezePrev && breakoutLongPrev && curr.close > orb.high;
 
+      const rvolBreakoutShort = (volSma5m[i - 1] && volSma5m[i - 1] > 0) ? vol5m[i - 1] / volSma5m[i - 1] : 1.0;
       const breakoutShortPrev = prevOrb.isActive &&
                                 prev.close < prevOrb.low - 0.10 * atrSeries5m[i - 1] &&
                                 bbIdx > 0 && prev.close < bbSeries5m[bbIdx - 1].lower &&
-                                (vol5m[i - 1] / volSma5m[i - 1]) >= 1.8 &&
+                                rvolBreakoutShort >= 1.8 &&
                                 (bbSeries5m[bbIdx - 1].lower - prev.close) <= 1.0 * atrSeries5m[i - 1];
 
       // Bug #1 fix (symmetric): changed curr.high < orb.low to curr.close < orb.low.
@@ -741,7 +744,6 @@ export function backtestMultitemporal(
       return (i - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
     })();
 
-    const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
     const candleRange = curr.high - curr.low;
     const strengthCandleLong = candleRange > 0 ? (curr.close > curr.open) && ((curr.close - curr.low) > 0.60 * candleRange) : false;
     const strengthCandleShort = candleRange > 0 ? (curr.close < curr.open) && ((curr.high - curr.close) > 0.60 * candleRange) : false;

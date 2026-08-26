@@ -2238,7 +2238,7 @@ export function calculateVCMESniperSignal(
     const prevB = bbSeries5m[idx - 20];
     const rsi = rsiSeries5m[idx];
     const vw = vwapSeries5m[idx];
-    const rvolLocal = k.volume / (volSma5m[idx] || 1);
+    const rvolLocal = (volSma5m[idx] && volSma5m[idx] > 0) ? k.volume / volSma5m[idx] : 1.0;
 
     if (!b || !prevB || isNaN(rsi) || isNaN(vw)) return false;
 
@@ -2344,18 +2344,20 @@ export function calculateVCMESniperSignal(
     const orb = getOpeningRange(klines5m, lastIdx, style === 'swing' ? '1h' : '5m', symbol);
     const prevOrb = getOpeningRange(klines5m, lastIdx - 1, style === 'swing' ? '1h' : '5m', symbol);
 
+    const rvolBreakoutLong = (volSma5m[lastIdx - 1] && volSma5m[lastIdx - 1] > 0) ? vol5m[lastIdx - 1] / volSma5m[lastIdx - 1] : 1.0;
     const breakoutLongPrev = prevOrb.isActive &&
                              prev5m.close > prevOrb.high + 0.10 * atrSeries5m[lastIdx - 1] &&
                              bbIdx > 0 && prev5m.close > bbSeries5m[bbIdx - 1].upper &&
-                             (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 1.5 &&
+                             rvolBreakoutLong >= 1.5 &&
                              (prev5m.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[lastIdx - 1];
 
     condBreakoutLong = squeezePrev && breakoutLongPrev && curr5m.close > orb.high;
 
+    const rvolBreakoutShort = (volSma5m[lastIdx - 1] && volSma5m[lastIdx - 1] > 0) ? vol5m[lastIdx - 1] / volSma5m[lastIdx - 1] : 1.0;
     const breakoutShortPrev = prevOrb.isActive &&
                               prev5m.close < prevOrb.low - 0.10 * atrSeries5m[lastIdx - 1] &&
                               bbIdx > 0 && prev5m.close < bbSeries5m[bbIdx - 1].lower &&
-                              (vol5m[lastIdx - 1] / volSma5m[lastIdx - 1]) >= 1.8 && // VCME v2.0 Asymmetry: 1.8x
+                              rvolBreakoutShort >= 1.8 && // VCME v2.0 Asymmetry: 1.8x
                               (bbSeries5m[bbIdx - 1].lower - prev5m.close) <= 1.0 * atrSeries5m[lastIdx - 1];
 
     condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.close < orb.low;
