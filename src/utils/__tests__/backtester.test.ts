@@ -1920,6 +1920,31 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     );
   });
 
+  // Test 67: calculateRiskMetrics unifies loss streak and MDD strictly on realizedR
+  test('calculateRiskMetrics evaluates loss streak and MDD uniformly on net realizedR', () => {
+    // 2 trades with positive realizedR (+0.75R) but tiny nominal negative pnlPct (-0.02% friction artifact)
+    const anomalyTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 0.75, pnlPct: -0.02, outcome: 'win' },
+      { dir: 'BUY', realizedR: 0.75, pnlPct: -0.02, outcome: 'win' }
+    ];
+    const metrics = calculateRiskMetrics(anomalyTrades);
+    assert.strictEqual(metrics.maxLossStreak, 0, 'Positive realizedR (+0.75R) must NEVER register as a loss streak');
+    assert.strictEqual(metrics.maxDrawdownR, 0, 'Positive equity curve must yield 0 MDD');
+    assert.strictEqual(metrics.longStats.wins, 2);
+    assert.strictEqual(metrics.longStats.losses, 0);
+
+    // 2 real loss trades with negative realizedR (-1.04R)
+    const realLossTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: -1.04, pnlPct: -2.08, outcome: 'loss' },
+      { dir: 'BUY', realizedR: -1.04, pnlPct: -2.08, outcome: 'loss' }
+    ];
+    const lossMetrics = calculateRiskMetrics(realLossTrades);
+    assert.strictEqual(lossMetrics.maxLossStreak, 2, 'Negative realizedR must register exact loss streak of 2');
+    assert.strictEqual(lossMetrics.maxDrawdownR, 2.08, 'Cumulative drawdown of 2 losses must equal 2.08R');
+    assert.strictEqual(lossMetrics.longStats.wins, 0);
+    assert.strictEqual(lossMetrics.longStats.losses, 2);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

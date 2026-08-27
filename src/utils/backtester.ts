@@ -272,7 +272,7 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
       maxDrawdownR = dd;
     }
 
-    if (trade.pnlPct < 0 || trade.realizedR < 0) {
+    if (trade.realizedR < 0) {
       currentLossStreak++;
       if (currentLossStreak > maxLossStreak) {
         maxLossStreak = currentLossStreak;
@@ -285,20 +285,20 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
     if (trade.dir === 'BUY') {
       longSignals++;
       longTotalR += trade.realizedR;
-      if (trade.pnlPct > 0) {
+      if (trade.realizedR > 0) {
         longWins++;
         longGainPct += trade.pnlPct;
-      } else if (trade.pnlPct < 0) {
+      } else if (trade.realizedR < 0) {
         longLosses++;
         longLossPct += Math.abs(trade.pnlPct);
       }
     } else if (trade.dir === 'SELL') {
       shortSignals++;
       shortTotalR += trade.realizedR;
-      if (trade.pnlPct > 0) {
+      if (trade.realizedR > 0) {
         shortWins++;
         shortGainPct += trade.pnlPct;
-      } else if (trade.pnlPct < 0) {
+      } else if (trade.realizedR < 0) {
         shortLosses++;
         shortLossPct += Math.abs(trade.pnlPct);
       }
@@ -309,13 +309,13 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
     if (isTrending) {
       trendSignals++;
       trendTotalR += trade.realizedR;
-      if (trade.pnlPct > 0) trendWins++;
-      else if (trade.pnlPct < 0) trendLosses++;
+      if (trade.realizedR > 0) trendWins++;
+      else if (trade.realizedR < 0) trendLosses++;
     } else {
       rangeSignals++;
       rangeTotalR += trade.realizedR;
-      if (trade.pnlPct > 0) rangeWins++;
-      else if (trade.pnlPct < 0) rangeLosses++;
+      if (trade.realizedR > 0) rangeWins++;
+      else if (trade.realizedR < 0) rangeLosses++;
     }
   }
 
