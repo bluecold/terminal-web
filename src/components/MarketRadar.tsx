@@ -21,6 +21,11 @@ import {
 import { formatSmartPrice } from '../utils/formatters';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
 
+// Clock helper to isolate Date.now() access from component render body
+function getNowTimestamp(): number {
+  return Date.now();
+}
+
 export interface RadarRowData {
   symbol: string;
   name: string;
@@ -102,7 +107,7 @@ export default function MarketRadar({
 
     // 1. Circuit breaker check
     const failInfo = failureMapRef.current.get(symbol);
-    if (!forceFresh && failInfo && failInfo.count >= 2 && Date.now() - failInfo.lastFailed < 10 * 60 * 1000) {
+    if (!forceFresh && failInfo && failInfo.count >= 2 && getNowTimestamp() - failInfo.lastFailed < 10 * 60 * 1000) {
       return {
         symbol,
         name: symbol,
@@ -137,7 +142,7 @@ export default function MarketRadar({
 
       if (k5m.length === 0 && k1h.length === 0 && k1d.length === 0) {
         const prevCount = failureMapRef.current.get(symbol)?.count || 0;
-        failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: Date.now() });
+        failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
 
         return {
           symbol,
@@ -343,7 +348,7 @@ export default function MarketRadar({
     } catch (e) {
       console.error(`Error scanning radar for ${symbol}`, e);
       const prevCount = failureMapRef.current.get(symbol)?.count || 0;
-      failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: Date.now() });
+      failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
 
       return {
         symbol,

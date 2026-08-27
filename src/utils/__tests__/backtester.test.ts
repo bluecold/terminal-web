@@ -33,7 +33,7 @@ import {
 } from '../alertTracker';
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
 import { evaluateStrategyTournament, type StrategyCandidate } from '../tournament';
-import { simulateTrade, type TradeLevels, type ExitPolicy } from '../tradeSimulator';
+import { simulateTrade, type TradeLevels } from '../tradeSimulator';
 import type { Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -1071,6 +1071,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }
 
     const defaultResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'BTCUSDT');
+    assert.ok(defaultResult, 'Default result should be computed successfully');
     // If signal triggered, verify that providing an execution price shifts entry reference
     const customExecPrice = 110.0;
     const customResult = calculateVCMESniperSignal(klines5m, klines1h, klines1d, 'BTCUSDT', undefined, undefined, 'dayTrading', 'agresivo', customExecPrice);
