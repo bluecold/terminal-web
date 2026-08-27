@@ -18,7 +18,7 @@ export interface AuditAlertItem {
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
-  takeProfit2: number;
+  takeProfit2?: number;
   status: AlertStatus;
   realizedR: number;          // Risk multiplier: +1.5R, +2.5R, -1.0R, etc.
   pnlPercent: number;         // Floating or final PnL %
@@ -55,7 +55,7 @@ export interface SessionStats {
 }
 
 /**
- * Calculates stop loss, TP1, and TP2 targets based on interval & direction.
+ * Calculates stop loss and TP1 target based on interval & direction (single target 1.5R).
  * Exact 1:1 mathematical synchronization with backtester.ts getParams & getAdaptiveThreshold.
  */
 export function calculateAlertLevels(
@@ -63,7 +63,7 @@ export function calculateAlertLevels(
   entryPrice: number,
   interval: string,
   atr?: number
-): { stopLoss: number; takeProfit1: number; takeProfit2: number } {
+): { stopLoss: number; takeProfit1: number; takeProfit2?: number } {
   const isBuy = signal.includes('BUY');
   
   // Parity with backtester.ts getParams:
@@ -86,7 +86,6 @@ export function calculateAlertLevels(
     return {
       stopLoss: sl,
       takeProfit1: tp,
-      takeProfit2: tp, // Single target parity
     };
   } else {
     const sl = entryPrice * (1 + stopPct);
@@ -94,7 +93,6 @@ export function calculateAlertLevels(
     return {
       stopLoss: sl,
       takeProfit1: tp,
-      takeProfit2: tp, // Single target parity
     };
   }
 }

@@ -293,13 +293,18 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
-- **Actualización v2026.08.27.7 — Depuración de Ejecución Parcial en `simulateTrade` (Eliminación de `isStandardPartials`)**:
-  - **Unificación de Modelos de Salida en Simulador**:
-    - Se eliminan las ramas huérfanas de `isStandardPartials` (BUY/SELL SL y TP2) en `src/utils/tradeSimulator.ts`.
-    - La política de ejecución formaliza los dos únicos modelos existentes en el sistema:
-      * **`enablePartials: 'vcme-runner'` (o `true`)**: Modelo 3-Tier institucional (50% TP1 @ 2.0R, 25% TP2 @ 3.5R con SL trail a TP1, 25% runner @ 5.0R/Chandelier, Time-Stops y Emergency Exits).
-      * **`enablePartials: false`**: Salida mono-target limpia al 100% en TP1 (1.5R default) con SL fijo a -1.0R (Estándar, Confluencia, Scoring, Multifractal).
-    - Paridad de tipos 1:1 entre `alertTracker.ts` y `backtester.ts` al pasar `'vcme-runner'`.
+- **Actualización v2026.08.27.8 — Sinceramiento de Objetivos (TP2 Opcional y Dinámico en UI/Gráfico/Notificaciones)**:
+  - **`calculateAlertLevels` y `AlertItem` con `takeProfit2?: number` opcional**:
+    - Las 4 estrategias mono-target (*Estándar, Confluencia, Scoring, Multifractal MTF*) devuelven `{ stopLoss, takeProfit1 }` sin `takeProfit2` ficticio duplicado.
+    - Únicamente *VCME Sniper* genera y gestiona un `takeProfit2` real e independiente (+3.5R).
+  - **Notificaciones de Escritorio (`App.tsx`)**:
+    - Si la alerta tiene `takeProfit2` diferenciado: `Entry: $X | SL: $Y | TP1: $Z | TP2: $W`.
+    - Si es mono-target: `Entry: $X | SL: $Y | TP: $Z (+1.5R)` (cero confusión ni duplicación de valores).
+  - **Overlay en Gráfico (`Chart.tsx`)**:
+    - Dibuja `tp2Line` únicamente si `takeProfit2` existe y es diferente de `takeProfit1`, eliminando el renderizado de líneas superpuestas en el mismo píxel.
+    - Las estrategias mono-target muestran una única línea limpia etiquetada como `TP (+1.5R)`.
+  - **Tarjetas de Alerta (`App.tsx`)**:
+    - Muestran `TP: $Z` para mono-target y `TP1: $Z | TP2: $W` para VCME Sniper.
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**, 0 errores en ESLint, build de producción limpio.
 

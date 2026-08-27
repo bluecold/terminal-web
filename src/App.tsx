@@ -628,7 +628,6 @@ function App() {
                   levels = {
                     stopLoss: mfResult.stopLoss,
                     takeProfit1: tpPrice,
-                    takeProfit2: tpPrice,
                   };
                 }
               }
@@ -645,7 +644,10 @@ function App() {
                     : '';
                 const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
 
-                const levelInfo = `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`;
+                const hasDistinctTP2 = levels.takeProfit2 !== undefined && Math.abs(levels.takeProfit2 - levels.takeProfit1) > 0.000001;
+                const levelInfo = hasDistinctTP2
+                  ? `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`
+                  : `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP: ${formatSmartPrice(levels.takeProfit1)} (+1.5R)`;
 
                 const pfNotice = bestPF !== null ? `PF ${bestPF.toFixed(1)}` : 'PF N/D';
                 new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
@@ -1101,7 +1103,7 @@ function App() {
                             entryPrice: alert.entryPrice,
                             stopLoss: alert.stopLoss,
                             takeProfit1: alert.takeProfit1,
-                            takeProfit2: alert.takeProfit2 || alert.takeProfit1,
+                            takeProfit2: alert.takeProfit2,
                             signal: alert.signal || 'BUY',
                           });
                         }
@@ -1183,7 +1185,14 @@ function App() {
                         }}>
                           <span>In: <strong style={{ color: '#fff' }}>{formatSmartPrice(alert.entryPrice)}</strong></span>
                           <span>SL: <span style={{ color: 'var(--accent-red)' }}>{formatSmartPrice(alert.stopLoss)}</span></span>
-                          <span>TP: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit1)}</span></span>
+                          {alert.takeProfit2 !== undefined && Math.abs(alert.takeProfit2 - alert.takeProfit1) > 0.000001 ? (
+                            <>
+                              <span>TP1: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit1)}</span></span>
+                              <span>TP2: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit2)}</span></span>
+                            </>
+                          ) : (
+                            <span>TP: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit1)}</span></span>
+                          )}
                         </div>
                       )}
                     </div>

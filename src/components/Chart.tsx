@@ -10,7 +10,7 @@ export interface AlertOverlay {
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
-  takeProfit2: number;
+  takeProfit2?: number;
   signal: string;
 }
 
@@ -359,8 +359,8 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
     const { entryPrice, stopLoss, takeProfit1, takeProfit2, signal } = activeAlertOverlay;
     const isBuy = signal.includes('BUY');
     const riskDist = Math.abs(entryPrice - stopLoss);
+    const hasDistinctTP2 = takeProfit2 !== undefined && Math.abs(takeProfit2 - takeProfit1) > 0.000001;
     const r1 = riskDist > 0 ? Math.abs(takeProfit1 - entryPrice) / riskDist : 1.5;
-    const r2 = riskDist > 0 ? Math.abs(takeProfit2 - entryPrice) / riskDist : 2.5;
 
     const entryLine = series.createPriceLine({
       price: entryPrice,
@@ -386,19 +386,25 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       lineWidth: 1,
       lineStyle: LineStyle.Dotted,
       axisLabelVisible: true,
-      title: `TP1 (+${r1.toFixed(1)}R)`,
+      title: hasDistinctTP2 ? `TP1 (+${r1.toFixed(1)}R)` : `TP (+${r1.toFixed(1)}R)`,
     });
 
-    const tp2Line = series.createPriceLine({
-      price: takeProfit2,
-      color: '#059669',
-      lineWidth: 2,
-      lineStyle: LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: `TP2 (+${r2.toFixed(1)}R)`,
-    });
+    const lines: IPriceLine[] = [entryLine, slLine, tp1Line];
 
-    priceLinesRef.current = [entryLine, slLine, tp1Line, tp2Line];
+    if (hasDistinctTP2) {
+      const r2 = riskDist > 0 ? Math.abs(takeProfit2 - entryPrice) / riskDist : 2.5;
+      const tp2Line = series.createPriceLine({
+        price: takeProfit2,
+        color: '#059669',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `TP2 (+${r2.toFixed(1)}R)`,
+      });
+      lines.push(tp2Line);
+    }
+
+    priceLinesRef.current = lines;
 
     return () => {
       priceLinesRef.current.forEach(line => {

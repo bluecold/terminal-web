@@ -748,7 +748,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert(buyLevels.stopLoss > 0, 'Stop loss must be strictly positive');
     assert(buyLevels.stopLoss < pepeEntry, 'Stop loss for BUY must be strictly below entry');
     assert(buyLevels.takeProfit1 > pepeEntry, 'TP1 must be strictly above entry');
-    assert(buyLevels.takeProfit2 >= buyLevels.takeProfit1, 'TP2 must match or exceed TP1');
+    assert(buyLevels.takeProfit2 === undefined || buyLevels.takeProfit2 >= buyLevels.takeProfit1, 'TP2 must be undefined or match/exceed TP1');
 
     const riskDist = pepeEntry - buyLevels.stopLoss;
     const rewardDist = buyLevels.takeProfit1 - pepeEntry;
@@ -1135,13 +1135,13 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const levels5m = calculateAlertLevels('BUY', entry, '5m', atr);
     assert.strictEqual(levels5m.stopLoss, 100.0 * (1 - 0.012), '5m Stop loss must equal entry * (1 - 1.2 * ATR)');
     assert.strictEqual(levels5m.takeProfit1, 100.0 * (1 + 0.018), '5m TP1 must equal entry * (1 + 1.8 * ATR)');
-    assert.strictEqual(levels5m.takeProfit2, levels5m.takeProfit1, '5m TP2 must equal TP1 (single objective parity)');
+    assert.strictEqual(levels5m.takeProfit2, undefined, '5m TP2 must be undefined (single objective parity)');
 
     // 1d: atrMultiplier = 1.0 -> stopPct = 1.0%, target = 1.5% (+1.5R)
     const levels1d = calculateAlertLevels('SELL', entry, '1d', atr);
     assert.strictEqual(levels1d.stopLoss, 100.0 * (1 + 0.010), '1d Stop loss must equal entry * (1 + 1.0 * ATR)');
     assert.strictEqual(levels1d.takeProfit1, 100.0 * (1 - 0.015), '1d TP1 must equal entry * (1 - 1.5 * ATR)');
-    assert.strictEqual(levels1d.takeProfit2, levels1d.takeProfit1, '1d TP2 must equal TP1');
+    assert.strictEqual(levels1d.takeProfit2, undefined, '1d TP2 must be undefined');
 
     // Clamping checks: minimum 0.2% and maximum 8.0%
     const tinyATRLevels = calculateAlertLevels('BUY', entry, '5m', 0.0001); // 0.0001% -> clamped to 0.2%
