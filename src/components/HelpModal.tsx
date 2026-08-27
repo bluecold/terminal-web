@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { X } from 'lucide-react';
+import { APP_VERSION } from '../version';
 
 interface HelpModalProps {
   onClose: () => void;
@@ -167,7 +168,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia y paridad cuantitativa · v2026.08.27.11
+              Motor de señales técnicas multiestrategia y paridad cuantitativa · {APP_VERSION}
             </div>
           </div>
           <button

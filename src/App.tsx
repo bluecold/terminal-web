@@ -12,6 +12,7 @@ import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, type VCMESniperResult, type MultifractalMTFSignalResult } from './utils/indicators';
 import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF, createFallbackBacktestResult, type BacktestResult } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
+import { APP_VERSION } from './version';
 import {
   calculateAlertLevels,
   updateAlertsOutcome,
@@ -833,7 +834,7 @@ function App() {
             <span>{loading ? 'FETCHING...' : 'CONNECTED (LIVE)'}</span>
           </div>
           <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-            v2026.08.26.2
+            {APP_VERSION}
           </span>
         </div>
       </header>
