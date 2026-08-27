@@ -3131,13 +3131,48 @@ export function calculateMultifractalMTFSignal(
     reasoning = `Placing SL above absorption high (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
   }
 
+  // 4. RISK BOUNDS & DIRECTIONAL VALIDITY (Institutional Parity)
+  const atrSeries5M = calculateATRSeries(klines5m, 14);
+  const atr5m = (atrSeries5M.length > 0 && !isNaN(atrSeries5M[atrSeries5M.length - 1]) && atrSeries5M[atrSeries5M.length - 1] > 0)
+    ? atrSeries5M[atrSeries5M.length - 1]
+    : (currCandle.close * 0.005);
+  const minRisk = 0.8 * atr5m;
+  const maxRisk = 2.0 * atr5m;
+  const maxAllowedRiskPct = 0.025; // 2.5% max risk for 12-candle horizon
+
+  const triggerPrice = (executionPrice && executionPrice > 0) ? executionPrice : currCandle.close;
+
+  if (signal !== 'NEUTRAL' && stopLoss > 0) {
+    let risk = signal === 'BUY' ? triggerPrice - stopLoss : stopLoss - triggerPrice;
+    const isValidRisk = signal === 'BUY' ? stopLoss < triggerPrice : stopLoss > triggerPrice;
+
+    if (!isValidRisk || risk <= 0) {
+      signal = 'NEUTRAL';
+      strategy = 'NONE';
+      stopLoss = 0;
+      reasoning = 'Señal descartada: stop loss inválido o en precio de entrada (riesgo cero)';
+    } else {
+      if (risk < minRisk) {
+        stopLoss = signal === 'BUY' ? triggerPrice - minRisk : triggerPrice + minRisk;
+        risk = minRisk;
+      }
+      const riskPercent = risk / triggerPrice;
+      if (risk > maxRisk || riskPercent > maxAllowedRiskPct) {
+        signal = 'NEUTRAL';
+        strategy = 'NONE';
+        stopLoss = 0;
+        reasoning = `Señal descartada: riesgo excesivo (${(riskPercent * 100).toFixed(2)}% > 2.50%) inalcanzable en 12 velas`;
+      }
+    }
+  }
+
   const activeVolPercent = signal === 'SELL' ? currVolComp.activeSellPercent : currVolComp.activeBuyPercent;
 
   return {
     signal,
     strategy,
     stopLoss,
-    triggerPrice: (executionPrice && executionPrice > 0) ? executionPrice : currCandle.close,
+    triggerPrice,
     isCompressed1H,
     bias1D,
     activeVolumePercent5M: activeVolPercent,

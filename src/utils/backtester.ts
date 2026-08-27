@@ -1969,6 +1969,7 @@ export function backtestMultifractalMTF(
   const volComp5M = calculateVolumeComposition(klines5m);
   const dreadBlitz5M = calculateDreadBlitz(klines5m);
   const adxData5M = calculateADXSeries(klines5m, 14);
+  const atrSeries5M = calculateATRSeries(klines5m, 14);
   const recordedTrades: RecordedTrade[] = [];
 
   let totalSignals = 0;
@@ -2085,13 +2086,45 @@ export function backtestMultifractalMTF(
       continue;
     }
 
+    // Realistic execution: entry at next open
+    const nextIdx = i + 1 < klines5m.length ? i + 1 : i;
+    const entryPrice = klines5m[nextIdx].open || curr.close;
+
+    // Risk validation and bounding (minRisk / maxRisk and strict directional check)
+    const atr5m = (i >= 0 && i < atrSeries5M.length && !isNaN(atrSeries5M[i]) && atrSeries5M[i] > 0)
+      ? atrSeries5M[i]
+      : (entryPrice * 0.005);
+    const minRisk = 0.8 * atr5m;
+    const maxRisk = 2.0 * atr5m;
+    const maxAllowedRiskPct = 0.025; // 2.5% max risk for 12-candle horizon
+
+    let risk = signal === 'BUY' ? entryPrice - stopLossPrice : stopLossPrice - entryPrice;
+    const isValidDirectionalRisk = signal === 'BUY' ? stopLossPrice < entryPrice : stopLossPrice > entryPrice;
+
+    // Reject zero-risk, inverted SL or degenerated setups BEFORE incrementing totalSignals
+    if (!isValidDirectionalRisk || risk <= 0) {
+      discards.riskFilter++;
+      neutrals++;
+      continue;
+    }
+
+    // Enforce minimum risk floor to prevent immediate noise stop-outs
+    if (risk < minRisk) {
+      stopLossPrice = signal === 'BUY' ? entryPrice - minRisk : entryPrice + minRisk;
+      risk = minRisk;
+    }
+
+    // Reject setups where stop is too wide for a 12-candle scalp
+    const riskPercent = risk / entryPrice;
+    if (risk > maxRisk || riskPercent > maxAllowedRiskPct) {
+      discards.riskFilter++;
+      neutrals++;
+      continue;
+    }
+
     totalSignals++;
     lastSignalIdx = i;
 
-    // Realistic execution: entry at next open + 0.08% friction
-    const nextIdx = i + 1 < klines5m.length ? i + 1 : i;
-    const entryPrice = klines5m[nextIdx].open || curr.close;
-    const risk = Math.abs(entryPrice - stopLossPrice);
     const takeProfitPrice = signal === 'BUY'
       ? entryPrice + risk * 1.5
       : entryPrice - risk * 1.5;

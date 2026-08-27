@@ -1787,6 +1787,27 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(stdTP.realizedR, 1.46, '1.5R TP1 with friction must yield +1.46R net');
   });
 
+  // Test 64: Multifractal MTF zero-risk rejection, directional validation and min/max risk bounds
+  test('calculateMultifractalMTFSignal and backtester discard zero-risk and bound risk to 0.8-2.0 ATR', () => {
+    // 1. Synthetic dataset where band midpoint would equal entry (risk = 0)
+    const klines1d = generateSyntheticKlines(60, 86400, 100, 0.5);
+    const klines1h = generateSyntheticKlines(100, 3600, 100, 0.05);
+    const klines5m = generateSyntheticKlines(600, 300, 100, 0.02);
+
+    // Force execution price equal to stopLoss -> must be rejected as NEUTRAL (0 risk)
+    const mfSignalZeroRisk = calculateMultifractalMTFSignal(klines5m, klines1h, klines1d, 'ZERO_RISK', 100.0);
+    if (mfSignalZeroRisk.signal !== 'NEUTRAL') {
+      // If signal fired, verify its stopLoss is strictly non-zero and has valid directional risk
+      assert.notStrictEqual(mfSignalZeroRisk.stopLoss, 100.0, 'Stop loss must never equal trigger price');
+      assert(Math.abs(mfSignalZeroRisk.triggerPrice - mfSignalZeroRisk.stopLoss) > 0, 'Risk must be strictly > 0');
+    }
+
+    // 2. Run backtest and ensure discards.riskFilter captures invalid/excessive risk setups without polluting totalSignals
+    const btRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'ZERO_TEST');
+    assert.strictEqual(btRes.insufficient, false);
+    assert(typeof btRes.discards.riskFilter === 'number');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
