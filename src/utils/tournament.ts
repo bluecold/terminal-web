@@ -152,8 +152,10 @@ export function evaluateStrategyTournament(
         wfMultiplier = 1.0 + Math.min(0.15, Math.max(0, oosExpR) * 0.10);
       } else if (c.walkForward.status === 'FAIL') {
         wfMultiplier = 0.55; // Strict penalty for failing recent 30% validation
+      } else if (c.walkForward.status === 'INSUFFICIENT_OOS') {
+        wfMultiplier = 0.90; // Mild uncertainty: positive OOS trades exist but sample < minOosTrades
       } else if (c.walkForward.status === 'NO_OOS_TRADES') {
-        wfMultiplier = 0.85; // Uncertainty penalty for unverified recent performance (< minOosTrades)
+        wfMultiplier = 0.80; // Absence of activity in recent 30% of timeline
       }
     }
 
@@ -225,8 +227,10 @@ export function evaluateStrategyTournament(
       : 'PF N/D';
     const wfFailNote = winner.walkForward?.status === 'FAIL'
       ? ' · WF OOS falló'
+      : winner.walkForward?.status === 'INSUFFICIENT_OOS' && winner.resolved >= minHighResolved
+      ? ` · Muestra OOS reducida (${winner.walkForward.outOfSample.signals} trades)`
       : winner.walkForward?.status === 'NO_OOS_TRADES' && winner.resolved >= minHighResolved
-      ? ' · Muestra OOS Insuficiente'
+      ? ' · Sin trades en OOS'
       : '';
 
     return {

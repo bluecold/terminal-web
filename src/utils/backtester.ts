@@ -97,7 +97,7 @@ export interface WalkForwardResult {
   inSample: SplitStats;      // Performance in historical 70%
   outOfSample: SplitStats;   // Performance in validation 30%
   passed: boolean;           // True if OOS E[R] >= 0 or no trades
-  status: 'PASS' | 'FAIL' | 'NO_OOS_TRADES';
+  status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES';
 }
 
 export function createEmptyDirectionalStats(): DirectionalStats {
@@ -201,7 +201,7 @@ export function calculateWalkForward(
   const outOfSample = calculateSplitStats(oosTrades);
 
   let passed = false;
-  let status: 'PASS' | 'FAIL' | 'NO_OOS_TRADES' = 'NO_OOS_TRADES';
+  let status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES' = 'NO_OOS_TRADES';
 
   if (oosTrades.length === 0) {
     status = 'NO_OOS_TRADES';
@@ -212,8 +212,8 @@ export function calculateWalkForward(
       status = 'FAIL';
       passed = false;
     } else {
-      // Insufficient sample to statistically validate out-of-sample edge
-      status = 'NO_OOS_TRADES';
+      // Positive but sample size below threshold for full certification
+      status = 'INSUFFICIENT_OOS';
       passed = false;
     }
   } else if (outOfSample.expectancyR >= 0 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {

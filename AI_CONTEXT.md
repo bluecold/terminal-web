@@ -280,6 +280,19 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**, incluyendo Test 72 de validación de Swing 720h y capacidad adaptativa OOS. `npm run lint` con **0 errores y 0 warnings**.
 
+- **Actualización v2026.08.27.5 — Desambiguación de Estado OOS: `INSUFFICIENT_OOS` vs `NO_OOS_TRADES`**:
+  - **Nuevo estado `INSUFFICIENT_OOS`** en `WalkForwardResult.status`:
+    - `NO_OOS_TRADES`: 0 trades en OOS → la estrategia **no disparó señales** en el tramo reciente. `wfMultiplier = 0.80`.
+    - `INSUFFICIENT_OOS`: $1 \le N < \text{effectiveMinOos}$ trades con $E[R] \ge 0$ → la estrategia disparó señales positivas pero la muestra es insuficiente. `wfMultiplier = 0.90`.
+    - `FAIL`: Trades OOS con $E[R] < 0$ → la estrategia falló en el tramo reciente. `wfMultiplier = 0.55`.
+    - `PASS`: $\ge \text{effectiveMinOos}$ trades con $E[R] \ge 0$ → validación ciega aprobada. `wfMultiplier = 1.0\text{--}1.15`.
+  - **UI diferenciada en `BacktestCard.tsx`**:
+    - `INSUFFICIENT_OOS` muestra badge ámbar con la expectativa real: `~ OOS +0.85R (2 trades)`.
+    - `NO_OOS_TRADES` muestra badge gris neutro: `~ Sin trades OOS`.
+  - **Torneo (`tournament.ts`)**: Reasoning diferenciado — `Muestra OOS reducida (N trades)` vs `Sin trades en OOS`.
+  - **Suite de Pruebas**:
+    - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
+
 ---
 
 ## 📌 Guía de Arquitectura para la Fase 2 (Proxy de Infraestructura Futuro)

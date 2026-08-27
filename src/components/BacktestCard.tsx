@@ -237,12 +237,16 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
                     ? 'rgba(16, 185, 129, 0.08)'
                     : walkForward.status === 'FAIL'
                     ? 'rgba(244, 63, 94, 0.08)'
+                    : walkForward.status === 'INSUFFICIENT_OOS'
+                    ? 'rgba(245, 158, 11, 0.08)'
                     : 'rgba(255, 255, 255, 0.02)',
                   border: `1px solid ${
                     walkForward.status === 'PASS'
                       ? 'rgba(16, 185, 129, 0.2)'
                       : walkForward.status === 'FAIL'
                       ? 'rgba(244, 63, 94, 0.2)'
+                      : walkForward.status === 'INSUFFICIENT_OOS'
+                      ? 'rgba(245, 158, 11, 0.2)'
                       : 'rgba(255, 255, 255, 0.05)'
                   }`,
                 }}>
@@ -255,14 +259,16 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
                       ? 'var(--accent-green)'
                       : walkForward.status === 'FAIL'
                       ? 'var(--accent-red)'
+                      : walkForward.status === 'INSUFFICIENT_OOS'
+                      ? 'var(--accent-yellow)'
                       : 'var(--text-muted)'
                   }} title={`In-Sample (70%): ${walkForward.inSample.signals} trades (E[R] ${walkForward.inSample.expectancyR > 0 ? '+' : ''}${walkForward.inSample.expectancyR.toFixed(2)}R) · Out-of-Sample (30%): ${walkForward.outOfSample.signals} trades (E[R] ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R)`}>
                     {walkForward.status === 'PASS'
                       ? `✓ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
                       : walkForward.status === 'FAIL'
                       ? `✗ OOS ${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
-                      : walkForward.outOfSample.signals > 0
-                      ? `~ OOS (${walkForward.outOfSample.signals} < 5 trades)`
+                      : walkForward.status === 'INSUFFICIENT_OOS'
+                      ? `~ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.signals} ${walkForward.outOfSample.signals === 1 ? 'trade' : 'trades'})`
                       : '~ Sin trades OOS'}
                   </span>
                 </div>

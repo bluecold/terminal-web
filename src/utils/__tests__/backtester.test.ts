@@ -1594,14 +1594,14 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(wfPass.status, 'PASS');
     assert.strictEqual(wfPass.passed, true);
 
-    // Scenario A.2: Single positive trade in OOS (< 5 trades) -> NO_OOS_TRADES (unproven)
+    // Scenario A.2: Single positive trade in OOS (< min trades) -> INSUFFICIENT_OOS (unproven)
     const tradesSingleOOS: RecordedTrade[] = [
       { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
       { dir: 'BUY', realizedR: 0.01, pnlPct: 0.04, outcome: 'win', entryIdx: 85 } // 1 OOS trade only
     ];
     const wfSingle = calculateWalkForward(tradesSingleOOS, oldestIdx, latestIdx, 0.70, 5);
     assert.strictEqual(wfSingle.outOfSample.signals, 1);
-    assert.strictEqual(wfSingle.status, 'NO_OOS_TRADES', 'Single OOS trade must NOT be awarded PASS');
+    assert.strictEqual(wfSingle.status, 'INSUFFICIENT_OOS', 'Single positive OOS trade must receive INSUFFICIENT_OOS status');
     assert.strictEqual(wfSingle.passed, false);
 
     // Scenario B: Negative OOS -> FAIL
@@ -1643,7 +1643,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       stdResult.walkForward.inSample.signals + stdResult.walkForward.outOfSample.signals,
       stdResult.totalSignals
     );
-    assert.ok(['PASS', 'FAIL', 'NO_OOS_TRADES'].includes(stdResult.walkForward.status));
+    assert.ok(['PASS', 'FAIL', 'INSUFFICIENT_OOS', 'NO_OOS_TRADES'].includes(stdResult.walkForward.status));
   });
 
   // Test 60: Strategy Tournament Walk-Forward Out-of-Sample Disqualification
@@ -1827,7 +1827,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
   // Test 65: Walk-Forward requires minimum sample (>= 5 trades in 5m) to award PASS status & unlock HIGH confidence
   test('Walk-Forward rejects single-trade +0.01R OOS and requires >= 5 OOS trades for HIGH confidence', () => {
-    // 1. Single trade in OOS with +0.01R must result in NO_OOS_TRADES and passed = false
+    // 1. Single trade in OOS with +0.01R must result in INSUFFICIENT_OOS and passed = false
     const tradesSingleLucky: RecordedTrade[] = [
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10 },
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 30 },
@@ -1835,10 +1835,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     ];
     const wfSingle = calculateWalkForward(tradesSingleLucky, 0, 99, 0.70, 5);
     assert.strictEqual(wfSingle.outOfSample.signals, 1);
-    assert.strictEqual(wfSingle.status, 'NO_OOS_TRADES');
+    assert.strictEqual(wfSingle.status, 'INSUFFICIENT_OOS');
     assert.strictEqual(wfSingle.passed, false, 'Single trade in OOS must not be awarded PASS');
 
-    // 2. Candidate with NO_OOS_TRADES must be rejected from HIGH confidence in tournament
+    // 2. Candidate with INSUFFICIENT_OOS must be rejected from HIGH confidence in tournament
     const unprovenCandidate: StrategyCandidate = {
       key: 'standard',
       label: 'Standard Unproven OOS',
@@ -1854,7 +1854,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const tourneyUnproven = evaluateStrategyTournament([unprovenCandidate], '5m');
     assert.strictEqual(tourneyUnproven.confidence, 'LIMITED', 'Candidate without validated OOS sample must be LIMITED');
-    assert.ok(tourneyUnproven.reasoning.includes('Muestra OOS Insuficiente') || tourneyUnproven.reasoning.includes('Muestra limitada'));
+    assert.ok(tourneyUnproven.reasoning.includes('Muestra OOS') || tourneyUnproven.reasoning.includes('Muestra limitada'));
 
     // 3. Robust candidate with 5 OOS trades with E[R] > 0 unlocks HIGH confidence
     const tradesRobustOOS: RecordedTrade[] = [
