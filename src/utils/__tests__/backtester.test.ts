@@ -2039,6 +2039,18 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(res600.walkForward.isWindow <= 420, '600-candle dataset must use standard 576 base window');
   });
 
+  // Test 70: Effective Cycle Exposure includes cooldown in avgExposureHours
+  test('avgExposureHours measures effective cycle duration including cooldown', () => {
+    const klines = generateSyntheticKlines(1000, 300, 100, 0.02);
+    const stdRes = backtestStandard(klines, '5m', 'CYCLE_TEST');
+
+    assert.ok(stdRes.totalSignals > 0, 'Should have generated signals');
+    // On 5m, cooldown is 24 candles = 2.0 hours. Effective cycle must be >= 2.0 hours.
+    assert.ok(stdRes.avgExposureHours >= 2.0, `avgExposureHours must be >= 2.0h with 24-candle cooldown (got ${stdRes.avgExposureHours}h)`);
+    // avgDurationCandles retains pure in-market holding duration (< 24 candles)
+    assert.ok(stdRes.avgDurationCandles <= 10, `avgDurationCandles should reflect pure trade holding duration (got ${stdRes.avgDurationCandles})`);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

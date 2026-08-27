@@ -167,7 +167,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               TERMINAL LITE — Guía de Usuario
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-              Motor de señales técnicas multiestrategia y paridad cuantitativa · v2026.08.26.2
+              Motor de señales técnicas multiestrategia y paridad cuantitativa · v2026.08.27.2
             </div>
           </div>
           <button
@@ -194,15 +194,15 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           <section>
             <SectionTitle>¿Qué es FinceptTerminal?</SectionTitle>
             <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: '1.7', marginBottom: '14px' }}>
-              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real enfocada en operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> — intradía y swing de hasta una semana. Analiza activos de alta volatilidad (criptomonedas y acciones de EEUU) mediante cinco motores de señales independientes con un simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional ($MDD_R$, Sortino en R, racha de pérdidas, desglose ADX), validación Walk-Forward (70/30) y selección por ventaja estadística normalizada en R.
+              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real enfocada en operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> — intradía y swing de hasta una semana. Analiza activos de alta volatilidad (criptomonedas y acciones de EEUU) mediante cinco motores de señales independientes con un simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional (MDD en R, Sortino en R, racha de pérdidas, desglose ADX), exposición efectiva de ciclo con cooldown (`tiempo de ciclo = trade + cooldown`), validación Walk-Forward (70/30) con paginación de 2000 velas y selección por ventaja estadística normalizada en R.
             </p>
 
             {/* Key concepts grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
                 { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de la watchlist y presets con confluencias 3/3, compresión BB y RVOL.' },
-                { icon: '🏆', title: 'Torneo Walk-Forward', text: '5 motores compiten por E[R], velocidad R/h, Sortino y validación ciega OOS (70/30).' },
-                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit y fricción contable.' },
+                { icon: '🏆', title: 'Torneo Walk-Forward', text: '5 motores compiten por E[R] neto, velocidad real R/h (ciclo + cooldown), Sortino y OOS ≥ 5 trades.' },
+                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit y fricción contable (0.08%).' },
                 { icon: '🎯', title: 'Audit Tracker & Chart', text: 'Seguimiento causal sin repintado en velas vivas, líneas visuales en TradingView y cero alertas fantasma.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>
@@ -220,8 +220,8 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {[
                 { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado.' },
-                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 3.0R) y validación Walk-Forward (70/30). Las estrategias que fallan en el tramo reciente (OOS) no pueden ganar con confianza ALTA.' },
-                { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. El sistema evalúa métricas de riesgo avanzadas (Max Drawdown en R, racha de pérdidas y Sortino) para mitigar el sesgo de supervivencia.' },
+                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 3.0R), ciclo de exposición efectivo (incluyendo cooldown) y validación Walk-Forward (70/30 con ≥ 5 trades OOS). Las estrategias con fallo reciente (OOS) se descalifican de confianza ALTA.' },
+                { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. El sistema evalúa métricas de riesgo avanzadas (Max Drawdown en R, racha de pérdidas y Sortino) con fricción contable de 0.08% para mitigar el sesgo de supervivencia.' },
                 { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME v2.0 y Multifractal MTF son las más exigentes en confluencia. VCME v2.0 exige un Confidence Score ≥ 65% (0.65) con campana óptima a 0.5 ATR para disparar. Es normal que transcurran horas sin señal — esto es protección por diseño.' },
                 { icon: '📰', color: 'var(--accent-blue)', text: 'Revisá siempre el Calendario de Catalizadores antes de entrar. Una señal técnica perfecta puede fallar si hay un reporte de ganancias o decisión de la Fed en las próximas 48 horas.' },
                 { icon: '💰', color: 'var(--accent-yellow)', text: 'Usá la Calculadora de Position Sizing (VCME v2.0). El sistema calcula las unidades exactas sugiriendo un riesgo del 1% de capital y límite de concentración del 20%.' },

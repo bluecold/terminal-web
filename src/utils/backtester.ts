@@ -784,6 +784,7 @@ export function backtestMultitemporal(
   let totalLossPct = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
+  let totalCycleCandles = 0;
   let nextAllowedIdx = 0;
   const recordedTrades: RecordedTrade[] = [];
 
@@ -1333,7 +1334,9 @@ export function backtestMultitemporal(
     });
 
     totalRealizedR += sim.realizedR;
-    totalDurationCandles += Math.max(1, sim.exitIdx - i);
+    const tradeDuration = Math.max(1, sim.exitIdx - i);
+    totalDurationCandles += tradeDuration;
+    totalCycleCandles += tradeDuration + cooldownPeriod;
 
     const adxVal = idx1h >= 0 && idx1h < adxSeries1h.adx.length ? adxSeries1h.adx[idx1h] : undefined;
     recordedTrades.push({
@@ -1370,7 +1373,8 @@ export function backtestMultitemporal(
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
   const candleHours = style === 'swing' ? (stepSec === 300 ? 5 / 60 : 1.0) : 5 / 60;
-  const avgExposureHours = Number((avgDurationCandles * candleHours).toFixed(2));
+  const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
+  const avgExposureHours = Number((avgCycleCandles * candleHours).toFixed(2));
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
@@ -1465,6 +1469,7 @@ function runBacktestGenericOptimized(
   let totalLossPct = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
+  let totalCycleCandles = 0;
 
   let nextAllowedIdx = 0;
 
@@ -1504,6 +1509,7 @@ function runBacktestGenericOptimized(
 
     totalRealizedR += outcome.realizedR;
     totalDurationCandles += outcome.durationCandles;
+    totalCycleCandles += Math.max(outcome.durationCandles, params.cooldownPeriod);
 
     const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
     recordedTrades.push({
@@ -1540,7 +1546,8 @@ function runBacktestGenericOptimized(
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
   const candleHours = interval === '5m' ? (5 / 60) : interval === '1h' ? 1.0 : 24.0;
-  const avgExposureHours = Number((avgDurationCandles * candleHours).toFixed(2));
+  const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
+  const avgExposureHours = Number((avgCycleCandles * candleHours).toFixed(2));
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
 
@@ -2013,6 +2020,7 @@ export function backtestMultifractalMTF(
   let totalLossPct = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
+  let totalCycleCandles = 0;
   let lastSignalIdx = -cooldownPeriod - 1;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
@@ -2175,7 +2183,9 @@ export function backtestMultifractalMTF(
     });
 
     totalRealizedR += sim.realizedR;
-    totalDurationCandles += Math.max(1, sim.exitIdx - i);
+    const tradeDuration = Math.max(1, sim.exitIdx - i);
+    totalDurationCandles += tradeDuration;
+    totalCycleCandles += Math.max(tradeDuration, cooldownPeriod);
 
     const adxVal = (i >= 0 && i < adxData5M.adx.length) ? adxData5M.adx[i] : undefined;
     recordedTrades.push({
@@ -2208,7 +2218,8 @@ export function backtestMultifractalMTF(
   const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
-  const avgExposureHours = Number((avgDurationCandles * (5 / 60)).toFixed(2));
+  const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
+  const avgExposureHours = Number((avgCycleCandles * (5 / 60)).toFixed(2));
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
   const riskMetrics = calculateRiskMetrics(recordedTrades);

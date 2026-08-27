@@ -268,27 +268,23 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Corrección de la inversión matemática en `indicators.ts` y `backtester.ts` donde la distancia a la EMA21 premiaba el *chasing* sobreextendido.
     - Implementación de la campana triangular: $\text{distScore} = 0.15 \cdot \max(0, 1.0 - |\text{distRatio} - 0.5| / 1.0)$, premiando el rebote confirmado ($0.5\text{ ATR}$) y penalizando con $0.0$ la sobreextensión $> 1.5\text{ ATR}$.
 
-- **Actualización v2026.08.27.1 — Paridad Total Motor/Tracker, Consistencia R Neta y Verificación Zero-Lint**:
-  - **Cálculo Uniforme de $R$ Neto con Fricción**:
-    - Derivación estricta de $R$ a partir del PnL neto: $R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$, unificado en todos los tipos de salida incluyendo Stop Loss (ej. $-1.04R$ para riesgo inicial del $2.0\%$ con fricción $0.08\%$).
-  - **Partición Disjunta de Resultados**:
-    - Clasificación estructural de salidas en `simulateTrade`: `win` (`TP1`, `TP2`, `TP3`, `TP1_BE`), `loss` (`SL`, `EARLY_ADVERSE`) y `timeout` (`TIMEOUT`, `TIME_STOP`, `EMERGENCY_EXIT`, `SESSION_GAP`).
-    - Garantía matemática: $\text{wins} + \text{losses} + \text{timeouts} \equiv \text{totalSignals}$ y $\text{resolutionRate} = \frac{\text{wins} + \text{losses}}{\text{totalSignals}}$.
-  - **Estado Terminal `TP1_CLOSED`**:
-    - Las estrategias sin parciales (Standard y Multifractal) que alcanzan TP1 se etiquetan como `TP1_CLOSED` (+1.5R neto) y se renderizan con badge `TP1 (+...R) ✅`, eliminando la ambigüedad con `TP2_CLOSED`.
-  - **Múltiplo R Dinámico de TP3**:
-    - Derivación matemática desde `levels.takeProfit3`: $r_3 = \frac{|\text{TP3} - \text{entry}|}{\text{riskDist}}$, eliminando hardcodes estáticos.
-  - **Alineación de Apertura ORB y Fallback Macro Diario**:
-    - `openingRangeMap` activa el rango a partir de la 7ª vela de sesión ($i - \text{sessionStart} \ge 6$), idéntico a `getOpeningRange`.
-    - Fallback adaptativo de EMA200 diaria a EMA50 (`lastEma200Ref`) con filtro de muestra mínima ($\ge 50$ barras diarias) para no operar reversión con sesgo desconocido.
-  - **Paginación de Binance 5m y Ventana de Evaluación Adaptativa (Walk-Forward OOS Robusto)**:
-    - Paginación transparente en `fetchBinanceKlines` para `5m`: descarga 2 lotes encadenados por `endTime` (2000 velas $\approx 7$ días continuos 24/7).
-    - Escalado automático de `evalWindow` en 5m a 1400 velas cuando hay $\ge 1450$ velas disponibles (Binance y Yahoo Finance), generando un tramo Out-of-Sample de 420 velas ($35\,\text{h}$) con capacidad para $8\text{--}18$ trades OOS reales.
-    - Validación Walk-Forward con significancia estadística garantizada ($\ge 5$ operaciones OOS para `PASS`).
-  - **Auditoría de Código y Verificación Zero-Lint**:
-    - Corrección de falsos positivos `react-hooks/purity` en `MarketRadar.tsx` mediante helper de reloj `getNowTimestamp()`.
-    - Eliminación de variables/importaciones inactivas en `backtester.test.ts`.
-    - **69/69 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
+- **Actualización v2026.08.27.2 — Exposición Efectiva de Ciclo con Cooldown, Paginación Binance 5m y Cierre de Auditoría**:
+  - **Exposición Efectiva de Ciclo de Capital ($t_{\text{ciclo}} = t_{\text{trade}} + t_{\text{cooldown}}$)**:
+    - `avgExposureHours` computa el tiempo de ciclo total que la estrategia bloquea el activo / slot de capital:
+      - En VCME `backtestMultitemporal`: $\text{cycleCandles} = (\text{sim.exitIdx} - i) + \text{cooldownPeriod}$.
+      - En Standard / Confluencia / Scoring: $\text{cycleCandles} = \max(\text{durationCandles}, \text{cooldownPeriod})$.
+      - En Multifractal MTF: $\text{cycleCandles} = \max(\text{durationCandles}, \text{cooldownPeriod})$.
+    - `expectancyPerHour = expectancyR / avgExposureHours` y la normalización $\sqrt{t}$ del torneo QVE miden la velocidad de generación de alfa sobre el ciclo real, eliminando el arbitraje de cooldown.
+  - **Paginación de Binance 5m (2000 velas) y `evalWindow` Adaptativa**:
+    - Descarga encadenada de 2 lotes de 1000 velas en Binance para `5m` ($\approx 7$ días 24/7).
+    - `evalWindow` en 5m escala de 576 a 1400 velas cuando hay $\ge 1450$ velas disponibles (Binance y Yahoo Finance).
+    - Tramo Out-Of-Sample (30%) de 420 velas ($35\,\text{h}$) con capacidad de 8–18 trades OOS reales, asegurando significancia estadística para el umbral $\ge 5$ trades OOS en `PASS`.
+  - **Deducción Uniforme de R Neto con Fricción (0.08%)**:
+    - $R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$ uniforme en todas las salidas (ej. $-1.04R$ para riesgo $2.0\%$).
+  - **Estado Terminal `TP1_CLOSED` y Partición Disjunta**:
+    - `wins + losses + timeouts === totalSignals` y badge explícito `TP1 (+...R) ✅` para estrategias sin parciales.
+  - **Suite de Pruebas y Zero-Lint**:
+    - **70/70 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
 
 ---
 
