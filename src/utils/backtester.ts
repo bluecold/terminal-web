@@ -485,12 +485,14 @@ interface BacktestParams {
 function getParams(interval: string, totalCandles?: number): BacktestParams {
   switch (interval) {
     case '5m': {
+      const forwardWindow = 6;
+      const warmup = 30;
       const evalWindow = totalCandles && totalCandles >= 1450
-        ? Math.min(1400, totalCandles - 6 - 30)
+        ? Math.min(1400, totalCandles - forwardWindow - warmup)
         : 576;
       return {
         evalWindow,
-        forwardWindow: 6,
+        forwardWindow,
         forwardLabel: '6 velas (30 min)',
         fallbackThreshold: 0.008,
         atrMultiplier: 1.2,
@@ -498,24 +500,27 @@ function getParams(interval: string, totalCandles?: number): BacktestParams {
         cooldownPeriod: 24,            // 2 hours = 24 candles of 5m (matches AI_CONTEXT.md & App.tsx)
       };
     }
-    case '1d':
+    case '1d': {
+      const forwardWindow = 3;
       return {
         evalWindow: 60,                // 60 days
-        forwardWindow: 3,
+        forwardWindow,
         forwardLabel: '3 velas (3 días)',
         fallbackThreshold: 0.015,
         atrMultiplier: 1.0,
         targetMultiplier: 1.5,
         cooldownPeriod: 3,             // 3 days
       };
+    }
     case '1h':
     default: {
+      const forwardWindow = 4;
       const evalWindow = totalCandles && totalCandles >= 550
-        ? Math.min(720, totalCandles - 4 - 30)
-        : (totalCandles && totalCandles >= 300 ? Math.min(350, totalCandles - 4 - 20) : 168);
+        ? Math.min(720, totalCandles - forwardWindow - 30)
+        : (totalCandles && totalCandles >= 300 ? Math.min(350, totalCandles - forwardWindow - 20) : 168);
       return {
         evalWindow,
-        forwardWindow: 4,
+        forwardWindow,
         forwardLabel: '4 velas (4 hs)',
         fallbackThreshold: 0.012,
         atrMultiplier: 1.2,

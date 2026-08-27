@@ -6,7 +6,6 @@ export interface StrategyCandidate {
   key: 'standard' | 'confluencia' | 'scoring' | 'multitemporal' | 'multifractal';
   label: string;
   profitFactor: number | null;
-  expectancy?: number;          // Expected % per trade (legacy compatibility)
   expectancyR?: number;         // Expected R per trade (primary)
   expectancyPerHour?: number;   // Expected R per hour of capital exposure (primary)
   winRate: number;
@@ -71,9 +70,7 @@ export function evaluateStrategyTournament(
 
   // Helper to extract duration and normalized R metrics
   const getMetrics = (c: StrategyCandidate) => {
-    const expR = c.expectancyR !== undefined
-      ? c.expectancyR
-      : (c.expectancy !== undefined ? c.expectancy / 1.0 : 0);
+    const expR = c.expectancyR ?? 0;
 
     const candleHours = timeframe === '5m' ? (5 / 60) : timeframe === '1h' ? 1.0 : 24.0;
     const baseCandles = 6;

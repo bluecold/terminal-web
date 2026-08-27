@@ -293,18 +293,12 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
-- **Actualización v2026.08.27.8 — Sinceramiento de Objetivos (TP2 Opcional y Dinámico en UI/Gráfico/Notificaciones)**:
-  - **`calculateAlertLevels` y `AlertItem` con `takeProfit2?: number` opcional**:
-    - Las 4 estrategias mono-target (*Estándar, Confluencia, Scoring, Multifractal MTF*) devuelven `{ stopLoss, takeProfit1 }` sin `takeProfit2` ficticio duplicado.
-    - Únicamente *VCME Sniper* genera y gestiona un `takeProfit2` real e independiente (+3.5R).
-  - **Notificaciones de Escritorio (`App.tsx`)**:
-    - Si la alerta tiene `takeProfit2` diferenciado: `Entry: $X | SL: $Y | TP1: $Z | TP2: $W`.
-    - Si es mono-target: `Entry: $X | SL: $Y | TP: $Z (+1.5R)` (cero confusión ni duplicación de valores).
-  - **Overlay en Gráfico (`Chart.tsx`)**:
-    - Dibuja `tp2Line` únicamente si `takeProfit2` existe y es diferente de `takeProfit1`, eliminando el renderizado de líneas superpuestas en el mismo píxel.
-    - Las estrategias mono-target muestran una única línea limpia etiquetada como `TP (+1.5R)`.
-  - **Tarjetas de Alerta (`App.tsx`)**:
-    - Muestran `TP: $Z` para mono-target y `TP1: $Z | TP2: $W` para VCME Sniper.
+- **Actualización v2026.08.27.9 — Blindaje de Tipado en Torneo y Parámetros Semánticos en Backtester**:
+  - **Eliminación de `expectancy` legacy en `tournament.ts`**:
+    - Se elimina el campo ambiguo `expectancy?: number` de `StrategyCandidate` y el fallback dimensional `c.expectancy / 1.0`.
+    - La esperanza matemática del torneo queda estrictamente tipada a `expectancyR` (múltiplos de riesgo $R$), con fallback limpio `const expR = c.expectancyR ?? 0;`.
+  - **Limpieza de Números Mágicos en `getParams` (`backtester.ts`)**:
+    - Se sustituyen los literales fijos de ventana por constantes explícitas (`forwardWindow`, `warmup`), garantizando consistencia si se ajustan los horizontes de evaluación.
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**, 0 errores en ESLint, build de producción limpio.
 
