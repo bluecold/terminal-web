@@ -2097,6 +2097,48 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }
   });
 
+  // Test 72: VCME Swing evalWindow scales to 720 and Walk-Forward adapts to OOS capacity
+  test('VCME Swing scales evalWindow to 720 and Walk-Forward adapts to OOS capacity unlocking HIGH confidence', () => {
+    // 1. Generate 800 1H candles (~33 days crypto or ~120 days stocks)
+    const klines1h_800 = generateSyntheticKlines(800, 3600, 100, 0.025);
+    const klines1d_300 = generateSyntheticKlines(300, 86400, 100, 0.025);
+
+    const swingRes = backtestMultitemporal(klines1h_800, klines1h_800, klines1d_300, '1h', 'SWING_720_TEST', 'swing');
+    assert.strictEqual(swingRes.insufficient, false, 'Swing should evaluate cleanly on 800 1H bars');
+    assert.ok(swingRes.walkForward, 'Walk-Forward result must exist');
+    assert.ok(swingRes.walkForward.isWindow >= 450, `In-Sample window should be >= 450 candles (got ${swingRes.walkForward.isWindow})`);
+    assert.ok(swingRes.walkForward.oosWindow >= 180, `Out-of-Sample window should be >= 180 candles (got ${swingRes.walkForward.oosWindow})`);
+
+    // 2. Walk-Forward adaptive capacity on a 50-candle OOS window with 25-candle cycle
+    const mockTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 50 },
+      // 2 OOS trades in a 50-candle window (capacity = 2)
+      { dir: 'BUY', realizedR: 1.2, pnlPct: 4.8, outcome: 'win', entryIdx: 75 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 90 }
+    ];
+    // With 50 candles and 25-candle cycle, effectiveMinOos adapts to 2 trades and awards PASS
+    const wfAdaptive = calculateWalkForward(mockTrades, 0, 99, 0.70, 3, 25);
+    assert.strictEqual(wfAdaptive.status, 'PASS', '2 profitable trades in 50-candle OOS window should achieve PASS');
+    assert.strictEqual(wfAdaptive.passed, true);
+
+    // 3. Tournament unlocks HIGH confidence with PASS status
+    const swingCandidate: StrategyCandidate = {
+      key: 'vcme',
+      label: 'VCME Swing Scaled',
+      profitFactor: 2.1,
+      expectancyR: 0.85,
+      expectancyPerHour: 0.20,
+      avgExposureHours: 4.25,
+      winRate: 0.75,
+      resolved: 12,
+      forwardWindow: 48,
+      walkForward: wfAdaptive
+    };
+    const tourney = evaluateStrategyTournament([swingCandidate], '1h');
+    assert.strictEqual(tourney.confidence, 'HIGH', 'Swing candidate with validated OOS PASS must achieve HIGH confidence');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

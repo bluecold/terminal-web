@@ -268,16 +268,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Corrección de la inversión matemática en `indicators.ts` y `backtester.ts` donde la distancia a la EMA21 premiaba el *chasing* sobreextendido.
     - Implementación de la campana triangular: $\text{distScore} = 0.15 \cdot \max(0, 1.0 - |\text{distRatio} - 0.5| / 1.0)$, premiando el rebote confirmado ($0.5\text{ ATR}$) y penalizando con $0.0$ la sobreextensión $> 1.5\text{ ATR}$.
 
-- **Actualización v2026.08.27.3 — Unificación Económica de Win Rate (Paridad Total Nivel Superior / Direccional)**:
-  - **Unificación Estricta en $R_{\text{net}} > 0$**:
-    - Se elimina la doble definición donde el nivel superior filtraba por `sim.outcome === 'win'` (excluyendo salidas por `TIME_STOP` o `EMERGENCY_EXIT` con beneficio positivo) mientras `longStats`/`shortStats` contaban por `realizedR > 0`.
-    - `simulateTrade` clasifica el resultado directamente por retorno neto: `outcome = finalRealizedR > 0 ? 'win' : (finalRealizedR < 0 ? 'loss' : 'timeout')`.
-    - Coherencia matemática absoluta: $\text{wins} \equiv \text{longWins} + \text{shortWins}$ y la barra principal de Win Rate coincide 1:1 con el desglose direccional y de régimen en la tarjeta.
-  - **Partición Disjunta y Preservación de Causa de Salida**:
-    - `exitReason` preserva la taxonomía exacta (`TIME_STOP`, `EMERGENCY_EXIT`, `TP1`, `SL`, etc.) para auditoría.
-    - `alertTracker.ts` categoriza alertas `EXPIRED` de forma simétrica (`realizedR > 0` $\to$ win, `realizedR < 0` $\to$ loss).
+- **Actualización v2026.08.27.4 — Escalado de Ventana Swing (720h) y Cuota OOS Adaptativa a la Capacidad de Ciclo**:
+  - **Escalado de `evalWindow` en Swing (1H) a 720 velas**:
+    - `getParams` y `backtestMultitemporal` escalan la ventana de 1H a `720` velas cuando hay $\ge 550$ barras disponibles (aprovechando las 1000 barras de Binance 1H y las 3500 barras de Yahoo Finance 1H con `range=730d`).
+    - Tramo Out-Of-Sample (30%) ampliado a **216 velas horarias** ($\approx 9\,\text{días}$ 24/7 o $33\,\text{días}$ bursátiles), permitiendo entre 4 y 8 operaciones Swing completas.
+  - **Capacidad OOS Adaptativa (`effectiveMinOosTrades`)**:
+    - `calculateWalkForward` calcula la capacidad física de la ventana OOS en función del tiempo de ciclo medio: $\text{oosCapacity} = \lfloor W_{\text{OOS}} / \text{cycleTime} \rfloor$.
+    - Umbral adaptativo: $\text{effectiveMinOos} = \min(\text{minOosTrades}, \max(2, \lfloor \text{oosCapacity} \times 0.6 \rfloor))$.
+    - Resuelve el bloqueo aritmético de VCME Swing: ya no queda atrapado permanentemente en `NO_OOS_TRADES` y puede alcanzar confianza `HIGH` legítimamente cuando sus operaciones recientes son rentables.
+    - Mantiene el rigor estadístico: trades individuales aislados (< 2) siguen marcando `NO_OOS_TRADES`, y tramos OOS con $E[R] < 0$ marcan `FAIL` descalificando de `HIGH`.
   - **Suite de Pruebas**:
-    - **71/71 tests unitarios pasando**, incluyendo Test 71 de paridad de Win Rate entre métricas globales y direccionales. `npm run lint` con **0 errores y 0 warnings**.
+    - **72/72 tests unitarios pasando**, incluyendo Test 72 de validación de Swing 720h y capacidad adaptativa OOS. `npm run lint` con **0 errores y 0 warnings**.
 
 ---
 
