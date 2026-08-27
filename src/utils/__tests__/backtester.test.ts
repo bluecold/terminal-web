@@ -1409,7 +1409,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       emergencyExitFn: () => true, // Emergency triggered immediately
       frictionPct: 0.08
     });
-    assert.strictEqual(res3.outcome, 'loss');
+    assert.strictEqual(res3.outcome, 'timeout');
     assert.strictEqual(res3.exitReason, 'EMERGENCY_EXIT');
     assert.strictEqual(res3.status, 'EXPIRED');
     assert.strictEqual(res3.grossPnlPct, -3.0);
@@ -1883,6 +1883,41 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const tourneyRobust = evaluateStrategyTournament([robustCandidate], '5m');
     assert.strictEqual(tourneyRobust.confidence, 'HIGH', 'Robust OOS sample must qualify for HIGH confidence');
+  });
+
+  // Test 66: Disjoint partition parity: wins + losses + timeouts === totalSignals
+  test('wins, losses, and timeouts form a strictly disjoint partition of totalSignals', () => {
+    const klines5m = generateSyntheticKlines(700, 300, 100, 0.03);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.03);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.03);
+
+    // 1. Test VCME backtest
+    const vcmeRes = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'DISJOINT_VCME', 'dayTrading');
+    assert.strictEqual(
+      vcmeRes.wins + vcmeRes.losses + vcmeRes.timeouts,
+      vcmeRes.totalSignals,
+      `VCME: wins(${vcmeRes.wins}) + losses(${vcmeRes.losses}) + timeouts(${vcmeRes.timeouts}) must equal totalSignals(${vcmeRes.totalSignals})`
+    );
+    if (vcmeRes.totalSignals > 0) {
+      const expectedResolutionRate = Number(((vcmeRes.wins + vcmeRes.losses) / vcmeRes.totalSignals).toFixed(3));
+      assert(Math.abs(vcmeRes.resolutionRate - expectedResolutionRate) < 0.01, 'resolutionRate must equal (wins + losses) / totalSignals');
+    }
+
+    // 2. Test Standard backtest
+    const stdRes = backtestStandard(klines5m, '5m', 'DISJOINT_STD');
+    assert.strictEqual(
+      stdRes.wins + stdRes.losses + stdRes.timeouts,
+      stdRes.totalSignals,
+      `Standard: wins(${stdRes.wins}) + losses(${stdRes.losses}) + timeouts(${stdRes.timeouts}) must equal totalSignals(${stdRes.totalSignals})`
+    );
+
+    // 3. Test Multifractal backtest
+    const mfRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'DISJOINT_MF');
+    assert.strictEqual(
+      mfRes.wins + mfRes.losses + mfRes.timeouts,
+      mfRes.totalSignals,
+      `Multifractal: wins(${mfRes.wins}) + losses(${mfRes.losses}) + timeouts(${mfRes.timeouts}) must equal totalSignals(${mfRes.totalSignals})`
+    );
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

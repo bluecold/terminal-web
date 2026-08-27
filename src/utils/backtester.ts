@@ -145,11 +145,15 @@ function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
     const dd = peakR - cumR;
     if (dd > maxDrawdownR) maxDrawdownR = dd;
 
-    if (trade.pnlPct > 0) {
+    if (trade.outcome === 'win') {
       wins++;
+    } else if (trade.outcome === 'loss') {
+      losses++;
+    }
+
+    if (trade.pnlPct > 0) {
       totalGainPct += trade.pnlPct;
     } else if (trade.pnlPct < 0) {
-      losses++;
       totalLossPct += Math.abs(trade.pnlPct);
     }
   }
@@ -1333,15 +1337,18 @@ export function backtestMultitemporal(
       entryIdx: i,
     });
 
-    if (sim.pnlPct > 0) {
+    if (sim.outcome === 'win') {
       wins++;
+    } else if (sim.outcome === 'loss') {
+      losses++;
+    } else {
+      timeouts++;
+    }
+
+    if (sim.pnlPct > 0) {
       totalGainPct += sim.pnlPct;
     } else if (sim.pnlPct < 0) {
-      losses++;
       totalLossPct += Math.abs(sim.pnlPct);
-    }
-    if (sim.outcome === 'timeout' || sim.exitReason === 'TIMEOUT' || sim.exitReason === 'TIME_STOP' || sim.exitReason === 'EMERGENCY_EXIT' || sim.exitReason === 'SESSION_GAP') {
-      timeouts++;
     }
 
     nextAllowedIdx = sim.exitIdx + cooldownPeriod;
@@ -1500,16 +1507,18 @@ function runBacktestGenericOptimized(
       entryIdx: i,
     });
 
-    if (outcome.pnlPct > 0) {
+    if (outcome.result === 'win') {
       wins++;
-      totalGainPct += outcome.pnlPct;
-    } else if (outcome.pnlPct < 0) {
+    } else if (outcome.result === 'loss') {
       losses++;
-      totalLossPct += Math.abs(outcome.pnlPct);
+    } else {
+      timeouts++;
     }
 
-    if (outcome.result === 'timeout') {
-      timeouts++;
+    if (outcome.pnlPct > 0) {
+      totalGainPct += outcome.pnlPct;
+    } else if (outcome.pnlPct < 0) {
+      totalLossPct += Math.abs(outcome.pnlPct);
     }
 
     nextAllowedIdx = i + Math.max(forwardWindow + 1, params.cooldownPeriod);
@@ -2169,15 +2178,18 @@ export function backtestMultifractalMTF(
       entryIdx: i,
     });
 
-    if (sim.pnlPct > 0) {
+    if (sim.outcome === 'win') {
       wins++;
+    } else if (sim.outcome === 'loss') {
+      losses++;
+    } else {
+      timeouts++;
+    }
+
+    if (sim.pnlPct > 0) {
       totalGainPct += sim.pnlPct;
     } else if (sim.pnlPct < 0) {
-      losses++;
       totalLossPct += Math.abs(sim.pnlPct);
-    }
-    if (sim.exitReason === 'TIMEOUT') {
-      timeouts++;
     }
   }
 

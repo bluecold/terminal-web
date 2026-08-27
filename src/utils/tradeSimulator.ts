@@ -572,9 +572,15 @@ export function simulateTrade(
     netRealizedR = initialRiskPct > 0 ? (netPnlPct / 100) / initialRiskPct : 0;
   }
 
-  const outcome: 'win' | 'loss' | 'timeout' = exitReason === 'TIMEOUT' || exitReason === 'SESSION_GAP' || exitReason === 'TIME_STOP' || exitReason === 'EMERGENCY_EXIT'
-    ? (netPnlPct > 0 ? 'win' : (netPnlPct < 0 ? 'loss' : 'timeout'))
-    : (netPnlPct > 0 ? 'win' : 'loss');
+  let outcome: 'win' | 'loss' | 'timeout';
+  if (exitReason === 'TP1' || exitReason === 'TP2' || exitReason === 'TP3' || exitReason === 'TP1_BE') {
+    outcome = 'win';
+  } else if (exitReason === 'SL' || exitReason === 'EARLY_ADVERSE') {
+    outcome = 'loss';
+  } else {
+    // TIMEOUT, TIME_STOP, EMERGENCY_EXIT, SESSION_GAP
+    outcome = 'timeout';
+  }
 
   return {
     outcome,
