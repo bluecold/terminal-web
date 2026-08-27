@@ -1888,39 +1888,45 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourneyRobust.confidence, 'HIGH', 'Robust OOS sample must qualify for HIGH confidence');
   });
 
-  // Test 66: Disjoint partition parity: wins + losses + timeouts === totalSignals
-  test('wins, losses, and timeouts form a strictly disjoint partition of totalSignals', () => {
+  // Test 66: Structural exit breakdown partitions totalSignals & economic win/loss separation
+  test('structural exit breakdown and economic outcomes strictly account for 100% of signals', () => {
     const klines5m = generateSyntheticKlines(700, 300, 100, 0.03);
     const klines1h = generateSyntheticKlines(250, 3600, 100, 0.03);
     const klines1d = generateSyntheticKlines(220, 86400, 100, 0.03);
 
     // 1. Test VCME backtest
     const vcmeRes = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'DISJOINT_VCME', 'dayTrading');
+    const vb = vcmeRes.exitBreakdown;
     assert.strictEqual(
-      vcmeRes.wins + vcmeRes.losses + vcmeRes.timeouts,
+      vb.targetHits + vb.stopLossHits + vb.timeStops + vb.emergencyExits + vb.expirations + vb.breakevenExits,
       vcmeRes.totalSignals,
-      `VCME: wins(${vcmeRes.wins}) + losses(${vcmeRes.losses}) + timeouts(${vcmeRes.timeouts}) must equal totalSignals(${vcmeRes.totalSignals})`
+      `VCME: structural exit sum must equal totalSignals(${vcmeRes.totalSignals})`
     );
+    assert.strictEqual(vcmeRes.timeouts, vb.expirations, 'VCME: timeouts must equal structural expirations');
     if (vcmeRes.totalSignals > 0) {
-      const expectedResolutionRate = Number(((vcmeRes.wins + vcmeRes.losses) / vcmeRes.totalSignals).toFixed(3));
-      assert(Math.abs(vcmeRes.resolutionRate - expectedResolutionRate) < 0.01, 'resolutionRate must equal (wins + losses) / totalSignals');
+      const expectedResolutionRate = Number(((vb.targetHits + vb.stopLossHits) / vcmeRes.totalSignals).toFixed(3));
+      assert.strictEqual(vcmeRes.resolutionRate, expectedResolutionRate, 'resolutionRate must equal (targetHits + stopLossHits) / totalSignals');
     }
 
     // 2. Test Standard backtest
     const stdRes = backtestStandard(klines5m, '5m', 'DISJOINT_STD');
+    const sb = stdRes.exitBreakdown;
     assert.strictEqual(
-      stdRes.wins + stdRes.losses + stdRes.timeouts,
+      sb.targetHits + sb.stopLossHits + sb.timeStops + sb.emergencyExits + sb.expirations + sb.breakevenExits,
       stdRes.totalSignals,
-      `Standard: wins(${stdRes.wins}) + losses(${stdRes.losses}) + timeouts(${stdRes.timeouts}) must equal totalSignals(${stdRes.totalSignals})`
+      `Standard: structural exit sum must equal totalSignals(${stdRes.totalSignals})`
     );
+    assert.strictEqual(stdRes.timeouts, sb.expirations, 'Standard: timeouts must equal structural expirations');
 
     // 3. Test Multifractal backtest
     const mfRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'DISJOINT_MF');
+    const mb = mfRes.exitBreakdown;
     assert.strictEqual(
-      mfRes.wins + mfRes.losses + mfRes.timeouts,
+      mb.targetHits + mb.stopLossHits + mb.timeStops + mb.emergencyExits + mb.expirations + mb.breakevenExits,
       mfRes.totalSignals,
-      `Multifractal: wins(${mfRes.wins}) + losses(${mfRes.losses}) + timeouts(${mfRes.timeouts}) must equal totalSignals(${mfRes.totalSignals})`
+      `Multifractal: structural exit sum must equal totalSignals(${mfRes.totalSignals})`
     );
+    assert.strictEqual(mfRes.timeouts, mb.expirations, 'Multifractal: timeouts must equal structural expirations');
   });
 
   // Test 67: calculateRiskMetrics unifies loss streak and MDD strictly on realizedR

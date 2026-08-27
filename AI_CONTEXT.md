@@ -293,14 +293,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
-- **Actualización v2026.08.27.9 — Blindaje de Tipado en Torneo y Parámetros Semánticos en Backtester**:
-  - **Eliminación de `expectancy` legacy en `tournament.ts`**:
-    - Se elimina el campo ambiguo `expectancy?: number` de `StrategyCandidate` y el fallback dimensional `c.expectancy / 1.0`.
-    - La esperanza matemática del torneo queda estrictamente tipada a `expectancyR` (múltiplos de riesgo $R$), con fallback limpio `const expR = c.expectancyR ?? 0;`.
-  - **Limpieza de Números Mágicos en `getParams` (`backtester.ts`)**:
-    - Se sustituyen los literales fijos de ventana por constantes explícitas (`forwardWindow`, `warmup`), garantizando consistencia si se ajustan los horizontes de evaluación.
+- **Actualización v2026.08.27.10 — Separación Canónica de Métricas Económicas vs. Estructurales (`exitBreakdown`)**:
+  - **Desacoplamiento Conceptual**:
+    - **Dimensión Económica**: `wins` (`realizedR > 0`), `losses` (`realizedR < 0`), `winRate`, `profitFactor` y `expectancyR` gobiernan la matemática de rentabilidad real tras comisiones y el ranking del Torneo.
+    - **Dimensión Estructural (`exitBreakdown`)**: `RecordedTrade` y `BacktestResult` ahora incorporan `exitReason` y `StructuralExitBreakdown` categorizando exactamente las causas de salida: `targetHits` (TP1/TP2/TP3), `stopLossHits` (SL), `timeStops` (TIME_STOP), `emergencyExits` (EMERGENCY_EXIT / EARLY_ADVERSE / SESSION_GAP), `expirations` (TIMEOUT) y `breakevenExits` (TP1_BE).
+  - **Revitalización de `timeouts` y `resolutionRate`**:
+    - `timeouts` refleja las expiraciones reales del horizonte de velas (`exitBreakdown.expirations`).
+    - `resolutionRate` cuantifica el porcentaje de operaciones que completaron su recorrido hacia objetivos directos (`(targetHits + stopLossHits) / totalSignals`).
+  - **UI Enriquecida (`BacktestCard.tsx`)**:
+    - La tarjeta y sus tooltips desglosan tanto el rendimiento económico como el desglose estructural de salidas y descartes.
   - **Suite de Pruebas**:
-    - **72/72 tests unitarios pasando**, 0 errores en ESLint, build de producción limpio.
+    - **72/72 tests unitarios pasando**, Test 66 actualizado para verificar partición estructural disyunta del 100% de señales, 0 errores en ESLint, build de producción limpio.
 
 ---
 

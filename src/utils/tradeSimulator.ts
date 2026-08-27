@@ -29,6 +29,10 @@ export interface ExitPolicy {
   maxExpiryTimestampMs?: number;                      // Timestamp in ms beyond which the trade is expired
 }
 
+export type ExitReason = 
+  | 'TP1' | 'TP2' | 'TP3' | 'TP1_BE'
+  | 'SL' | 'TIME_STOP' | 'EARLY_ADVERSE' | 'EMERGENCY_EXIT' | 'SESSION_GAP' | 'TIMEOUT';
+
 export interface TradeSimulationResult {
   outcome: 'win' | 'loss' | 'timeout';
   pnlPct: number;                        // Net PnL percentage (after friction)
@@ -36,9 +40,7 @@ export interface TradeSimulationResult {
   realizedR: number;                     // Net realized R-multiple
   exitIdx: number;                       // Index of the exit candle in klines
   exitPrice: number;                     // Effective execution exit price
-  exitReason: 
-    | 'TP1' | 'TP2' | 'TP3' | 'TP1_BE'
-    | 'SL' | 'TIME_STOP' | 'EARLY_ADVERSE' | 'EMERGENCY_EXIT' | 'SESSION_GAP' | 'TIMEOUT';
+  exitReason: ExitReason;
   status: AlertStatus;                   // Current or terminal alert status
 }
 

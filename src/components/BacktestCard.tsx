@@ -53,6 +53,16 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
     else ratingBg = 'rgba(244, 63, 94, 0.1)';
   }
 
+  const exitBreakdown = result?.exitBreakdown;
+  const exitTooltip = exitBreakdown ? [
+    exitBreakdown.targetHits > 0 ? `Target TP: ${exitBreakdown.targetHits}` : null,
+    exitBreakdown.stopLossHits > 0 ? `Stop Loss: ${exitBreakdown.stopLossHits}` : null,
+    exitBreakdown.timeStops > 0 ? `Time-Stop: ${exitBreakdown.timeStops}` : null,
+    exitBreakdown.emergencyExits > 0 ? `Salida Emergencia: ${exitBreakdown.emergencyExits}` : null,
+    exitBreakdown.expirations > 0 ? `Expirados: ${exitBreakdown.expirations}` : null,
+    exitBreakdown.breakevenExits > 0 ? `Breakeven Runner: ${exitBreakdown.breakevenExits}` : null,
+  ].filter(Boolean).join(' · ') : '';
+
   const discardsTooltip = result?.discards ? [
     result.discards.regimeFilter > 0 ? `Régimen: ${result.discards.regimeFilter}` : null,
     result.discards.noSetup > 0 ? `Sin Setup: ${result.discards.noSetup}` : null,
@@ -121,15 +131,15 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
           {/* Stats row */}
           <div 
             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}
-            title={discardsTooltip ? `Descartes: ${discardsTooltip}` : undefined}
+            title={`Económico: ${wins} Ganadores (R > 0) · ${losses} Perdedores (R < 0)${exitTooltip ? `\nEstructural: ${exitTooltip}` : ''}${discardsTooltip ? `\nDescartes: ${discardsTooltip}` : ''}`}
           >
             <span style={{ color: barColor, fontWeight: '700', fontSize: '0.85rem' }}>
               {barPct}%
             </span>
             <span style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>
-              <span style={{ color: 'var(--accent-green)' }}>{wins}✓</span> <span style={{ color: 'var(--accent-red)' }}>{losses}✗</span> {timeouts > 0 ? <span style={{ color: 'var(--text-muted)' }}>{timeouts}~</span> : ''}
+              <span style={{ color: 'var(--accent-green)' }}>{wins}✓</span> <span style={{ color: 'var(--accent-red)' }}>{losses}✗</span> {timeouts > 0 ? <span style={{ color: 'var(--text-muted)' }} title={`Expiraciones: ${timeouts} trades alcanzaron el fin de ventana sin TP/SL`}>{timeouts}~</span> : ''}
             </span>
-            <span style={{ color: 'var(--text-muted)' }} title={discardsTooltip ? `Resueltos: ${resolved} / Señales: ${totalSignals}\nDescartes: ${discardsTooltip}` : undefined}>
+            <span style={{ color: 'var(--text-muted)' }} title={`Resueltos: ${resolved} / Señales: ${totalSignals}${exitTooltip ? `\nEstructural: ${exitTooltip}` : ''}${discardsTooltip ? `\nDescartes: ${discardsTooltip}` : ''}`}>
               {resolved}/{totalSignals}
             </span>
           </div>

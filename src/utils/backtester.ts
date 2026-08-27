@@ -1,5 +1,5 @@
 import type { Kline } from '../services/api';
-import { simulateTrade, type TradeLevels } from './tradeSimulator';
+import { simulateTrade, type TradeLevels, type ExitReason } from './tradeSimulator';
 import {
   calculateEMA,
   calculateRSISeries,
@@ -72,12 +72,69 @@ export interface RegimeStats {
   ranging:  { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX <= 25
 }
 
+export interface StructuralExitBreakdown {
+  targetHits: number;      // 'TP1' | 'TP2' | 'TP3'
+  stopLossHits: number;    // 'SL'
+  timeStops: number;       // 'TIME_STOP'
+  emergencyExits: number;  // 'EMERGENCY_EXIT' | 'EARLY_ADVERSE' | 'SESSION_GAP'
+  expirations: number;     // 'TIMEOUT' (horizonte alcanzado sin TP/SL)
+  breakevenExits: number;  // 'TP1_BE'
+}
+
+export function createEmptyExitBreakdown(): StructuralExitBreakdown {
+  return {
+    targetHits: 0,
+    stopLossHits: 0,
+    timeStops: 0,
+    emergencyExits: 0,
+    expirations: 0,
+    breakevenExits: 0,
+  };
+}
+
+export function calculateExitBreakdown(trades: RecordedTrade[]): StructuralExitBreakdown {
+  const breakdown = createEmptyExitBreakdown();
+  for (const t of trades) {
+    switch (t.exitReason) {
+      case 'TP1':
+      case 'TP2':
+      case 'TP3':
+        breakdown.targetHits++;
+        break;
+      case 'SL':
+        breakdown.stopLossHits++;
+        break;
+      case 'TIME_STOP':
+        breakdown.timeStops++;
+        break;
+      case 'EMERGENCY_EXIT':
+      case 'EARLY_ADVERSE':
+      case 'SESSION_GAP':
+        breakdown.emergencyExits++;
+        break;
+      case 'TIMEOUT':
+        breakdown.expirations++;
+        break;
+      case 'TP1_BE':
+        breakdown.breakevenExits++;
+        break;
+      default:
+        if (t.outcome === 'win') breakdown.targetHits++;
+        else if (t.outcome === 'loss') breakdown.stopLossHits++;
+        else breakdown.expirations++;
+        break;
+    }
+  }
+  return breakdown;
+}
+
 export interface RecordedTrade {
   dir: 'BUY' | 'SELL';
   realizedR: number;
   pnlPct: number;
   adxAtEntry?: number;
   outcome: 'win' | 'loss' | 'neutral' | 'timeout';
+  exitReason?: ExitReason;
   entryIdx?: number;
 }
 
@@ -404,6 +461,7 @@ export function createFallbackBacktestResult(
     timeouts: 0,
     winRate: 0,
     resolutionRate: 0,
+    exitBreakdown: createEmptyExitBreakdown(),
     profitFactor: null,
     expectancy: 0,
     expectancyR: 0,
@@ -430,11 +488,12 @@ export function createFallbackBacktestResult(
 
 export interface BacktestResult {
   totalSignals: number;
-  wins: number;
-  losses: number;
-  timeouts: number;
-  winRate: number;              // wins / resolved (wins + losses) — trades that reached an outcome
-  resolutionRate: number;       // resolved / totalSignals — what % of signals reached target or stop
+  wins: number;                 // Economic wins (realizedR > 0 after friction)
+  losses: number;               // Economic losses (realizedR < 0 after friction)
+  timeouts: number;             // Expirations at forward horizon (exitBreakdown.expirations)
+  winRate: number;              // wins / resolved (wins + losses) — economic win rate
+  resolutionRate: number;       // (targetHits + stopLossHits) / totalSignals — % of setups reaching hard TP/SL
+  exitBreakdown: StructuralExitBreakdown; // Granular structural exit reasons
   profitFactor: number | null;  // total gains / total losses (>1 = profitable, null when losses = 0)
   expectancy: number;           // expected % gain per trade
   expectancyR: number;          // expected R per trade
@@ -580,6 +639,7 @@ interface TradeOutcome {
   pnlPct: number; // percentage P&L of this trade
   realizedR: number;
   durationCandles: number;
+  exitReason: ExitReason;
 }
 
 function evaluateOutcome(
@@ -606,7 +666,8 @@ function evaluateOutcome(
     result: sim.outcome,
     pnlPct: sim.pnlPct,
     realizedR: sim.realizedR,
-    durationCandles: Math.max(1, sim.exitIdx - entryIdx)
+    durationCandles: Math.max(1, sim.exitIdx - entryIdx),
+    exitReason: sim.exitReason
   };
 }
 
@@ -715,7 +776,7 @@ export function backtestMultitemporal(
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-    winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+    winRate: 0, resolutionRate: 0, exitBreakdown: createEmptyExitBreakdown(), profitFactor: null, expectancy: 0,
     expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
     maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
     longStats: createEmptyDirectionalStats(),
@@ -794,7 +855,6 @@ export function backtestMultitemporal(
   let totalSignals = 0;
   let wins = 0;
   let losses = 0;
-  let timeouts = 0;
   let neutrals = 0;
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
@@ -1362,6 +1422,7 @@ export function backtestMultitemporal(
       pnlPct: sim.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
       outcome: sim.outcome,
+      exitReason: sim.exitReason,
       entryIdx: i,
     });
 
@@ -1369,8 +1430,6 @@ export function backtestMultitemporal(
       wins++;
     } else if (sim.outcome === 'loss') {
       losses++;
-    } else {
-      timeouts++;
     }
 
     if (sim.pnlPct > 0) {
@@ -1382,9 +1441,11 @@ export function backtestMultitemporal(
     nextAllowedIdx = sim.exitIdx + cooldownPeriod;
   }
 
+  const exitBreakdown = calculateExitBreakdown(recordedTrades);
+  const timeouts = exitBreakdown.expirations;
   const resolved = wins + losses;
-  const winRate = resolved > 0 ? wins / resolved : 0;
-  const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
+  const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
+  const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
   const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
@@ -1407,6 +1468,7 @@ export function backtestMultitemporal(
     timeouts,
     winRate,
     resolutionRate,
+    exitBreakdown,
     profitFactor,
     expectancy: Number(expectancy.toFixed(3)),
     expectancyR,
@@ -1451,7 +1513,7 @@ function runBacktestGenericOptimized(
   if (klines.length < minCandles) {
     return {
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-      winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+      winRate: 0, resolutionRate: 0, exitBreakdown: createEmptyExitBreakdown(), profitFactor: null, expectancy: 0,
       expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
       maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
       longStats: createEmptyDirectionalStats(),
@@ -1479,7 +1541,6 @@ function runBacktestGenericOptimized(
   let totalSignals = 0;
   let wins         = 0;
   let losses       = 0;
-  let timeouts     = 0;
   let neutrals     = 0;
   const discards   = createEmptyDiscards();
   let totalGainPct = 0;
@@ -1535,6 +1596,7 @@ function runBacktestGenericOptimized(
       pnlPct: outcome.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
       outcome: outcome.result,
+      exitReason: outcome.exitReason,
       entryIdx: i,
     });
 
@@ -1542,8 +1604,6 @@ function runBacktestGenericOptimized(
       wins++;
     } else if (outcome.result === 'loss') {
       losses++;
-    } else {
-      timeouts++;
     }
 
     if (outcome.pnlPct > 0) {
@@ -1555,9 +1615,11 @@ function runBacktestGenericOptimized(
     nextAllowedIdx = i + Math.max(forwardWindow + 1, params.cooldownPeriod);
   }
 
+  const exitBreakdown = calculateExitBreakdown(recordedTrades);
+  const timeouts = exitBreakdown.expirations;
   const resolved = wins + losses;
-  const winRate = resolved > 0 ? wins / resolved : 0;
-  const resolutionRate = totalSignals > 0 ? resolved / totalSignals : 0;
+  const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
+  const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
   const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
@@ -1580,6 +1642,7 @@ function runBacktestGenericOptimized(
     timeouts,
     winRate,
     resolutionRate,
+    exitBreakdown,
     profitFactor,
     expectancy: Number(expectancy.toFixed(3)),
     expectancyR,
@@ -1993,7 +2056,7 @@ export function backtestMultifractalMTF(
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
-    winRate: 0, resolutionRate: 0, profitFactor: null, expectancy: 0,
+    winRate: 0, resolutionRate: 0, exitBreakdown: createEmptyExitBreakdown(), profitFactor: null, expectancy: 0,
     expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
     maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
     longStats: createEmptyDirectionalStats(),
@@ -2030,7 +2093,6 @@ export function backtestMultifractalMTF(
   let totalSignals = 0;
   let wins = 0;
   let losses = 0;
-  let timeouts = 0;
   let neutrals = 0;
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
@@ -2211,6 +2273,7 @@ export function backtestMultifractalMTF(
       pnlPct: sim.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
       outcome: sim.outcome,
+      exitReason: sim.exitReason,
       entryIdx: i,
     });
 
@@ -2218,8 +2281,6 @@ export function backtestMultifractalMTF(
       wins++;
     } else if (sim.outcome === 'loss') {
       losses++;
-    } else {
-      timeouts++;
     }
 
     if (sim.pnlPct > 0) {
@@ -2229,9 +2290,11 @@ export function backtestMultifractalMTF(
     }
   }
 
+  const exitBreakdown = calculateExitBreakdown(recordedTrades);
+  const timeouts = exitBreakdown.expirations;
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
-  const resolutionRate = totalSignals > 0 ? Number((resolved / totalSignals).toFixed(3)) : 0;
+  const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
   const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
@@ -2249,6 +2312,7 @@ export function backtestMultifractalMTF(
     timeouts,
     winRate,
     resolutionRate,
+    exitBreakdown,
     profitFactor,
     expectancy,
     expectancyR,
