@@ -56,23 +56,58 @@ export async function fetchBinanceKlines(symbol: string, interval: string = '1h'
   const cacheKey = `binance_klines_${symbol}_${interval}`;
   return fetchWithDeduplication(cacheKey, KLINE_TTL_MS, async () => {
     try {
-      // VCME day-trading needs a complete 48-hour forward window plus an
-      // evaluation sample. Binance permits up to 1000 candles per request.
-      const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000`);
-      if (!response.ok) {
-        console.error(`Binance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
+      // 1. Fetch primary batch of up to 1000 candles
+      const url1 = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000`;
+      const response1 = await fetch(url1);
+      if (!response1.ok) {
+        console.error(`Binance API error: ${response1.status} ${response1.statusText} for ${symbol} ${interval}`);
         return [];
       }
-      const data = await response.json() as Array<Array<string | number>>;
-      
-      return data.map((item) => ({
-        time: (item[0] as number) / 1000, // lightweight-charts expects seconds
-        open: parseFloat(item[1] as string),
-        high: parseFloat(item[2] as string),
-        low: parseFloat(item[3] as string),
-        close: parseFloat(item[4] as string),
-        volume: parseFloat(item[5] as string)
-      }));
+      const data1 = await response1.json() as Array<Array<string | number>>;
+      if (!Array.isArray(data1) || data1.length === 0) return [];
+
+      let combinedRaw = data1;
+
+      // 2. For 5m intraday, paginate a 2nd batch (2000 candles total ~7 days 24/7)
+      // to ensure a statistically robust Out-Of-Sample (OOS) Walk-Forward sample (>= 5 trades)
+      if (interval === '5m' && data1.length >= 800) {
+        const oldestTimeMs = Number(data1[0][0]);
+        if (Number.isFinite(oldestTimeMs) && oldestTimeMs > 0) {
+          const url2 = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${oldestTimeMs - 1}`;
+          try {
+            const response2 = await fetch(url2);
+            if (response2.ok) {
+              const data2 = await response2.json() as Array<Array<string | number>>;
+              if (Array.isArray(data2) && data2.length > 0) {
+                combinedRaw = [...data2, ...data1];
+              }
+            }
+          } catch (err2) {
+            console.warn(`Could not fetch older 5m page for ${symbol}:`, err2);
+          }
+        }
+      }
+
+      // Deduplicate by timestamp and sort chronologically
+      const seenTimes = new Set<number>();
+      const klines: Kline[] = [];
+      for (const item of combinedRaw) {
+        const t = (item[0] as number) / 1000;
+        if (!seenTimes.has(t)) {
+          seenTimes.add(t);
+          klines.push({
+            time: t, // lightweight-charts expects seconds
+            open: parseFloat(item[1] as string),
+            high: parseFloat(item[2] as string),
+            low: parseFloat(item[3] as string),
+            close: parseFloat(item[4] as string),
+            volume: parseFloat(item[5] as string)
+          });
+        }
+      }
+
+      klines.sort((a, b) => a.time - b.time);
+      return klines;
     } catch (error) {
       console.error("Error fetching data from Binance", error);
       return [];

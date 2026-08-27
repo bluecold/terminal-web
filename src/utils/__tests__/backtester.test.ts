@@ -2021,6 +2021,24 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(orb6.isActive, true, '7th candle (idx 6) must have ORB active (first operable candle)');
   });
 
+  // Test 69: Adaptive 5m evalWindow scales to 1400 candles on paginated 2000-bar datasets for robust OOS Walk-Forward
+  test('evalWindow scales to 1400 candles on 2000-candle datasets producing >= 5 OOS trades', () => {
+    // 1. Generate 2000 realistic candles with volatility and trend swings
+    const klines2000 = generateSyntheticKlines(2000, 300, 100, 0.015);
+
+    const res2000 = backtestStandard(klines2000, '5m', 'BTCUSDT');
+    assert.ok(res2000.walkForward, 'Walk-Forward result must exist');
+    assert.ok(res2000.walkForward.isWindow >= 900, `In-Sample window should be >= 900 candles (got ${res2000.walkForward.isWindow})`);
+    assert.ok(res2000.walkForward.oosWindow >= 400, `Out-of-Sample window should be >= 400 candles (got ${res2000.walkForward.oosWindow})`);
+    assert.ok(res2000.totalSignals >= 15, `2000 candles should evaluate a substantial trade sample (got ${res2000.totalSignals})`);
+    assert.ok(res2000.walkForward.outOfSample.signals >= 5, `Out-of-Sample must contain >= 5 trades for statistical significance (got ${res2000.walkForward.outOfSample.signals})`);
+
+    // 2. Standard 600-candle sample gracefully keeps 576 evalWindow without crashing
+    const klines600 = klines2000.slice(0, 600);
+    const res600 = backtestStandard(klines600, '5m', 'BTCUSDT');
+    assert.ok(res600.walkForward.isWindow <= 420, '600-candle dataset must use standard 576 base window');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

@@ -330,7 +330,7 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
       stratObj.openCount++;
     } else if (alert.status === 'SL_HIT') {
       losses++;
-      totalR += alert.realizedR; // -1.0
+      totalR += alert.realizedR;
       stratObj.losses++;
       stratObj.totalR += alert.realizedR;
     } else if (alert.status === 'EXPIRED') {

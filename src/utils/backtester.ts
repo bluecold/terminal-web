@@ -474,11 +474,14 @@ interface BacktestParams {
   cooldownPeriod: number;      // 2h/24 candles for 5m, 4h/4 candles for 1h, 3d/3 candles for 1d
 }
 
-function getParams(interval: string): BacktestParams {
+function getParams(interval: string, totalCandles?: number): BacktestParams {
   switch (interval) {
-    case '5m':
+    case '5m': {
+      const evalWindow = totalCandles && totalCandles >= 1450
+        ? Math.min(1400, totalCandles - 6 - 30)
+        : 576;
       return {
-        evalWindow: 576,               // 48 hours of 5m data
+        evalWindow,
         forwardWindow: 6,
         forwardLabel: '6 velas (30 min)',
         fallbackThreshold: 0.008,
@@ -486,6 +489,7 @@ function getParams(interval: string): BacktestParams {
         targetMultiplier: 1.5,
         cooldownPeriod: 24,            // 2 hours = 24 candles of 5m (matches AI_CONTEXT.md & App.tsx)
       };
+    }
     case '1d':
       return {
         evalWindow: 60,                // 60 days
@@ -679,11 +683,14 @@ export function backtestMultitemporal(
   const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
   const tf = style === 'swing' ? '1h' : '5m';
-  const evalWindow = style === 'swing' ? 168 : 576;
   const stepSec = klines5m.length > 1 ? (klines5m[1].time - klines5m[0].time) : (style === 'swing' ? 3600 : 300);
   const forwardWindow = style === 'swing'
     ? (stepSec === 300 ? 576 : 48)  // 576 x 5m = 48h OR 48 x 1h = 48h
     : 72;                            // 72 x 5m = 6h (Intradía)
+  const evalWindow = style === 'swing'
+    ? 168
+    : (klines5m.length >= 1450 ? Math.min(1400, klines5m.length - forwardWindow - 30) : 576);
+  const minRequiredCandles = (style === 'swing' ? 168 : 576) + forwardWindow;
   const cooldownHours = style === 'swing' ? 4 : 2;
   const candlesPerHour = Math.max(1, Math.round(3600 / (stepSec || 300)));
   const cooldownPeriod = cooldownHours * candlesPerHour;  // 4h cooldown for Swing, 2h for DayTrading
@@ -709,7 +716,7 @@ export function backtestMultitemporal(
   };
 
   // Every evaluated trade needs its complete forward horizon.
-  if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
+  if (!klines5m || klines5m.length < minRequiredCandles) return fallbackResult;
   if (!klines1h || klines1h.length < 60) return fallbackResult;
   if (!klines1d || klines1d.length < 30) return fallbackResult;
 
@@ -1409,7 +1416,7 @@ function runBacktestGenericOptimized(
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[]
 ): BacktestResult {
-  const params = getParams(interval);
+  const params = getParams(interval, klines.length);
   const { evalWindow, forwardWindow, forwardLabel, targetMultiplier } = params;
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades
@@ -1419,7 +1426,7 @@ function runBacktestGenericOptimized(
   const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, params.atrMultiplier, params.fallbackThreshold);
   const targetThreshold = threshold * targetMultiplier;
 
-  const minCandles = evalWindow + forwardWindow;
+  const minCandles = (interval === '5m' ? 576 : evalWindow) + forwardWindow;
   if (klines.length < minCandles) {
     return {
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
@@ -1955,9 +1962,10 @@ export function backtestMultifractalMTF(
   const cacheKey = `multifractal:${_symbol || 'any'}:${_interval}`;
   const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
-  const evalWindow = 576;
   const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
   const cooldownPeriod = 12; // Must be >= forwardWindow to prevent overlapping trades
+  const evalWindow = klines5m.length >= 1450 ? Math.min(1400, klines5m.length - forwardWindow - 30) : 576;
+  const minRequiredCandles = 576 + forwardWindow;
 
   const fallbackResult: BacktestResult = {
     totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
@@ -1970,7 +1978,7 @@ export function backtestMultifractalMTF(
     walkForward: createEmptyWalkForwardResult(),
     neutrals: 0,
     discards: createEmptyDiscards(),
-    label: `últimas 576 velas (5m)`,
+    label: `últimas ${evalWindow} velas (5m)`,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0,
     targetThreshold: 0,
@@ -1978,7 +1986,7 @@ export function backtestMultifractalMTF(
     insufficient: true
   };
 
-  if (!klines5m || klines5m.length < evalWindow + forwardWindow) return fallbackResult;
+  if (!klines5m || klines5m.length < minRequiredCandles) return fallbackResult;
 
   const isSessionBased = hasSessionGaps(klines5m, '5m');
 

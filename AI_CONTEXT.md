@@ -281,10 +281,14 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Alineación de Apertura ORB y Fallback Macro Diario**:
     - `openingRangeMap` activa el rango a partir de la 7ª vela de sesión ($i - \text{sessionStart} \ge 6$), idéntico a `getOpeningRange`.
     - Fallback adaptativo de EMA200 diaria a EMA50 (`lastEma200Ref`) con filtro de muestra mínima ($\ge 50$ barras diarias) para no operar reversión con sesgo desconocido.
+  - **Paginación de Binance 5m y Ventana de Evaluación Adaptativa (Walk-Forward OOS Robusto)**:
+    - Paginación transparente en `fetchBinanceKlines` para `5m`: descarga 2 lotes encadenados por `endTime` (2000 velas $\approx 7$ días continuos 24/7).
+    - Escalado automático de `evalWindow` en 5m a 1400 velas cuando hay $\ge 1450$ velas disponibles (Binance y Yahoo Finance), generando un tramo Out-of-Sample de 420 velas ($35\,\text{h}$) con capacidad para $8\text{--}18$ trades OOS reales.
+    - Validación Walk-Forward con significancia estadística garantizada ($\ge 5$ operaciones OOS para `PASS`).
   - **Auditoría de Código y Verificación Zero-Lint**:
     - Corrección de falsos positivos `react-hooks/purity` en `MarketRadar.tsx` mediante helper de reloj `getNowTimestamp()`.
     - Eliminación de variables/importaciones inactivas en `backtester.test.ts`.
-    - **68/68 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
+    - **69/69 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
 
 ---
 
