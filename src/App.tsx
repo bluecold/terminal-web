@@ -500,9 +500,8 @@ function App() {
           let signalKlines = triggerKlines;
 
           // Extract the true execution open price of the newly opened candle (1:1 with backtester.ts entry)
-          const liveCandle = signalInterval === '5m'
-            ? (data5m.length > 0 ? data5m[data5m.length - 1] : null)
-            : (data.length > 0 ? data[data.length - 1] : null);
+          const targetKlines = dataByTimeframe[signalInterval] || data;
+          const liveCandle = targetKlines.length > 0 ? targetKlines[targetKlines.length - 1] : null;
           const nextOpen = (liveCandle && liveCandle.open > 0)
             ? liveCandle.open
             : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
