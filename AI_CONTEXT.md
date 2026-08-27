@@ -7,9 +7,10 @@ FinceptTerminal es una aplicación web enfocada en proporcionar señales de trad
 La aplicación separa claramente las responsabilidades:
 - **`src/services/api.ts`**: Encargado de la obtención de datos (klines/velas Binance y Yahoo Finance), resúmenes de tickers, earnings y noticias con capa de deduplicación in-memory y colapso de peticiones en vuelo.
 - **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator).
-- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento ("éxito") de las estrategias en ventanas de tiempo pasadas con caché por activo.
-- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que determina la estrategia líder en base a Profit Factor, Expectancy y WinRate.
-- **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas, deduplicación persistente atómica por vela (`dedupKey`), auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_BE_CLOSED`, `TP2_HIT`, `SL_HIT`, `EXPIRED`), y cálculo de rendimiento de sesión.
+- **`src/utils/tradeSimulator.ts`**: Motor puro y centralizado de simulación de operaciones (`simulateTrade`). Gestiona ejecuciones multi-nivel (TP1/TP2/TP3), trailing Chandelier, time-stops, emergency exit, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y fricción ($0.08\%$).
+- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento de las 5 estrategias con partición Walk-Forward (70/30), métricas de riesgo ($MDD_R$, Sortino, rachas) y caché FIFO por activo.
+- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que rankea estrategias con normalización temporal $\sqrt{t}$, regularización Bayesiana de PF ($\max(0, c.resolved) \times 0.4$), penalización por drawdown y gating Walk-Forward.
+- **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas, deduplicación persistente atómica por vela (`dedupKey`), auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_CLOSED`, `TP1_BE_CLOSED`, `TP2_HIT`, `TP2_CLOSED`, `SL_HIT`, `EXPIRED`) y cálculo de estadísticas netas de sesión.
 - **`src/components/`**: Componentes de React para la UI (`MarketRadar`, `Chart`, `SignalPanel`, `Watchlist`, `MarketTicker`, `HelpModal`).
 - **`src/App.tsx`**: Contenedor principal que maneja el estado global, escaneo en background cada 60s, alertas del sistema operativo y selector de vistas (Gráfico / Radar).
 
@@ -31,8 +32,8 @@ Actualmente existen 5 agrupaciones principales de señales:
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
 4. **VCME Sniper Engine v3 (Híbrido - Upgraded)**: Estrategia cuantitativa avanzada con selección interactiva de perfil y gatillo:
    - **Perfiles de Ejecución**:
-     - *Day Trading (Intradía)*: Gatillo en 5m, ventana de simulación/evaluación (576 velas de 5m), forwardWindow unificado de 72 velas (6 hs max), Stop Loss ajustado por ATR/estructura local y objetivos escalonados de TP1 (1.5R - 50% + BE), TP2 (2.5R - 25%), y TP3 (3.5R - 25%).
-     - *Swing Trading*: Gatillo en 1H, ventana de evaluación extendida (48 velas de 1H), forwardWindow de 48 velas (48 hs max), stop loss estructural en lookback corto (5 barras) y objetivos amplios de TP1 (2.0R - 50% + BE), TP2 (4.0R - 25%), y TP3 (5.0R - 25%).
+     - *Day Trading (Intradía)*: Gatillo en 5m, ventana de simulación/evaluación (576 velas de 5m), forwardWindow unificado de 72 velas (6 hs max), Stop Loss ajustado por ATR/estructura local y objetivos escalonados de TP1 (2.0R - 50% + BE), TP2 (3.5R - 25% + trailing a TP1), y TP3 (5.0R - 25% runner).
+     - *Swing Trading*: Gatillo en 1H, ventana de evaluación (evalWindow = 168 velas de 1H), forwardWindow de 48 velas (48 hs max), stop loss estructural en lookback corto (5 barras) y objetivos de TP1 (2.0R - 50% + BE), TP2 (3.5R - 25%), y TP3 (5.0R - 25%).
    - **Modos de Gatillo**:
      - *Agresivo (Ruptura)*: Disparo inmediato al cumplir las condiciones de confluencia de la vela de gatillo.
      - *Conservador (Retest)*: Busca confirmación mediante retest de los niveles de ruptura (retroceso de hasta 5 velas a las BB u ORB roto) para asegurar que el rompimiento es verídico en mercados de alta volatilidad.
@@ -46,10 +47,10 @@ Actualmente existen 5 agrupaciones principales de señales:
      - *Cuerpo Decisivo*: Vela de gatillo con un ratio de cuerpo >= 40% (evitando Dojis).
      - *Apertura y Noticias*: Descarte del caos de apertura (< 15 minutos) y volumen extremo de noticias (`RVOL >= 8.0`).
      - *Límite de Riesgo*: Distancia del Stop Loss estructural limitada a un máximo de 1.2% (Intradía) o 3.5% (Swing).
-   - **Gestión de Riesgo y Salidas Complejas**:
-     - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
-     - **Time Stop:** Cierre de la posición si tras 12 velas del perfil el beneficio no ha alcanzado al menos `+0.5R`.
-     - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
+     - **Gestión de Riesgo y Salidas Complejas**:
+      - **Trailing Stop Chandelier:** Trailing stop dinámico basado en `highest_high_since_entry - 2.5 * ATR` o cruce de EMA 9 activo tras alcanzar el Target 2.
+      - **Time Stop:** Cierre de la posición tras 8 velas (40 min en 5m Intradía) si el beneficio no ha alcanzado al menos `+0.5R`.
+      - **Emergency Exit:** Salida anticipada al cierre de cualquier vela que cruce por debajo de `VWAP + EMA21` (para LONG) o por encima (para SHORT).
 5. **Multifractal MTF Engine (Signal 5)**: Motor de alertas multifractal basado en un flujo de compuertas lógicas secuenciales 1D → 1H → 5M:
    - **Capa 1 — Sesgo Macro (1D Andian Oscillator)**: Descompone velas diarias en fuerza alcista (GREEN) y bajista (RED), suavizadas con EMA y normalizadas contra el rango promedio. Determina BULLISH (GREEN > ORANGE, RED en percentil 20) o BEARISH (inverso). Solo permite operar en la dirección del sesgo.
    - **Capa 2 — Contexto Volatilidad (1H Revolution Band)**: Bollinger Bands horarias que miden el ancho del canal vs. su historial de 200 barras. Cuando el ancho cae al percentil 15 (COMPRIMIDO), indica que una expansión explosiva es inminente.
@@ -59,13 +60,14 @@ Actualmente existen 5 agrupaciones principales de señales:
    - **Dos Estrategias de Entrada**:
      - *⚡ Ruptura con Expansión*: Cierre rompe banda superior/inferior + volumen institucional + dominancia activa. Requiere las 3 capas alineadas.
      - *🔄 Reversión a la Media*: Divergencia alcista/bajista en Dread Blitz + absorción pasiva en mechas. No requiere compresión 1H.
-   - **Gestión de Riesgo**: Stop Loss en el punto medio de la banda (Ruptura) o bajo la mecha de absorción ± 25% del ancho de banda (Reversión). Invalidación automática si el cierre cruza el midpoint de la banda en las primeras 3 velas.
+   - **Gestión de Riesgo**: Stop Loss estructural acotado entre $0.8 \times ATR$ y $2.0 \times ATR$ (máximo $2.5\%$ de riesgo relativo). Invalidación automática si sufre un retroceso adverso $> 0.5R$ en las primeras 3 velas. Target Profit único de 1.5R.
    - **Filtro NYSE Opening**: Exige multiplicador de volumen ≥ 2.5x en la ventana 09:30-09:45 EST para filtrar el ruido de apertura.
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
+- **Simulador Unificado (`src/utils/tradeSimulator.ts`)**: Consumido por los 5 motores y por el tracker de alertas en vivo para garantizar paridad matemática 1:1 en la ejecución de órdenes, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y costes ($0.08\%$).
 - **Simulación Multitemporal VCME Sniper v3**: Realiza backtesting simulando las 3 capas, el score de confluencia técnica, y las salidas complejas (Time Stop, Emergency Exit y Chandelier Trailing).
-- **Simulación Multifractal MTF**: Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M sobre las últimas 150 velas de 5m. Cooldown de 12 velas (≥ forwardWindow) para prevenir look-ahead bias. Forward window de 12 velas (1 hora), con invalidación temprana en las primeras 3 velas si el precio cruza el midpoint. Target Profit de 1.5R.
+- **Simulación Multifractal MTF**: Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M con cooldown de 12 velas (≥ forwardWindow), forward window de 12 velas (1 hora), invalidación temprana en 3 velas ante retrocesos $> 0.5R$ y target profit único de 1.5R.
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
 - **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
 
@@ -135,7 +137,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 
 - **Actualización v2026.07.31.4 — Live Forward Test, Auditabilidad, Overlays en Gráfico, GPU Perf & Resiliencia**:
   - **Motor de Tracking en Vivo (`alertTracker.ts`)**: Módulo liviano que calcula Stop Loss y Take Profits (TP1/TP2) para cada alerta emitida y evalúa las velas posteriores en segundo plano.
-  - **Tracking de Resultados Automático**: Clasifica en tiempo real cada alerta en `TP1_HIT` (+1.5R), `TP2_HIT` (+2.5R), `SL_HIT` (-1.0R), `EXPIRED` o `OPEN` (con PnL flotante %).
+  - **Tracking de Resultados Automático**: Clasifica en tiempo real cada alerta en `OPEN`, `TP1_HIT`, `TP1_CLOSED`, `TP1_BE_CLOSED`, `TP2_HIT`, `TP2_CLOSED`, `SL_HIT` o `EXPIRED` (con PnL flotante/neto % y $R$ neto).
   - **Barra de Métricas de Sesión**: Panel superior en el historial de alertas que resume en vivo el WinRate % de hoy y los R netos acumulados.
   - **Superposición en el Gráfico (`Chart.tsx`)**: Al hacer clic en cualquier tarjeta del historial de alertas, dibuja dinámicamente sobre el gráfico de TradingView las líneas horizontales de Entrada (Azul), Stop Loss (Rojo), TP1 (Verde) y TP2 (Esmeralda).
   - **Optimización de GPU (<5% consumo)**: Eliminados los filtros de desenfoque de capa (`backdrop-filter: blur()`) que causaban repintados Gaussianos continuos a 60-144 FPS al interactuar con la marquesina en movimiento. La marquesina utiliza aislamiento de capas (`contain: layout paint; transform: translate3d`).
@@ -201,7 +203,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Invalidación temprana en velas 1..3 si el precio sufre retroceso adverso $> 0.5R$ (corte anticipado de pérdidas sin asumir -1.0R total).
     - Horizonte de expiración ajustado a 12 velas (1 hora en 5m).
   - **Múltiplos R Ponderados Dinámicos**:
-    - Cálculo matemáticamente exacto de $R$ en base a distancias de niveles: TP1 = $+0.75R$ (o $+1.0R$ en VCME), TP2 = $+2.0R$ (o $+2.75R$ en VCME).
+    - Cálculo matemáticamente exacto de $R$ en base a distancias reales de niveles: para setups con 1.5R fijo TP1 = $+0.75R$ (o $+1.0R$ en VCME con 2.0R @ 50%), TP2 = $+1.875R$ en VCME ($0.50 \times 2.0R + 0.25 \times 3.5R$) con runner 25% flotante hacia TP3 ($+3.125R$).
   - **Inmunidad a Repintado en Velas Vivas (`alertTracker.ts`)**:
     - Las transiciones de estado terminales (`TP1_HIT`, `TP2_HIT`, `SL_HIT`, `TP1_BE_CLOSED`) se evalúan exclusivamente sobre velas completamente cerradas `(time + duration) * 1000 <= nowMs`. La vela en formación se reserva únicamente para el cálculo de PnL flotante.
   - **Caché Multi-Timeframe con Fingerprint Atómico OHLCV**:
@@ -237,35 +239,52 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Implementación de Emergency Exit (pérdida de VWAP + EMA21) y Chandelier Trailing Exit ($2.5 \cdot ATR$ / EMA9) en el live alert tracker.
   - **Máquina de Estados de Runner Post-TP2**:
     - Descongelamiento de `TP2_HIT` (permanece activo en evaluación continua) y creación del estado terminal `TP2_CLOSED`.
-    - Eliminación de la acreditación anticipada de $R$: se acredita $+1.375R$ al tocar TP2 y el runner ($25\%$) flota en tiempo real hasta su resolución ($+1.75R$ en retroceso a TP1 SL, Chandelier exit, o $+2.625R$ en TP3).
+    - Con objetivos TP1 (2.0R @ 50%), TP2 (3.5R @ 25%) y TP3 (5.0R @ 25%): al tocar TP2 se asegura $+1.875R$ ($0.50 \times 2.0R + 0.25 \times 3.5R$) y el runner ($25\%$) flota en tiempo real hasta su resolución ($+2.375R$ en retroceso a TP1 SL, salida Chandelier, o $+3.125R$ en TP3).
   - **Protección de Reversión a la Media en Multifractal MTF**:
     - Eliminación de la invalidación por cruce de Midpoint con `Math.abs()` en `backtester.ts:1766-1781`.
     - Sustitución por evaluación de retroceso adverso real ($> 0.5R$) con paridad 1:1 respecto a `alertTracker.ts`.
   - **Normalización Temporal y Regularización Bayesiana en el Torneo de Estrategias**:
-    - Normalización de Expectancy por raíz de tiempo ($\sqrt{t}$): factor $\sqrt{\text{horizonte}/6}$ nivelando la comparación entre ventanas de 6, 12 y 72 velas.
+    - Normalización de Expectancy por raíz de tiempo ($\sqrt{t}$): factor $\text{timeFactor} = \sqrt{\max(1.0, \text{exposureHours}/\text{baseHours})}$ nivelando equitativamente ventanas de 6, 12, 48 y 72 velas sin penalizar excesivamente horizontes largos.
     - Regularización Bayesiana Laplace para Profit Factor en $0$ pérdidas, eliminando el artefacto $PF = 99.9 \to 5.0$ en $N=1$.
-    - Capping muestral de PF ($\text{Max PF} = \min(5.0, 1.0 + N \times 0.5)$) y unificación de denominadores con `totalSignals`.
+    - Capping muestral de PF ($\text{Max PF} = \min(5.0, 1.0 + \max(0, N) \times 0.4)$) y unificación de denominadores con `totalSignals`.
 
 - **Actualización v2026.08.26.2 — Unified Execution Simulator, Risk Metrics, Walk-Forward Validation & Anti-Chasing Refinement**:
-  - **Simulador de Ejecución Centralizado (`simulateTrade`)**:
-    - Extracción de la lógica unificada en `src/utils/backtester.ts` consumida por los 5 backtests y sincronizada con `alertTracker.ts`.
-    - Soporte completo de salidas 3-tier en VCME (50% TP1, 25% TP2, 25% TP3), invalidación temprana en Multifractal MTF, Time-Stops a 8 velas (40 min en 5m), Emergency Exit (pérdida de VWAP + EMA21), Chandelier Trailing Stop y fricción/slippage contable ($0.08\%$).
-  - **Normalización por R y Velocidad de Exposición**:
-    - Sustitución de comparaciones porcentuales brutas por retorno esperado en múltiplos R ($E[R]$) y velocidad por hora de exposición ($E[R]/\text{h} = \frac{E[R]}{\text{avgExposureHours}}$).
+  - **Simulador de Ejecución Centralizado (`src/utils/tradeSimulator.ts`)**:
+    - Extracción del motor puro de simulación `simulateTrade` consumido por los 5 backtests y sincronizado con `alertTracker.ts`.
+    - Soporte completo de salidas 3-tier en VCME (50% TP1 @ 2.0R, 25% TP2 @ 3.5R, 25% TP3 @ 5.0R), invalidación temprana en Multifractal MTF, Time-Stops a 8 velas (40 min en 5m), Emergency Exit (pérdida de VWAP + EMA21), Chandelier Trailing Stop y fricción/slippage contable ($0.08\%$).
+  - **Normalización por R y Velocidad de Exposición Equilibrada**:
+    - Comparación en múltiplos $R$ netos ($E[R]$) y score con $\tanh$: $\text{expRScore} = \tanh(E[R] / 0.5) \times 3.0$ y $\text{timeNormScore} = \tanh(\text{timeNormExpR} / 0.35) \times 2.5$.
     - Tratamiento de muestras sin pérdidas ($PF = \text{null} / 99.9$) como desconocidas/indeterminadas (`PF N/D`), eliminando singularidades estadísticas en muestras pequeñas ($N=1$).
   - **Métricas de Riesgo Institucionales en Backtest y UI**:
-    - Cálculo de Max Drawdown en R ($MDD_R$), Racha Máxima de Pérdidas ($L_{\text{streak}}$) y Ratio Sortino sobre la serie de retornos $R$.
+    - Cálculo de Max Drawdown en R ($MDD_R$), Racha Máxima de Pérdidas ($L_{\text{streak}}$) y Ratio Sortino sobre la serie de retornos $R$ netos.
     - Desglose direccional Long vs Short ($\Delta$ WinRate y $E[R]$) y desglose por régimen tendencial ($ADX > 25$ vs $ADX \le 25$).
     - Penalización cuadrática en el Torneo ante drawdowns severos ($MDD_R > 3.0R$) y bonificación por consistencia Sortino positiva.
-  - **Validación Walk-Forward (70% In-Sample / 30% Out-of-Sample)**:
+  - **Validación Walk-Forward Rigurosa (70% In-Sample / 30% Out-of-Sample)**:
     - Partición sistemática de la ventana histórica (ej. 400 velas IS / 176 velas OOS en 5m $\approx$ 14.6 h ciegas).
-    - Clasificación rigurosa en `PASS` ($E[R]_{\text{OOS}} \ge 0$), `FAIL` ($E[R]_{\text{OOS}} < 0$) o `NO_OOS_TRADES`.
-    - Descalificación estricta de la categoría de confianza `HIGH` para cualquier estrategia con `FAIL` en el tramo reciente, previniendo el sobreajuste (*overfitting*) en la selección de estrategias.
+    - Muestra mínima OOS obligatoria: $\ge 5$ operaciones en 5m, $\ge 3$ en 1h, $\ge 2$ en 1d.
+    - Clasificación en `PASS` ($N_{\text{OOS}} \ge \text{minOosTrades} \land E[R]_{\text{OOS}} \ge 0$), `FAIL` ($E[R]_{\text{OOS}} < 0$) o `NO_OOS_TRADES` ($0 \le N_{\text{OOS}} < \text{minOosTrades}$).
+    - Descalificación estricta de la categoría de confianza `HIGH` para cualquier estrategia que no sea `PASS`, multiplicador $0.55\times$ para `FAIL` y $0.85\times$ para `NO_OOS_TRADES`.
   - **Corrección de `distScore` en VCME (Campana Óptima a 0.5 ATR)**:
     - Corrección de la inversión matemática en `indicators.ts` y `backtester.ts` donde la distancia a la EMA21 premiaba el *chasing* sobreextendido.
     - Implementación de la campana triangular: $\text{distScore} = 0.15 \cdot \max(0, 1.0 - |\text{distRatio} - 0.5| / 1.0)$, premiando el rebote confirmado ($0.5\text{ ATR}$) y penalizando con $0.0$ la sobreextensión $> 1.5\text{ ATR}$.
-  - **Suite de Pruebas Unitarias**:
-    - Expansión a 61 tests unitarios automatizados (`npm test`) con cobertura total de métricas de riesgo, partición Walk-Forward y calibración `distScore`.
+
+- **Actualización v2026.08.27.1 — Paridad Total Motor/Tracker, Consistencia R Neta y Verificación Zero-Lint**:
+  - **Cálculo Uniforme de $R$ Neto con Fricción**:
+    - Derivación estricta de $R$ a partir del PnL neto: $R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$, unificado en todos los tipos de salida incluyendo Stop Loss (ej. $-1.04R$ para riesgo inicial del $2.0\%$ con fricción $0.08\%$).
+  - **Partición Disjunta de Resultados**:
+    - Clasificación estructural de salidas en `simulateTrade`: `win` (`TP1`, `TP2`, `TP3`, `TP1_BE`), `loss` (`SL`, `EARLY_ADVERSE`) y `timeout` (`TIMEOUT`, `TIME_STOP`, `EMERGENCY_EXIT`, `SESSION_GAP`).
+    - Garantía matemática: $\text{wins} + \text{losses} + \text{timeouts} \equiv \text{totalSignals}$ y $\text{resolutionRate} = \frac{\text{wins} + \text{losses}}{\text{totalSignals}}$.
+  - **Estado Terminal `TP1_CLOSED`**:
+    - Las estrategias sin parciales (Standard y Multifractal) que alcanzan TP1 se etiquetan como `TP1_CLOSED` (+1.5R neto) y se renderizan con badge `TP1 (+...R) ✅`, eliminando la ambigüedad con `TP2_CLOSED`.
+  - **Múltiplo R Dinámico de TP3**:
+    - Derivación matemática desde `levels.takeProfit3`: $r_3 = \frac{|\text{TP3} - \text{entry}|}{\text{riskDist}}$, eliminando hardcodes estáticos.
+  - **Alineación de Apertura ORB y Fallback Macro Diario**:
+    - `openingRangeMap` activa el rango a partir de la 7ª vela de sesión ($i - \text{sessionStart} \ge 6$), idéntico a `getOpeningRange`.
+    - Fallback adaptativo de EMA200 diaria a EMA50 (`lastEma200Ref`) con filtro de muestra mínima ($\ge 50$ barras diarias) para no operar reversión con sesgo desconocido.
+  - **Auditoría de Código y Verificación Zero-Lint**:
+    - Corrección de falsos positivos `react-hooks/purity` en `MarketRadar.tsx` mediante helper de reloj `getNowTimestamp()`.
+    - Eliminación de variables/importaciones inactivas en `backtester.test.ts`.
+    - **68/68 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
 
 ---
 
