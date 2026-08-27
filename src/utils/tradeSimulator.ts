@@ -140,18 +140,18 @@ export function simulateTrade(
             const tp1P = 0.50 * ((tp1 - entryPrice) / entryPrice * 100);
             const tp2P = 0.25 * ((tp2 - entryPrice) / entryPrice * 100);
             const tp3P = 0.25 * ((activeSL - entryPrice) / entryPrice * 100);
-            grossPnlPct = Number((tp1P + tp2P + tp3P).toFixed(2));
-            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * ((activeSL - entryPrice) / riskDist)).toFixed(2));
+            grossPnlPct = tp1P + tp2P + tp3P;
+            realizedR = 0.50 * r1 + 0.25 * r2 + 0.25 * ((activeSL - entryPrice) / riskDist);
             exitReason = 'TP2';
             currentStatus = 'TP2_CLOSED';
           } else if (tp1Hit) {
             const tp1P = 0.50 * ((tp1 - entryPrice) / entryPrice * 100);
-            grossPnlPct = Number(tp1P.toFixed(2));
-            realizedR = Number((0.50 * r1).toFixed(2));
+            grossPnlPct = tp1P;
+            realizedR = 0.50 * r1;
             exitReason = 'TP1_BE';
             currentStatus = 'TP1_BE_CLOSED';
           } else {
-            grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+            grossPnlPct = -(initialRiskPct * 100);
             realizedR = -1.0;
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
@@ -159,18 +159,18 @@ export function simulateTrade(
         } else if (isStandardPartials) {
           if (tp1Hit) {
             const tp1P = 0.50 * ((tp1 - entryPrice) / entryPrice * 100);
-            grossPnlPct = Number(tp1P.toFixed(2));
-            realizedR = Number((0.50 * r1).toFixed(2));
+            grossPnlPct = tp1P;
+            realizedR = 0.50 * r1;
             exitReason = 'TP1_BE';
             currentStatus = 'TP1_BE_CLOSED';
           } else {
-            grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+            grossPnlPct = -(initialRiskPct * 100);
             realizedR = -1.0;
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
           }
         } else {
-          grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+          grossPnlPct = -(initialRiskPct * 100);
           realizedR = -1.0;
           exitReason = 'SL';
           currentStatus = 'SL_HIT';
@@ -322,18 +322,18 @@ export function simulateTrade(
             const tp1P = 0.50 * ((entryPrice - tp1) / entryPrice * 100);
             const tp2P = 0.25 * ((entryPrice - tp2) / entryPrice * 100);
             const tp3P = 0.25 * ((entryPrice - activeSL) / entryPrice * 100);
-            grossPnlPct = Number((tp1P + tp2P + tp3P).toFixed(2));
-            realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * ((entryPrice - activeSL) / riskDist)).toFixed(2));
+            grossPnlPct = tp1P + tp2P + tp3P;
+            realizedR = 0.50 * r1 + 0.25 * r2 + 0.25 * ((entryPrice - activeSL) / riskDist);
             exitReason = 'TP2';
             currentStatus = 'TP2_CLOSED';
           } else if (tp1Hit) {
             const tp1P = 0.50 * ((entryPrice - tp1) / entryPrice * 100);
-            grossPnlPct = Number(tp1P.toFixed(2));
-            realizedR = Number((0.50 * r1).toFixed(2));
+            grossPnlPct = tp1P;
+            realizedR = 0.50 * r1;
             exitReason = 'TP1_BE';
             currentStatus = 'TP1_BE_CLOSED';
           } else {
-            grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+            grossPnlPct = -(initialRiskPct * 100);
             realizedR = -1.0;
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
@@ -341,18 +341,18 @@ export function simulateTrade(
         } else if (isStandardPartials) {
           if (tp1Hit) {
             const tp1P = 0.50 * ((entryPrice - tp1) / entryPrice * 100);
-            grossPnlPct = Number(tp1P.toFixed(2));
-            realizedR = Number((0.50 * r1).toFixed(2));
+            grossPnlPct = tp1P;
+            realizedR = 0.50 * r1;
             exitReason = 'TP1_BE';
             currentStatus = 'TP1_BE_CLOSED';
           } else {
-            grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+            grossPnlPct = -(initialRiskPct * 100);
             realizedR = -1.0;
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
           }
         } else {
-          grossPnlPct = -Number((initialRiskPct * 100).toFixed(2));
+          grossPnlPct = -(initialRiskPct * 100);
           realizedR = -1.0;
           exitReason = 'SL';
           currentStatus = 'SL_HIT';
@@ -558,6 +558,20 @@ export function simulateTrade(
   }
 
   const netPnlPct = grossPnlPct - frictionPct;
+
+  // Calculate net realized R uniformly from net PnL and initial risk across all exit types
+  let netRealizedR: number;
+  if (!isTerminated && policy.floatingClosePrice !== undefined) {
+    if (currentStatus === 'OPEN') {
+      netRealizedR = 0;
+    } else {
+      const frictionR = initialRiskPct > 0 ? (frictionPct / 100) / initialRiskPct : 0;
+      netRealizedR = realizedR - frictionR;
+    }
+  } else {
+    netRealizedR = initialRiskPct > 0 ? (netPnlPct / 100) / initialRiskPct : 0;
+  }
+
   const outcome: 'win' | 'loss' | 'timeout' = exitReason === 'TIMEOUT' || exitReason === 'SESSION_GAP' || exitReason === 'TIME_STOP' || exitReason === 'EMERGENCY_EXIT'
     ? (netPnlPct > 0 ? 'win' : (netPnlPct < 0 ? 'loss' : 'timeout'))
     : (netPnlPct > 0 ? 'win' : 'loss');
@@ -566,7 +580,7 @@ export function simulateTrade(
     outcome,
     pnlPct: Number(netPnlPct.toFixed(2)),
     grossPnlPct: Number(grossPnlPct.toFixed(2)),
-    realizedR: Number(realizedR.toFixed(2)),
+    realizedR: Number(netRealizedR.toFixed(2)),
     exitIdx,
     exitPrice,
     exitReason,

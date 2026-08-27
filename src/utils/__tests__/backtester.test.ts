@@ -1371,7 +1371,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res1.exitReason, 'TP1');
     assert.strictEqual(res1.grossPnlPct, 10.0);
     assert.strictEqual(res1.pnlPct, 9.92);
-    assert.strictEqual(res1.realizedR, 2.0);
+    // Net R = 9.92% / 5.0% = 1.984 -> 1.98R
+    assert.strictEqual(res1.realizedR, 1.98);
 
     // 2. VCME Multi-target with Chandelier Trailing runner
     const multiKlines: Kline[] = [
@@ -1393,9 +1394,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res2.status, 'TP2_CLOSED');
     // Active SL was trailed to TP1 (106). Low 104.5 fills stop at 106:
     // 50% * 6% (TP1) + 25% * 10% (TP2) + 25% * 6% (TP1 SL) = 3.0 + 2.5 + 1.5 = 7.0% gross, 6.92% net
+    // Net R = 6.92% / 4.0% = 1.73R
     assert.strictEqual(res2.grossPnlPct, 7.0);
     assert.strictEqual(res2.pnlPct, 6.92);
-    assert.strictEqual(res2.realizedR, 1.75);
+    assert.strictEqual(res2.realizedR, 1.73);
 
     // 3. Emergency Exit VWAP breach
     const emergKlines: Kline[] = [
@@ -1412,6 +1414,21 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res3.status, 'EXPIRED');
     assert.strictEqual(res3.grossPnlPct, -3.0);
     assert.strictEqual(res3.pnlPct, -3.08);
+    // Net R = -3.08% / 5.0% = -0.616 -> -0.62R
+    assert.strictEqual(res3.realizedR, -0.62);
+
+    // 4. Stop Loss hit with 2% initial risk and 0.08% friction -> realizedR = -1.04R (not -1.00R)
+    const slKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 100.5, low: 97.5, close: 97.8, volume: 1000 }
+    ];
+    const slLevels: TradeLevels = { entryPrice: 100, stopLoss: 98, takeProfit1: 103 }; // 2% risk
+    const resSL = simulateTrade(slKlines, 0, 'BUY', slLevels, { forwardWindow: 5, frictionPct: 0.08 });
+    assert.strictEqual(resSL.outcome, 'loss');
+    assert.strictEqual(resSL.exitReason, 'SL');
+    assert.strictEqual(resSL.grossPnlPct, -2.0);
+    assert.strictEqual(resSL.pnlPct, -2.08);
+    assert.strictEqual(resSL.realizedR, -1.04, 'Stop Loss with 2% risk and 0.08% friction must yield -1.04R net');
   });
 
   // Test 54: R-multiple and exposure velocity tournament evaluation with null PF handling
@@ -1730,6 +1747,44 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const tourney = evaluateStrategyTournament([standardCandidate, vcmeCandidate], '5m');
     assert.strictEqual(tourney.bestStrategy, 'multitemporal', 'VCME with 3x E[R] (0.90R vs 0.30R) must win against standard under sqrt(t) scaling');
+  });
+
+  // Test 63: Uniform Net realizedR accounting (netPnlPct / 100 / initialRiskPct) on SL, TP and small risk scales
+  test('simulateTrade calculates net realizedR uniformly from net PnL and initial risk, including SL', () => {
+    // 1. Tight scalp: initial risk 0.8% (entry 100, SL 99.2), 0.08% friction
+    const tightKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.2, low: 99.8, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 100.1, low: 99.0, close: 99.1, volume: 1000 } // SL hit
+    ];
+    const tightLevels: TradeLevels = { entryPrice: 100, stopLoss: 99.2, takeProfit1: 101.2 };
+    const tightSL = simulateTrade(tightKlines, 0, 'BUY', tightLevels, { forwardWindow: 5, frictionPct: 0.08 });
+    // Gross PnL = -0.80%, Net PnL = -0.88%, initialRiskPct = 0.008 -> Net R = -0.0088 / 0.008 = -1.10R
+    assert.strictEqual(tightSL.grossPnlPct, -0.8);
+    assert.strictEqual(tightSL.pnlPct, -0.88);
+    assert.strictEqual(tightSL.realizedR, -1.10, 'Tight scalp SL must reflect friction impact (-1.10R)');
+
+    // 2. Standard 2% risk: SL hit with 0.08% friction -> -1.04R
+    const stdKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.2, low: 99.8, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 100.1, low: 97.9, close: 97.9, volume: 1000 } // SL hit
+    ];
+    const stdLevels: TradeLevels = { entryPrice: 100, stopLoss: 98, takeProfit1: 103 };
+    const stdSL = simulateTrade(stdKlines, 0, 'BUY', stdLevels, { forwardWindow: 5, frictionPct: 0.08 });
+    // Gross PnL = -2.00%, Net PnL = -2.08%, initialRiskPct = 0.02 -> Net R = -0.0208 / 0.02 = -1.04R
+    assert.strictEqual(stdSL.grossPnlPct, -2.0);
+    assert.strictEqual(stdSL.pnlPct, -2.08);
+    assert.strictEqual(stdSL.realizedR, -1.04, 'Standard 2% SL with friction must yield -1.04R net');
+
+    // 3. Standard 2% risk: 1.5R TP1 hit with 0.08% friction -> +1.46R
+    const tpKlines: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.2, low: 99.8, close: 100, volume: 1000 },
+      { time: 1700000300, open: 100, high: 103.5, low: 99.5, close: 103.1, volume: 1000 } // TP1 hit
+    ];
+    const stdTP = simulateTrade(tpKlines, 0, 'BUY', stdLevels, { forwardWindow: 5, enablePartials: false, frictionPct: 0.08 });
+    // Gross PnL = +3.00%, Net PnL = +2.92%, initialRiskPct = 0.02 -> Net R = +0.0292 / 0.02 = +1.46R
+    assert.strictEqual(stdTP.grossPnlPct, 3.0);
+    assert.strictEqual(stdTP.pnlPct, 2.92);
+    assert.strictEqual(stdTP.realizedR, 1.46, '1.5R TP1 with friction must yield +1.46R net');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
