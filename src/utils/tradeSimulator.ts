@@ -64,6 +64,7 @@ export function simulateTrade(
   const initialRiskPct = entryPrice > 0 ? riskDist / entryPrice : 0.02;
   const r1 = riskDist > 0 ? Math.abs(tp1 - entryPrice) / riskDist : 1.5;
   const r2 = riskDist > 0 ? Math.abs(tp2 - entryPrice) / riskDist : 2.5;
+  const r3 = riskDist > 0 ? Math.abs(tp3 - entryPrice) / riskDist : 5.0;
   const frictionPct = policy.frictionPct ?? 0.08;
 
   const isVCME_Runner = policy.enablePartials === 'vcme-runner' || (policy.enablePartials === true && policy.trailingStop === 'chandelier');
@@ -84,7 +85,7 @@ export function simulateTrade(
   let isTerminated = false;
 
   const startIdx = entryCandleIdx + 1;
-  const maxIdx = Math.min(entryCandleIdx + policy.forwardWindow, klines.length - 1);
+  const maxIdx = Math.min(entryCandleIdx + (policy.forwardWindow ?? 24), klines.length - 1);
 
   for (let f = startIdx; f <= maxIdx; f++) {
     const k = klines[f];
@@ -197,7 +198,7 @@ export function simulateTrade(
           grossPnlPct = Number(((tp1 - entryPrice) / entryPrice * 100).toFixed(2));
           realizedR = Number(r1.toFixed(2));
           exitReason = 'TP1';
-          currentStatus = 'TP2_CLOSED';
+          currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
         }
@@ -229,7 +230,7 @@ export function simulateTrade(
         }
       }
 
-      // ── 4. Target 3 / Chandelier Trailing Exit (VCME Runner) ────────────
+      // ── 4. Target 3 / Chandelier Trailing Exit (VCME Runner) ─────────────
       if (isVCME_Runner && tp2Hit) {
         const currentATR = policy.atrSeries && policy.atrSeries[f] && !isNaN(policy.atrSeries[f]) && policy.atrSeries[f] > 0
           ? policy.atrSeries[f]
@@ -254,7 +255,7 @@ export function simulateTrade(
           const tp2Gain = ((tp2 - entryPrice) / entryPrice) * 25;
           const tp3Gain = ((tp3 - entryPrice) / entryPrice) * 25;
           grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
-          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
+          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * r3).toFixed(2));
           exitIdx = f;
           exitPrice = tp3;
           exitReason = 'TP3';
@@ -379,7 +380,7 @@ export function simulateTrade(
           grossPnlPct = Number(((entryPrice - tp1) / entryPrice * 100).toFixed(2));
           realizedR = Number(r1.toFixed(2));
           exitReason = 'TP1';
-          currentStatus = 'TP2_CLOSED';
+          currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
         }
@@ -436,7 +437,7 @@ export function simulateTrade(
           const tp2Gain = ((entryPrice - tp2) / entryPrice) * 25;
           const tp3Gain = ((entryPrice - tp3) / entryPrice) * 25;
           grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
-          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * 5.0).toFixed(2));
+          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * r3).toFixed(2));
           exitIdx = f;
           exitPrice = tp3;
           exitReason = 'TP3';

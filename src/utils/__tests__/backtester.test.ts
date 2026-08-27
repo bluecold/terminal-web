@@ -138,11 +138,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(updated[0].status, 'TP2_CLOSED');
   });
 
-  // Test 7: Alert Tracker TP1 -> TP2 Progression
-  test('updateAlertsOutcome advances OPEN alert to TP1_HIT and then TP2_CLOSED', () => {
+  // Test 7: Alert Tracker TP1 -> TP2 Progression in VCME
+  test('updateAlertsOutcome advances OPEN VCME alert to TP1_HIT and then TP2_HIT', () => {
     const openAlert: AuditAlertItem = {
       id: '2', symbol: 'ETHUSDT', interval: '1h', signal: 'BUY', time: '12:00',
-      pf: 1.8, strategy: 'Standard', entryPrice: 100, stopLoss: 98, takeProfit1: 102, takeProfit2: 105,
+      pf: 1.8, strategy: 'VCME', entryPrice: 100, stopLoss: 98, takeProfit1: 102, takeProfit2: 105,
       status: 'OPEN', realizedR: 0, pnlPercent: 0, timestamp: 1700000000000
     };
 
@@ -154,7 +154,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     };
 
     const updated = updateAlertsOutcome([openAlert], klinesMap);
-    assert.strictEqual(updated[0].status, 'TP2_CLOSED', 'Standard alert should progress through TP1 to TP2_CLOSED');
+    assert.strictEqual(updated[0].status, 'TP2_HIT', 'VCME alert should progress through TP1 to TP2_HIT (runner active)');
     assert(updated[0].pnlPercent > 0);
   });
 
@@ -188,7 +188,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([alert], klinesMap);
     assert.strictEqual(updated[0].status, 'TP1_BE_CLOSED', 'Alert should close in TP1_BE_CLOSED');
-    assert.strictEqual(updated[0].realizedR, 0.75, 'Realized R should be locked at +0.75R for 50% TP1 (1.5R) + BE');
+    // Realized R net with friction: (1.5% - 0.08%) / 2.0% = 0.71R
+    assert.strictEqual(updated[0].realizedR, 0.71, 'Realized R should be locked at +0.71R net for 50% TP1 (1.5R) + BE');
     assert(updated[0].pnlPercent > 0, 'PnL should be positive from locked 50% TP1 gain');
 
     // Next pass: verify that subsequent candles cannot change the outcome of TP1_BE_CLOSED
@@ -456,7 +457,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([alert], klinesMap);
     assert.strictEqual(updated[0].status, 'OPEN', 'Alert must stay OPEN and NOT freeze as TP2_HIT from an unclosed candle');
-    assert.strictEqual(updated[0].pnlPercent, 5, 'Floating PnL should be calculated from live close (105 vs 100 = +5%)');
+    assert.strictEqual(updated[0].pnlPercent, 4.92, 'Floating PnL should be calculated net of friction (105 vs 100 = +5% gross - 0.08% friction = +4.92% net)');
   });
 
   // Test 19: Multi-Timeframe Cache Invalidation via Auxiliary Timeframe Fingerprint
@@ -467,6 +468,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // Initial evaluation with 1h_v1
     const res1 = backtestMultitemporal(klines5m, klines1h_v1, klines1d, '5m', 'TEST_MTF_SYM', 'dayTrading');
+    assert.strictEqual(res1.insufficient, false);
 
     // Second evaluation with identical 5m, 1h, 1d -> must hit cache (same reference)
     const resCached = backtestMultitemporal(klines5m, klines1h_v1, klines1d, '5m', 'TEST_MTF_SYM', 'dayTrading');
@@ -520,7 +522,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([alert], klinesMap);
     assert.strictEqual(updated[0].status, 'EXPIRED', 'Stagnant VCME 5m trade must close via 8-candle Time-Stop');
-    assert.strictEqual(updated[0].pnlPercent, 0.2, 'PnL must match gain at candle 8 (100.2 vs 100 = +0.2%)');
+    assert.strictEqual(updated[0].pnlPercent, 0.12, 'PnL must match net gain at candle 8 (+0.2% gross - 0.08% friction = +0.12% net)');
   });
 
   // Test 21: Multifractal Early Invalidation in candles 1..3
@@ -554,7 +556,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const updated = updateAlertsOutcome([alert], klinesMap);
     assert.strictEqual(updated[0].status, 'SL_HIT', 'Multifractal must invalidate and cut loss early');
-    assert.strictEqual(updated[0].pnlPercent, -6, 'Loss should be capped at early exit price (-6% vs full SL -10%)');
+    assert.strictEqual(updated[0].pnlPercent, -6.08, 'Loss should be capped at early exit price (-6.08% net vs full SL -10.08% net)');
   });
 
   // Test 22: Cache Sensitivity to Intrabar OHLCV Revisions
@@ -699,7 +701,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       entryPrice: 100,
       stopLoss: 96,
       takeProfit1: 106, // 1.5R
-      takeProfit2: 110, // 2.5R
+      takeProfit2: 106, // Single target
       status: 'OPEN',
       realizedR: 0,
       pnlPercent: 0,
@@ -707,15 +709,15 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       candleTimestamp: 1700000000
     };
 
-    // Forward candle hits TP1 and later retests entry -> should lock in TP1_BE_CLOSED
+    // Forward candle hits TP1 -> closes immediately as single-target TP1_CLOSED
     const forwardKlines = [
       { time: 1700000300, open: 100, high: 107, low: 99.5, close: 106, volume: 1500 },
       { time: 1700000600, open: 106, high: 106.5, low: 99.8, close: 100, volume: 1200 }
     ];
 
     const trackerRes = updateAlertsOutcome([alert], { 'GOLDEN_MTF:5m': forwardKlines });
-    assert.strictEqual(trackerRes[0].status, 'TP1_BE_CLOSED', 'Multifractal must transition to TP1_BE_CLOSED on entry retest');
-    assert.strictEqual(trackerRes[0].realizedR, 0.75, 'Realized R for 1.5R TP1 at Breakeven must be exactly +0.75R');
+    assert.strictEqual(trackerRes[0].status, 'TP1_CLOSED', 'Multifractal single-target alert must close at TP1 as TP1_CLOSED');
+    assert.strictEqual(trackerRes[0].realizedR, 1.48, 'Realized R for 1.5R TP1 with friction must be +1.48R net');
   });
 
   // Test 25: Smart Formatters Scale Invariance ($BTC vs $SOL vs $DOGE vs $PEPE)
@@ -978,8 +980,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const evaluated = updateAlertsOutcome([alert], { 'SOLUSDT:5m': klines });
     assert.strictEqual(evaluated[0].status, 'TP2_CLOSED', 'Alert must transition to TP2_CLOSED on runner SL hit');
-    // Realized R: 0.50*1.5 + 0.25*2.5 + 0.25*1.5 = 0.75 + 0.625 + 0.375 = 1.75R (NOT 2.00R!)
-    assert.strictEqual(evaluated[0].realizedR, 1.75, 'Realized R on pullback to TP1 SL must be exactly +1.75R');
+    // Realized R with friction: 3.42% net / 2.0% risk = 1.71R
+    assert.strictEqual(evaluated[0].realizedR, 1.71, 'Realized R on pullback to TP1 SL with friction must be +1.71R net');
   });
 
   // Test 32: Multifractal Mean Reversion Invalidation Parity
@@ -1319,8 +1321,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const evaluated = updateAlertsOutcome([alert], { 'BTCUSDT:5m': klines });
     assert.strictEqual(evaluated[0].status, 'EXPIRED', 'Alert must exit via Emergency Exit as EXPIRED');
-    // Expected PnL: 50% * (+6%) + 50% * (-2%) = +3.0% - 1.0% = +2.0%
-    assert.strictEqual(evaluated[0].pnlPercent, 2.0, `PnL must be +2.0% with 50% partial taken (got ${evaluated[0].pnlPercent}%)`);
+    // Expected PnL with friction: +2.0% gross - 0.08% friction = +1.92% net
+    assert.strictEqual(evaluated[0].pnlPercent, 1.92, `PnL must be +1.92% with 50% partial taken (got ${evaluated[0].pnlPercent}%)`);
     assert(evaluated[0].realizedR > 0, `Realized R must be positive (+0.5R) because TP1 was filled intra-candle (got ${evaluated[0].realizedR}R)`);
   });
 
@@ -1943,6 +1945,79 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(lossMetrics.maxDrawdownR, 2.08, 'Cumulative drawdown of 2 losses must equal 2.08R');
     assert.strictEqual(lossMetrics.longStats.wins, 0);
     assert.strictEqual(lossMetrics.longStats.losses, 2);
+  });
+
+  // Test 68: Engine & Tracker Parity fixes (N8 Batch)
+  test('validates dynamic TP3 R, tracker friction parity, TP1_CLOSED status, ORB alignment, and daily EMA200 fallback', () => {
+    // 1. Dynamic TP3 R derivation (not hardcoded 5.0)
+    // Entry: 100, SL: 98 (risk = 2), TP1: 103 (1.5R), TP2: 105 (2.5R), TP3: 112 (6.0R, NOT 5.0R!)
+    const klinesTp3: Kline[] = [
+      { time: 1700000000, open: 100, high: 100.5, low: 99.5, close: 100, volume: 100 },
+      { time: 1700000300, open: 100, high: 103.5, low: 100, close: 103, volume: 100 },
+      { time: 1700000600, open: 103, high: 105.5, low: 103, close: 105, volume: 100 },
+      { time: 1700000900, open: 105, high: 112.5, low: 105, close: 112, volume: 100 }
+    ];
+    const simTp3 = simulateTrade(klinesTp3, 0, 'BUY', {
+      entryPrice: 100,
+      stopLoss: 98,
+      takeProfit1: 103,
+      takeProfit2: 105,
+      takeProfit3: 112
+    }, {
+      enablePartials: 'vcme-runner',
+      trailingStop: 'chandelier',
+      frictionPct: 0
+    });
+    assert.strictEqual(simTp3.exitReason, 'TP3');
+    // Expected gross realizedR: 0.50*1.5 + 0.25*2.5 + 0.25*6.0 = 0.75 + 0.625 + 1.50 = 2.875 -> 2.88R (if hardcoded 5.0 it would be 2.63R)
+    assert.strictEqual(simTp3.realizedR, 2.88, 'TP3 realizedR must dynamically use tp3 level (6.0R) -> 2.88R, NOT hardcoded 5.0 (2.63R)');
+
+    // 2. Alert tracker uses single-target TP1_CLOSED and calculateSessionStats counts it as win
+    const singleTargetAlert: AuditAlertItem = {
+      id: 'st-alert-1',
+      symbol: 'TEST_ST',
+      interval: '5m',
+      signal: 'BUY',
+      time: '12:00',
+      pf: 1.8,
+      strategy: 'Standard',
+      entryPrice: 100,
+      stopLoss: 98,
+      takeProfit1: 103,
+      status: 'OPEN',
+      realizedR: 0,
+      pnlPercent: 0,
+      timestamp: 1700000000000,
+      candleTimestamp: 1700000000
+    };
+    const evaluatedAlerts = updateAlertsOutcome([singleTargetAlert], {
+      'TEST_ST:5m': [
+        { time: 1700000000, open: 100, high: 100.5, low: 99.5, close: 100, volume: 100 },
+        { time: 1700000300, open: 100, high: 103.5, low: 99.5, close: 103, volume: 100 }
+      ]
+    });
+    assert.strictEqual(evaluatedAlerts[0].status, 'TP1_CLOSED', 'Single target TP1 hit must set status TP1_CLOSED, NOT TP2_CLOSED');
+    assert.strictEqual(evaluatedAlerts[0].pnlPercent, 2.92, 'Tracker pnlPercent must be net of 0.08% friction (3.0% - 0.08% = 2.92%)');
+    const sessionStats = calculateSessionStats(evaluatedAlerts, false);
+    assert.strictEqual(sessionStats.wins, 1, 'TP1_CLOSED must be counted as a win in session stats');
+
+    // 3. ORB 6-bar alignment check: index sessionStart + 5 is inactive, sessionStart + 6 is active
+    const sessionKlines: Kline[] = [];
+    const baseTime = 1700000000;
+    for (let i = 0; i < 10; i++) {
+      sessionKlines.push({
+        time: baseTime + i * 300,
+        open: 100,
+        high: 101 + i,
+        low: 99 - i,
+        close: 100.5,
+        volume: 1000
+      });
+    }
+    const orb5 = getOpeningRange(sessionKlines, 5, '5m', 'TEST_ORB');
+    assert.strictEqual(orb5.isActive, false, '6th candle (idx 5) must have ORB inactive (still forming)');
+    const orb6 = getOpeningRange(sessionKlines, 6, '5m', 'TEST_ORB');
+    assert.strictEqual(orb6.isActive, true, '7th candle (idx 6) must have ORB active (first operable candle)');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

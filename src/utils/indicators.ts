@@ -2049,13 +2049,16 @@ export function calculateVCMESniperSignal(
   const lastPlusDI1d = adxData1d.plusDI[adxData1d.plusDI.length - 1];
   const lastMinusDI1d = adxData1d.minusDI[adxData1d.minusDI.length - 1];
 
+  const lastEma200Ref = !isNaN(lastEma200_1d) ? lastEma200_1d : lastEma50_1d;
+  const hasDailyTrend = !isNaN(lastEma200Ref) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
   let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  const hasDailyTrend = !isNaN(lastEma200_1d) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
-  const bias_long = hasDailyTrend && lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
-  const bias_short = hasDailyTrend && lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
+  if (hasDailyTrend) {
+    const bias_long = lastClose1d > lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d > lastEma200_1d) && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
+    const bias_short = lastClose1d < lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d < lastEma200_1d) && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
 
-  if (bias_long) bias1D = 'ALCISTA';
-  else if (bias_short) bias1D = 'BAJISTA';
+    if (bias_long) bias1D = 'ALCISTA';
+    else if (bias_short) bias1D = 'BAJISTA';
+  }
 
   // Rango diario promedio (últimas 20 velas)
   const last20Ranges = klines1d.slice(-20).map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0);

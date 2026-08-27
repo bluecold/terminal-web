@@ -1045,7 +1045,12 @@ function App() {
                   let statusBg = 'rgba(59, 130, 246, 0.15)';
                   let statusColor = 'var(--accent-blue)';
 
-                  if (alert.status === 'TP2_CLOSED') {
+                  if (alert.status === 'TP1_CLOSED') {
+                    const rVal = alert.realizedR || 0;
+                    statusLabel = `TP1 (+${rVal > 0 ? rVal.toFixed(2) : r1.toFixed(2)}R) ✅`;
+                    statusBg = 'rgba(16, 185, 129, 0.2)';
+                    statusColor = 'var(--accent-green)';
+                  } else if (alert.status === 'TP2_CLOSED') {
                     const rVal = alert.realizedR || 0;
                     statusLabel = `TP2 (+${rVal > 0 ? rVal.toFixed(2) : '2.00'}R) ✅`;
                     statusBg = 'rgba(16, 185, 129, 0.2)';

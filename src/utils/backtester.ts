@@ -831,7 +831,7 @@ export function backtestMultitemporal(
       curCount++;
     }
 
-    openingRangeMap[i] = curCount >= 6
+    openingRangeMap[i] = (i - curStart >= 6)
       ? { high: curHigh, low: curLow, isActive: true }
       : { high: 0, low: 0, isActive: false };
   }
@@ -854,7 +854,7 @@ export function backtestMultitemporal(
 
     // ── LAYER 1: Daily Bias 1D ───────────────────────────────────────────
     const idx1d = idx1dMap[i];
-    if (idx1d < 27) { discards.insufficientData++; neutrals++; continue; } // ADX(14) needs ~28 bars to converge
+    if (idx1d < 50) { discards.insufficientData++; neutrals++; continue; } // EMA50(1D) needs 50 bars to converge
 
     const lastEma200_1d = ema200_1d[idx1d];
     const lastEma50_1d = ema50_1d[idx1d];
@@ -864,13 +864,14 @@ export function backtestMultitemporal(
     const lastPlusDI1d = adxData1d.plusDI[idx1d];
     const lastMinusDI1d = adxData1d.minusDI[idx1d];
 
-    if (isNaN(lastAdx1d)) { discards.insufficientData++; neutrals++; continue; }
+    if (isNaN(lastAdx1d) || isNaN(lastEma50_1d)) { discards.insufficientData++; neutrals++; continue; }
 
+    const lastEma200Ref = !isNaN(lastEma200_1d) ? lastEma200_1d : lastEma50_1d;
+    const hasDailyTrend = !isNaN(lastEma200Ref) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
     let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-    const hasDailyTrend = !isNaN(lastEma200_1d) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
     if (hasDailyTrend) {
-      const bias_long = lastClose1d > lastEma200_1d && lastEma50_1d > lastEma200_1d && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
-      const bias_short = lastClose1d < lastEma200_1d && lastEma50_1d < lastEma200_1d && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
+      const bias_long = lastClose1d > lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d > lastEma200_1d) && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
+      const bias_short = lastClose1d < lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d < lastEma200_1d) && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
 
       if (bias_long) bias1D = 'ALCISTA';
       else if (bias_short) bias1D = 'BAJISTA';

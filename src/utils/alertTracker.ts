@@ -3,7 +3,7 @@ import type { ConfidenceLevel } from './tournament';
 import { calculateVWAPSeries, calculateEMA, calculateATRSeries } from './indicators';
 import { simulateTrade, type TradeLevels, type ExitPolicy } from './tradeSimulator';
 
-export type AlertStatus = 'OPEN' | 'TP1_HIT' | 'TP2_HIT' | 'TP2_CLOSED' | 'SL_HIT' | 'TP1_BE_CLOSED' | 'EXPIRED';
+export type AlertStatus = 'OPEN' | 'TP1_HIT' | 'TP1_CLOSED' | 'TP2_HIT' | 'TP2_CLOSED' | 'SL_HIT' | 'TP1_BE_CLOSED' | 'EXPIRED';
 
 export interface AuditAlertItem {
   id: string;
@@ -173,7 +173,7 @@ export function updateAlertsOutcome(
 ): AuditAlertItem[] {
   return alerts.map(alert => {
     // If the alert is already closed in a terminal state, freeze its outcome and realized PnL
-    if (alert.status === 'TP2_CLOSED' || alert.status === 'SL_HIT' || alert.status === 'TP1_BE_CLOSED' || alert.status === 'EXPIRED') {
+    if (alert.status === 'TP2_CLOSED' || alert.status === 'TP1_CLOSED' || alert.status === 'SL_HIT' || alert.status === 'TP1_BE_CLOSED' || alert.status === 'EXPIRED') {
       return alert;
     }
     const isVCME = alert.strategy?.includes('VCME') || alert.strategy?.includes('Multitemporal');
@@ -260,7 +260,7 @@ export function updateAlertsOutcome(
 
     const policy: ExitPolicy = {
       forwardWindow: maxExpiryCandles,
-      enablePartials: isVCME ? 'vcme-runner' : 'standard',
+      enablePartials: isVCME ? 'vcme-runner' : false,
       moveSlToBreakevenOnTp1: true,
       timeStopBars: (isVCME && isDayTrading && alert.executionStyle !== 'swing') ? 8 : 0,
       earlyAdverseCutoffBars: (isMultifractal && isDayTrading) ? 3 : 0,
@@ -278,7 +278,7 @@ export function updateAlertsOutcome(
       } : undefined,
       atrSeries: mappedAtrSeries,
       ema9Series: mappedEma9Series,
-      frictionPct: 0,
+      frictionPct: 0.08,
       floatingClosePrice: latestPrice,
       maxExpiryTimestampMs
     };
@@ -289,7 +289,7 @@ export function updateAlertsOutcome(
       ...alert,
       status: sim.status,
       realizedR: sim.realizedR,
-      pnlPercent: sim.grossPnlPct
+      pnlPercent: sim.pnlPct
     };
   });
 }
@@ -320,7 +320,7 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
     }
     const stratObj = byStrategy[strat];
 
-    if (alert.status === 'TP2_CLOSED' || alert.status === 'TP1_BE_CLOSED') {
+    if (alert.status === 'TP2_CLOSED' || alert.status === 'TP1_CLOSED' || alert.status === 'TP1_BE_CLOSED') {
       wins++;
       totalR += alert.realizedR;
       stratObj.wins++;
