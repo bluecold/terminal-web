@@ -293,11 +293,13 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
-- **Actualización v2026.08.27.6 — Limpieza de Código Huérfano (`avgDurationCandles` en Torneo)**:
-  - **Eliminación de Campo Muerto en `StrategyCandidate`**:
-    - Se elimina la propiedad huérfana `avgDurationCandles?: number;` de `StrategyCandidate` ([`tournament.ts`](file:///d:/Mis%20Cosas/test/FinceptTerminal/terminal-web/src/utils/tournament.ts)) y de los 4 puntos de llamada de backtest (`App.tsx` ×2, `MarketRadar.tsx`, `SignalPanel.tsx`).
-    - `tournament.ts` opera de forma estricta y transparente sobre `avgExposureHours` (exposición total normalizada por hora de ciclo efectivo con cooldown).
-    - `avgDurationCandles` se preserva exclusivamente en `BacktestResult` dentro de `backtester.ts` para telemetría interna de tiempo neto en posición.
+- **Actualización v2026.08.27.7 — Depuración de Ejecución Parcial en `simulateTrade` (Eliminación de `isStandardPartials`)**:
+  - **Unificación de Modelos de Salida en Simulador**:
+    - Se eliminan las ramas huérfanas de `isStandardPartials` (BUY/SELL SL y TP2) en `src/utils/tradeSimulator.ts`.
+    - La política de ejecución formaliza los dos únicos modelos existentes en el sistema:
+      * **`enablePartials: 'vcme-runner'` (o `true`)**: Modelo 3-Tier institucional (50% TP1 @ 2.0R, 25% TP2 @ 3.5R con SL trail a TP1, 25% runner @ 5.0R/Chandelier, Time-Stops y Emergency Exits).
+      * **`enablePartials: false`**: Salida mono-target limpia al 100% en TP1 (1.5R default) con SL fijo a -1.0R (Estándar, Confluencia, Scoring, Multifractal).
+    - Paridad de tipos 1:1 entre `alertTracker.ts` y `backtester.ts` al pasar `'vcme-runner'`.
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**, 0 errores en ESLint, build de producción limpio.
 

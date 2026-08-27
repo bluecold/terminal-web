@@ -1,7 +1,7 @@
 {
   "name": "terminal-web",
   "private": true,
-  "version": "2026.08.27.6",
+  "version": "2026.08.27.7",
   "type": "module",
   "scripts": {
     "dev": "vite",

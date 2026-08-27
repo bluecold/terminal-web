@@ -1329,7 +1329,7 @@ export function backtestMultitemporal(
 
     const sim = simulateTrade(klines5m, i, signal, levels, {
       forwardWindow,
-      enablePartials: true,
+      enablePartials: 'vcme-runner',
       moveSlToBreakevenOnTp1: true,
       timeStopBars: tradeType === 'DAY' ? 8 : 0,
       trailingStop: 'chandelier',

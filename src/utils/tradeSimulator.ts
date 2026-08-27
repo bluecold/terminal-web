@@ -13,7 +13,7 @@ export interface TradeLevels {
 
 export interface ExitPolicy {
   forwardWindow: number;                              // Maximum forward horizon (number of candles)
-  enablePartials?: boolean | 'standard' | 'vcme-runner'; // Scaling policy
+  enablePartials?: boolean | 'vcme-runner';            // Scaling policy (3-tier scaling for VCME)
   moveSlToBreakevenOnTp1?: boolean;                   // Move active SL to entry when TP1 hit
   earlyAdverseCutoffBars?: number;                    // e.g. 3 bars for Multifractal
   earlyAdverseCutoffR?: number;                       // e.g. 0.5R adverse threshold
@@ -67,9 +67,8 @@ export function simulateTrade(
   const r3 = riskDist > 0 ? Math.abs(tp3 - entryPrice) / riskDist : 5.0;
   const frictionPct = policy.frictionPct ?? 0.08;
 
-  const isVCME_Runner = policy.enablePartials === 'vcme-runner' || (policy.enablePartials === true && policy.trailingStop === 'chandelier');
-  const isStandardPartials = policy.enablePartials === 'standard' || (policy.enablePartials === true && !isVCME_Runner);
-  const hasPartials = isVCME_Runner || isStandardPartials;
+  const isVCME_Runner = policy.enablePartials === 'vcme-runner' || policy.enablePartials === true;
+  const hasPartials = isVCME_Runner;
 
   let currentStatus: AlertStatus = 'OPEN';
   let activeSL = stopLoss;
@@ -157,19 +156,6 @@ export function simulateTrade(
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
           }
-        } else if (isStandardPartials) {
-          if (tp1Hit) {
-            const tp1P = 0.50 * ((tp1 - entryPrice) / entryPrice * 100);
-            grossPnlPct = tp1P;
-            realizedR = 0.50 * r1;
-            exitReason = 'TP1_BE';
-            currentStatus = 'TP1_BE_CLOSED';
-          } else {
-            grossPnlPct = -(initialRiskPct * 100);
-            realizedR = -1.0;
-            exitReason = 'SL';
-            currentStatus = 'SL_HIT';
-          }
         } else {
           grossPnlPct = -(initialRiskPct * 100);
           realizedR = -1.0;
@@ -207,27 +193,14 @@ export function simulateTrade(
       // ── 3. Target 2 (Limit Fill Intra-Candle) ───────────────────────────
       if (hasPartials && tp1Hit && !tp2Hit && k.high >= tp2) {
         tp2Hit = true;
-        if (isVCME_Runner) {
-          currentStatus = 'TP2_HIT';
-          activeSL = tp1; // Trail SL to TP1
-          const tp1Gain = ((tp1 - entryPrice) / entryPrice) * 50;
-          const tp2Gain = ((tp2 - entryPrice) / entryPrice) * 25;
-          const runnerFloating = ((k.close - entryPrice) / entryPrice) * 25;
-          grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
-          const runnerFloatingR = riskDist > 0 ? 0.25 * ((k.close - entryPrice) / riskDist) : 0.25 * r2;
-          realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
-        } else {
-          const tp1Gain = ((tp1 - entryPrice) / entryPrice) * 50;
-          const tp2Gain = ((tp2 - entryPrice) / entryPrice) * 50;
-          grossPnlPct = Number((tp1Gain + tp2Gain).toFixed(2));
-          realizedR = Number(((r1 + r2) / 2).toFixed(2));
-          exitIdx = f;
-          exitPrice = tp2;
-          exitReason = 'TP2';
-          currentStatus = 'TP2_CLOSED';
-          isTerminated = true;
-          break;
-        }
+        currentStatus = 'TP2_HIT';
+        activeSL = tp1; // Trail SL to TP1
+        const tp1Gain = ((tp1 - entryPrice) / entryPrice) * 50;
+        const tp2Gain = ((tp2 - entryPrice) / entryPrice) * 25;
+        const runnerFloating = ((k.close - entryPrice) / entryPrice) * 25;
+        grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
+        const runnerFloatingR = riskDist > 0 ? 0.25 * ((k.close - entryPrice) / riskDist) : 0.25 * r2;
+        realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
       }
 
       // ── 4. Target 3 / Chandelier Trailing Exit (VCME Runner) ─────────────
@@ -339,19 +312,6 @@ export function simulateTrade(
             exitReason = 'SL';
             currentStatus = 'SL_HIT';
           }
-        } else if (isStandardPartials) {
-          if (tp1Hit) {
-            const tp1P = 0.50 * ((entryPrice - tp1) / entryPrice * 100);
-            grossPnlPct = tp1P;
-            realizedR = 0.50 * r1;
-            exitReason = 'TP1_BE';
-            currentStatus = 'TP1_BE_CLOSED';
-          } else {
-            grossPnlPct = -(initialRiskPct * 100);
-            realizedR = -1.0;
-            exitReason = 'SL';
-            currentStatus = 'SL_HIT';
-          }
         } else {
           grossPnlPct = -(initialRiskPct * 100);
           realizedR = -1.0;
@@ -389,27 +349,14 @@ export function simulateTrade(
       // 3. Target 2 (Limit Fill Intra-Candle)
       if (hasPartials && tp1Hit && !tp2Hit && k.low <= tp2) {
         tp2Hit = true;
-        if (isVCME_Runner) {
-          currentStatus = 'TP2_HIT';
-          activeSL = tp1; // Trail SL to TP1
-          const tp1Gain = ((entryPrice - tp1) / entryPrice) * 50;
-          const tp2Gain = ((entryPrice - tp2) / entryPrice) * 25;
-          const runnerFloating = ((entryPrice - k.close) / entryPrice) * 25;
-          grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
-          const runnerFloatingR = riskDist > 0 ? 0.25 * ((entryPrice - k.close) / riskDist) : 0.25 * r2;
-          realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
-        } else {
-          const tp1Gain = ((entryPrice - tp1) / entryPrice) * 50;
-          const tp2Gain = ((entryPrice - tp2) / entryPrice) * 50;
-          grossPnlPct = Number((tp1Gain + tp2Gain).toFixed(2));
-          realizedR = Number(((r1 + r2) / 2).toFixed(2));
-          exitIdx = f;
-          exitPrice = tp2;
-          exitReason = 'TP2';
-          currentStatus = 'TP2_CLOSED';
-          isTerminated = true;
-          break;
-        }
+        currentStatus = 'TP2_HIT';
+        activeSL = tp1; // Trail SL to TP1
+        const tp1Gain = ((entryPrice - tp1) / entryPrice) * 50;
+        const tp2Gain = ((entryPrice - tp2) / entryPrice) * 25;
+        const runnerFloating = ((entryPrice - k.close) / entryPrice) * 25;
+        grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
+        const runnerFloatingR = riskDist > 0 ? 0.25 * ((entryPrice - k.close) / riskDist) : 0.25 * r2;
+        realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
       }
 
       // 4. Target 3 / Chandelier Trailing Exit (VCME Runner)
