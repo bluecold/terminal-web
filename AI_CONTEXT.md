@@ -268,23 +268,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Corrección de la inversión matemática en `indicators.ts` y `backtester.ts` donde la distancia a la EMA21 premiaba el *chasing* sobreextendido.
     - Implementación de la campana triangular: $\text{distScore} = 0.15 \cdot \max(0, 1.0 - |\text{distRatio} - 0.5| / 1.0)$, premiando el rebote confirmado ($0.5\text{ ATR}$) y penalizando con $0.0$ la sobreextensión $> 1.5\text{ ATR}$.
 
-- **Actualización v2026.08.27.2 — Exposición Efectiva de Ciclo con Cooldown, Paginación Binance 5m y Cierre de Auditoría**:
-  - **Exposición Efectiva de Ciclo de Capital ($t_{\text{ciclo}} = t_{\text{trade}} + t_{\text{cooldown}}$)**:
-    - `avgExposureHours` computa el tiempo de ciclo total que la estrategia bloquea el activo / slot de capital:
-      - En VCME `backtestMultitemporal`: $\text{cycleCandles} = (\text{sim.exitIdx} - i) + \text{cooldownPeriod}$.
-      - En Standard / Confluencia / Scoring: $\text{cycleCandles} = \max(\text{durationCandles}, \text{cooldownPeriod})$.
-      - En Multifractal MTF: $\text{cycleCandles} = \max(\text{durationCandles}, \text{cooldownPeriod})$.
-    - `expectancyPerHour = expectancyR / avgExposureHours` y la normalización $\sqrt{t}$ del torneo QVE miden la velocidad de generación de alfa sobre el ciclo real, eliminando el arbitraje de cooldown.
-  - **Paginación de Binance 5m (2000 velas) y `evalWindow` Adaptativa**:
-    - Descarga encadenada de 2 lotes de 1000 velas en Binance para `5m` ($\approx 7$ días 24/7).
-    - `evalWindow` en 5m escala de 576 a 1400 velas cuando hay $\ge 1450$ velas disponibles (Binance y Yahoo Finance).
-    - Tramo Out-Of-Sample (30%) de 420 velas ($35\,\text{h}$) con capacidad de 8–18 trades OOS reales, asegurando significancia estadística para el umbral $\ge 5$ trades OOS en `PASS`.
-  - **Deducción Uniforme de R Neto con Fricción (0.08%)**:
-    - $R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$ uniforme en todas las salidas (ej. $-1.04R$ para riesgo $2.0\%$).
-  - **Estado Terminal `TP1_CLOSED` y Partición Disjunta**:
-    - `wins + losses + timeouts === totalSignals` y badge explícito `TP1 (+...R) ✅` para estrategias sin parciales.
-  - **Suite de Pruebas y Zero-Lint**:
-    - **70/70 tests unitarios pasando**, `tsc -b` limpio y `npm run lint` con **0 errores y 0 warnings**.
+- **Actualización v2026.08.27.3 — Unificación Económica de Win Rate (Paridad Total Nivel Superior / Direccional)**:
+  - **Unificación Estricta en $R_{\text{net}} > 0$**:
+    - Se elimina la doble definición donde el nivel superior filtraba por `sim.outcome === 'win'` (excluyendo salidas por `TIME_STOP` o `EMERGENCY_EXIT` con beneficio positivo) mientras `longStats`/`shortStats` contaban por `realizedR > 0`.
+    - `simulateTrade` clasifica el resultado directamente por retorno neto: `outcome = finalRealizedR > 0 ? 'win' : (finalRealizedR < 0 ? 'loss' : 'timeout')`.
+    - Coherencia matemática absoluta: $\text{wins} \equiv \text{longWins} + \text{shortWins}$ y la barra principal de Win Rate coincide 1:1 con el desglose direccional y de régimen en la tarjeta.
+  - **Partición Disjunta y Preservación de Causa de Salida**:
+    - `exitReason` preserva la taxonomía exacta (`TIME_STOP`, `EMERGENCY_EXIT`, `TP1`, `SL`, etc.) para auditoría.
+    - `alertTracker.ts` categoriza alertas `EXPIRED` de forma simétrica (`realizedR > 0` $\to$ win, `realizedR < 0` $\to$ loss).
+  - **Suite de Pruebas**:
+    - **71/71 tests unitarios pasando**, incluyendo Test 71 de paridad de Win Rate entre métricas globales y direccionales. `npm run lint` con **0 errores y 0 warnings**.
 
 ---
 

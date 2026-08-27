@@ -23,7 +23,7 @@
 * **Caché Multi-Timeframe con Fingerprint Atómico OHLCV:** Huella compuesta $O(1)$ que evalúa la firma completa `(time, open, high, low, close, volume)` de $5m, 1h, 1d$, invalidando la caché al instante ante revisiones o fluctuaciones de precio intrabarra.
 * **Múltiplos R Ponderados Dinámicos:** Cálculo matemático exacto de $R$ en base a distancias reales de niveles (+0.71R netos en TP1_BE, +1.71R / +1.875R en TP2, runner flotante) reflejado de manera sincronizada en el panel de auditoría y en los labels de TradingView.
 * **Prevención Absoluta de Notificaciones Fantasma:** Pre-validación de trades abiertos antes del envío de alertas al sistema operativo, garantizando que el 100% de las notificaciones recibidas queden auditadas en la tabla de operaciones.
-* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 70 tests unitarios de integración continua (`npm test`) que validan toda la cadena operativa, cálculo matemático, motores de señal, normalización temporal y partición Walk-Forward de punta a punta.
+* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 71 tests unitarios de integración continua (`npm test`) que validan toda la cadena operativa, cálculo matemático, motores de señal, normalización temporal, unificación de Win Rate económico y partición Walk-Forward de punta a punta.
 
 ---
 

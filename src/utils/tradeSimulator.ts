@@ -573,13 +573,13 @@ export function simulateTrade(
     netRealizedR = initialRiskPct > 0 ? (netPnlPct / 100) / initialRiskPct : 0;
   }
 
+  const finalRealizedR = Number(netRealizedR.toFixed(2));
   let outcome: 'win' | 'loss' | 'timeout';
-  if (exitReason === 'TP1' || exitReason === 'TP2' || exitReason === 'TP3' || exitReason === 'TP1_BE') {
+  if (finalRealizedR > 0) {
     outcome = 'win';
-  } else if (exitReason === 'SL' || exitReason === 'EARLY_ADVERSE') {
+  } else if (finalRealizedR < 0) {
     outcome = 'loss';
   } else {
-    // TIMEOUT, TIME_STOP, EMERGENCY_EXIT, SESSION_GAP
     outcome = 'timeout';
   }
 
@@ -587,7 +587,7 @@ export function simulateTrade(
     outcome,
     pnlPct: Number(netPnlPct.toFixed(2)),
     grossPnlPct: Number(grossPnlPct.toFixed(2)),
-    realizedR: Number(netRealizedR.toFixed(2)),
+    realizedR: finalRealizedR,
     exitIdx,
     exitPrice,
     exitReason,

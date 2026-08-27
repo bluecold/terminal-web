@@ -334,10 +334,10 @@ export function calculateSessionStats(alerts: AuditAlertItem[], filterTodayOnly:
       stratObj.losses++;
       stratObj.totalR += alert.realizedR;
     } else if (alert.status === 'EXPIRED') {
-      if (alert.realizedR >= 0) {
+      if (alert.realizedR > 0) {
         wins++;
         stratObj.wins++;
-      } else {
+      } else if (alert.realizedR < 0) {
         losses++;
         stratObj.losses++;
       }

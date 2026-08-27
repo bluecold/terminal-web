@@ -1412,7 +1412,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       emergencyExitFn: () => true, // Emergency triggered immediately
       frictionPct: 0.08
     });
-    assert.strictEqual(res3.outcome, 'timeout');
+    assert.strictEqual(res3.outcome, 'loss'); // Negative net R (-0.62R) is classified as economic loss
     assert.strictEqual(res3.exitReason, 'EMERGENCY_EXIT');
     assert.strictEqual(res3.status, 'EXPIRED');
     assert.strictEqual(res3.grossPnlPct, -3.0);
@@ -2049,6 +2049,52 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(stdRes.avgExposureHours >= 2.0, `avgExposureHours must be >= 2.0h with 24-candle cooldown (got ${stdRes.avgExposureHours}h)`);
     // avgDurationCandles retains pure in-market holding duration (< 24 candles)
     assert.ok(stdRes.avgDurationCandles <= 10, `avgDurationCandles should reflect pure trade holding duration (got ${stdRes.avgDurationCandles})`);
+  });
+
+  // Test 71: Unified economic Win Rate parity across top-level, directional, and Walk-Forward stats
+  test('winRate unifies strictly on realizedR > 0 across top-level and directional stats', () => {
+    const testLevels: TradeLevels = { entryPrice: 100, stopLoss: 95, takeProfit1: 110 }; // 5% risk
+
+    // Trade 1: Positive TIME_STOP (+0.40R net) -> must be 'win'
+    const winTimeKlines: Kline[] = [
+      { time: 1000, open: 100, high: 100, low: 100, close: 100, volume: 100 },
+      { time: 1300, open: 100, high: 103, low: 99.5, close: 102.08, volume: 100 }
+    ];
+    const winTime = simulateTrade(winTimeKlines, 0, 'BUY', testLevels, {
+      forwardWindow: 5,
+      timeStopBars: 1,
+      frictionPct: 0.08
+    });
+    assert.strictEqual(winTime.outcome, 'win', 'Positive PnL TIME_STOP must be classified as economic win');
+    assert.strictEqual(winTime.exitReason, 'TIME_STOP');
+    assert.ok(winTime.realizedR > 0, 'realizedR must be positive');
+
+    // Trade 2: Negative EMERGENCY_EXIT (-0.50R net) -> must be 'loss'
+    const lossEmergKlines: Kline[] = [
+      { time: 1000, open: 100, high: 100, low: 100, close: 100, volume: 100 },
+      { time: 1300, open: 100, high: 100.5, low: 97, close: 97.42, volume: 100 }
+    ];
+    const lossEmerg = simulateTrade(lossEmergKlines, 0, 'BUY', testLevels, {
+      forwardWindow: 5,
+      emergencyExitFn: () => true,
+      frictionPct: 0.08
+    });
+    assert.strictEqual(lossEmerg.outcome, 'loss', 'Negative PnL EMERGENCY_EXIT must be classified as economic loss');
+    assert.strictEqual(lossEmerg.exitReason, 'EMERGENCY_EXIT');
+    assert.ok(lossEmerg.realizedR < 0, 'realizedR must be negative');
+
+    // Directional stats and top-level result consistency check
+    const klines5m = generateSyntheticKlines(800, 300, 100, 0.025);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.025);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.025);
+    const result = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'UNIFIED_WR_TEST', 'dayTrading');
+
+    if (result.resolved > 0 && result.longStats && result.shortStats) {
+      const totalDirectionalWins = result.longStats.wins + result.shortStats.wins;
+      const totalDirectionalLosses = result.longStats.losses + result.shortStats.losses;
+      assert.strictEqual(result.wins, totalDirectionalWins, 'Top-level wins must equal longWins + shortWins');
+      assert.strictEqual(result.losses, totalDirectionalLosses, 'Top-level losses must equal longLosses + shortLosses');
+    }
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
