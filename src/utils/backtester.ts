@@ -174,7 +174,8 @@ export function calculateWalkForward(
   trades: RecordedTrade[],
   oldestIdx: number,
   latestIdx: number,
-  splitRatio: number = 0.70
+  splitRatio: number = 0.70,
+  minOosTrades: number = 5
 ): WalkForwardResult {
   const totalCandles = Math.max(1, latestIdx - oldestIdx + 1);
   const isWindow = Math.round(totalCandles * splitRatio);
@@ -187,13 +188,23 @@ export function calculateWalkForward(
   const inSample = calculateSplitStats(isTrades);
   const outOfSample = calculateSplitStats(oosTrades);
 
-  let passed = true;
+  let passed = false;
   let status: 'PASS' | 'FAIL' | 'NO_OOS_TRADES' = 'NO_OOS_TRADES';
 
   if (oosTrades.length === 0) {
     status = 'NO_OOS_TRADES';
-    passed = true;
-  } else if (outOfSample.expectancyR >= 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor >= 1.0) || (outOfSample.profitFactor === null && outOfSample.wins > 0)) {
+    passed = false;
+  } else if (oosTrades.length < minOosTrades) {
+    // If the few OOS trades are already net negative, mark as FAIL
+    if (outOfSample.expectancyR < 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor < 1.0)) {
+      status = 'FAIL';
+      passed = false;
+    } else {
+      // Insufficient sample to statistically validate out-of-sample edge
+      status = 'NO_OOS_TRADES';
+      passed = false;
+    }
+  } else if (outOfSample.expectancyR >= 0 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
     status = 'PASS';
     passed = true;
   } else {
@@ -1350,7 +1361,8 @@ export function backtestMultitemporal(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
+  const minOosTrades = style === 'swing' ? 3 : 5;
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades);
 
   const res: BacktestResult = {
     totalSignals,
@@ -1517,7 +1529,8 @@ function runBacktestGenericOptimized(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
+  const minOosTrades = interval === '1h' ? 3 : interval === '1d' ? 2 : 5;
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades);
 
   return {
     totalSignals,
@@ -2178,7 +2191,7 @@ export function backtestMultifractalMTF(
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, 5);
 
   const res: BacktestResult = {
     totalSignals,

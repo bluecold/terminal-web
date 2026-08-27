@@ -153,7 +153,7 @@ export function evaluateStrategyTournament(
       } else if (c.walkForward.status === 'FAIL') {
         wfMultiplier = 0.55; // Strict penalty for failing recent 30% validation
       } else if (c.walkForward.status === 'NO_OOS_TRADES') {
-        wfMultiplier = 0.95; // Minor uncertainty penalty
+        wfMultiplier = 0.85; // Uncertainty penalty for unverified recent performance (< minOosTrades)
       }
     }
 
@@ -161,12 +161,12 @@ export function evaluateStrategyTournament(
     return baseScore * sampleConfidence;
   };
 
-  // 1. Check for HIGH confidence candidates (meets minHighResolved, E[R] > 0, PF >= 1.15 or null with large N, AND WF != FAIL)
+  // 1. Check for HIGH confidence candidates (meets minHighResolved, E[R] > 0, PF >= 1.15 or null with large N, AND WF === PASS)
   const highCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
       const pfOk = c.profitFactor === null ? c.resolved >= minHighResolved : c.profitFactor >= 1.15;
-      const wfOk = !c.walkForward || c.walkForward.status !== 'FAIL';
+      const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
       return c.resolved >= minHighResolved && pfOk && expR > 0 && wfOk;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
@@ -223,7 +223,11 @@ export function evaluateStrategyTournament(
     const pfStr = winner.profitFactor !== null && Number.isFinite(winner.profitFactor) && winner.profitFactor < 99.0
       ? `PF ${winner.profitFactor.toFixed(2)}`
       : 'PF N/D';
-    const wfFailNote = winner.walkForward?.status === 'FAIL' ? ' · WF OOS falló' : '';
+    const wfFailNote = winner.walkForward?.status === 'FAIL'
+      ? ' · WF OOS falló'
+      : winner.walkForward?.status === 'NO_OOS_TRADES' && winner.resolved >= minHighResolved
+      ? ' · Muestra OOS Insuficiente'
+      : '';
 
     return {
       bestStrategy: winner.key,

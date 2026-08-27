@@ -1572,20 +1572,34 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const oldestIdx = 0;
     const latestIdx = 99; // 100 candles total -> IS: 70 candles (0..69), OOS: 30 candles (70..99)
 
-    // Scenario A: Positive OOS -> PASS
+    // Scenario A: Positive OOS with >= 5 trades -> PASS
     const tradesPassing: RecordedTrade[] = [
       { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
       { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 50 },
-      { dir: 'BUY', realizedR: 1.2, pnlPct: 5.0, outcome: 'win', entryIdx: 85 } // OOS trade
+      // 5 OOS trades (entryIdx >= 70)
+      { dir: 'BUY', realizedR: 1.2, pnlPct: 5.0, outcome: 'win', entryIdx: 72 },
+      { dir: 'SELL', realizedR: 0.8, pnlPct: 3.2, outcome: 'win', entryIdx: 78 },
+      { dir: 'BUY', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 82 },
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 88 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 94 }
     ];
-    const wfPass = calculateWalkForward(tradesPassing, oldestIdx, latestIdx, 0.70);
+    const wfPass = calculateWalkForward(tradesPassing, oldestIdx, latestIdx, 0.70, 5);
     assert.strictEqual(wfPass.isWindow, 70);
     assert.strictEqual(wfPass.oosWindow, 30);
     assert.strictEqual(wfPass.inSample.signals, 2);
-    assert.strictEqual(wfPass.outOfSample.signals, 1);
-    assert.strictEqual(wfPass.outOfSample.expectancyR, 1.2);
+    assert.strictEqual(wfPass.outOfSample.signals, 5);
     assert.strictEqual(wfPass.status, 'PASS');
     assert.strictEqual(wfPass.passed, true);
+
+    // Scenario A.2: Single positive trade in OOS (< 5 trades) -> NO_OOS_TRADES (unproven)
+    const tradesSingleOOS: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
+      { dir: 'BUY', realizedR: 0.01, pnlPct: 0.04, outcome: 'win', entryIdx: 85 } // 1 OOS trade only
+    ];
+    const wfSingle = calculateWalkForward(tradesSingleOOS, oldestIdx, latestIdx, 0.70, 5);
+    assert.strictEqual(wfSingle.outOfSample.signals, 1);
+    assert.strictEqual(wfSingle.status, 'NO_OOS_TRADES', 'Single OOS trade must NOT be awarded PASS');
+    assert.strictEqual(wfSingle.passed, false);
 
     // Scenario B: Negative OOS -> FAIL
     const tradesFailing: RecordedTrade[] = [
@@ -1593,7 +1607,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       { dir: 'BUY', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 75 }, // OOS trade
       { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 90 } // OOS trade
     ];
-    const wfFail = calculateWalkForward(tradesFailing, oldestIdx, latestIdx, 0.70);
+    const wfFail = calculateWalkForward(tradesFailing, oldestIdx, latestIdx, 0.70, 5);
     assert.strictEqual(wfFail.inSample.signals, 1);
     assert.strictEqual(wfFail.outOfSample.signals, 2);
     assert.strictEqual(wfFail.outOfSample.wins, 0);
@@ -1607,11 +1621,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 15 },
       { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 40 }
     ];
-    const wfNoOOS = calculateWalkForward(tradesNoOOS, oldestIdx, latestIdx, 0.70);
+    const wfNoOOS = calculateWalkForward(tradesNoOOS, oldestIdx, latestIdx, 0.70, 5);
     assert.strictEqual(wfNoOOS.inSample.signals, 2);
     assert.strictEqual(wfNoOOS.outOfSample.signals, 0);
     assert.strictEqual(wfNoOOS.status, 'NO_OOS_TRADES');
-    assert.strictEqual(wfNoOOS.passed, true);
+    assert.strictEqual(wfNoOOS.passed, false);
   });
 
   // Test 59: Live Backtest Engine Walk-Forward Output
@@ -1661,7 +1675,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       expectancyPerHour: 0.9,
       avgExposureHours: 0.5,
       winRate: 0.60,
-      resolved: 14,
+      resolved: 15,
       maxDrawdownR: 1.5,
       sortinoRatio: 1.5,
       forwardWindow: 6,
@@ -1669,7 +1683,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
         isWindow: 400,
         oosWindow: 176,
         inSample: { signals: 10, wins: 6, losses: 4, winRate: 0.60, expectancyR: 0.40, profitFactor: 1.5, maxDrawdownR: 1.5 },
-        outOfSample: { signals: 4, wins: 3, losses: 1, winRate: 0.75, expectancyR: 0.55, profitFactor: 2.5, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 5, wins: 4, losses: 1, winRate: 0.80, expectancyR: 0.55, profitFactor: 3.0, maxDrawdownR: 1.0 },
         passed: true,
         status: 'PASS'
       }
@@ -1806,6 +1820,69 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const btRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'ZERO_TEST');
     assert.strictEqual(btRes.insufficient, false);
     assert(typeof btRes.discards.riskFilter === 'number');
+  });
+
+  // Test 65: Walk-Forward requires minimum sample (>= 5 trades in 5m) to award PASS status & unlock HIGH confidence
+  test('Walk-Forward rejects single-trade +0.01R OOS and requires >= 5 OOS trades for HIGH confidence', () => {
+    // 1. Single trade in OOS with +0.01R must result in NO_OOS_TRADES and passed = false
+    const tradesSingleLucky: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 0.01, pnlPct: 0.04, outcome: 'win', entryIdx: 85 } // 1 trade in OOS
+    ];
+    const wfSingle = calculateWalkForward(tradesSingleLucky, 0, 99, 0.70, 5);
+    assert.strictEqual(wfSingle.outOfSample.signals, 1);
+    assert.strictEqual(wfSingle.status, 'NO_OOS_TRADES');
+    assert.strictEqual(wfSingle.passed, false, 'Single trade in OOS must not be awarded PASS');
+
+    // 2. Candidate with NO_OOS_TRADES must be rejected from HIGH confidence in tournament
+    const unprovenCandidate: StrategyCandidate = {
+      key: 'standard',
+      label: 'Standard Unproven OOS',
+      profitFactor: 2.0,
+      expectancyR: 0.60,
+      expectancyPerHour: 1.2,
+      avgExposureHours: 0.5,
+      winRate: 0.70,
+      resolved: 15,
+      forwardWindow: 6,
+      walkForward: wfSingle
+    };
+
+    const tourneyUnproven = evaluateStrategyTournament([unprovenCandidate], '5m');
+    assert.strictEqual(tourneyUnproven.confidence, 'LIMITED', 'Candidate without validated OOS sample must be LIMITED');
+    assert.ok(tourneyUnproven.reasoning.includes('Muestra OOS Insuficiente') || tourneyUnproven.reasoning.includes('Muestra limitada'));
+
+    // 3. Robust candidate with 5 OOS trades with E[R] > 0 unlocks HIGH confidence
+    const tradesRobustOOS: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 0.5, pnlPct: 2.0, outcome: 'win', entryIdx: 72 },
+      { dir: 'BUY', realizedR: 0.6, pnlPct: 2.4, outcome: 'win', entryIdx: 78 },
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 82 },
+      { dir: 'BUY', realizedR: 0.8, pnlPct: 3.2, outcome: 'win', entryIdx: 88 },
+      { dir: 'BUY', realizedR: 0.4, pnlPct: 1.6, outcome: 'win', entryIdx: 94 }
+    ];
+    const wfRobust = calculateWalkForward(tradesRobustOOS, 0, 99, 0.70, 5);
+    assert.strictEqual(wfRobust.outOfSample.signals, 5);
+    assert.strictEqual(wfRobust.status, 'PASS');
+    assert.strictEqual(wfRobust.passed, true);
+
+    const robustCandidate: StrategyCandidate = {
+      key: 'standard',
+      label: 'Standard Robust OOS',
+      profitFactor: 2.0,
+      expectancyR: 0.60,
+      expectancyPerHour: 1.2,
+      avgExposureHours: 0.5,
+      winRate: 0.70,
+      resolved: 15,
+      forwardWindow: 6,
+      walkForward: wfRobust
+    };
+
+    const tourneyRobust = evaluateStrategyTournament([robustCandidate], '5m');
+    assert.strictEqual(tourneyRobust.confidence, 'HIGH', 'Robust OOS sample must qualify for HIGH confidence');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

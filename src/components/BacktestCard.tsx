@@ -261,6 +261,8 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
                       ? `✓ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
                       : walkForward.status === 'FAIL'
                       ? `✗ OOS ${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
+                      : walkForward.outOfSample.signals > 0
+                      ? `~ OOS (${walkForward.outOfSample.signals} < 5 trades)`
                       : '~ Sin trades OOS'}
                   </span>
                 </div>
