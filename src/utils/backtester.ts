@@ -768,7 +768,8 @@ export function backtestMultitemporal(
   const evalWindow = style === 'swing'
     ? (klines5m.length >= 550 ? Math.min(720, klines5m.length - forwardWindow - 30) : (klines5m.length >= 300 ? Math.min(350, klines5m.length - forwardWindow - 20) : 168))
     : (klines5m.length >= 1450 ? Math.min(1400, klines5m.length - forwardWindow - 30) : 576);
-  const minRequiredCandles = (style === 'swing' ? Math.min(168, Math.max(60, klines5m.length - forwardWindow)) : 576) + forwardWindow;
+  const baseEvalWindow = style === 'swing' ? 168 : 576;
+  const minRequiredCandles = baseEvalWindow + forwardWindow;
   const cooldownHours = style === 'swing' ? 4 : 2;
   const candlesPerHour = Math.max(1, Math.round(3600 / (stepSec || 300)));
   const cooldownPeriod = cooldownHours * candlesPerHour;  // 4h cooldown for Swing, 2h for DayTrading
@@ -1508,8 +1509,8 @@ function runBacktestGenericOptimized(
   const latestAtr = atrSeries[atrSeries.length - 1];
   const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, params.atrMultiplier, params.fallbackThreshold);
   const targetThreshold = threshold * targetMultiplier;
-
-  const minCandles = (interval === '5m' ? 576 : evalWindow) + forwardWindow;
+  const baseEvalWindow = interval === '5m' ? 576 : interval === '1h' ? 168 : 60;
+  const minCandles = baseEvalWindow + forwardWindow;
   if (klines.length < minCandles) {
     return {
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,

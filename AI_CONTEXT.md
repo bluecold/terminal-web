@@ -293,17 +293,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
-- **Actualización v2026.08.27.10 — Separación Canónica de Métricas Económicas vs. Estructurales (`exitBreakdown`)**:
-  - **Desacoplamiento Conceptual**:
-    - **Dimensión Económica**: `wins` (`realizedR > 0`), `losses` (`realizedR < 0`), `winRate`, `profitFactor` y `expectancyR` gobiernan la matemática de rentabilidad real tras comisiones y el ranking del Torneo.
-    - **Dimensión Estructural (`exitBreakdown`)**: `RecordedTrade` y `BacktestResult` ahora incorporan `exitReason` y `StructuralExitBreakdown` categorizando exactamente las causas de salida: `targetHits` (TP1/TP2/TP3), `stopLossHits` (SL), `timeStops` (TIME_STOP), `emergencyExits` (EMERGENCY_EXIT / EARLY_ADVERSE / SESSION_GAP), `expirations` (TIMEOUT) y `breakevenExits` (TP1_BE).
-  - **Revitalización de `timeouts` y `resolutionRate`**:
-    - `timeouts` refleja las expiraciones reales del horizonte de velas (`exitBreakdown.expirations`).
-    - `resolutionRate` cuantifica el porcentaje de operaciones que completaron su recorrido hacia objetivos directos (`(targetHits + stopLossHits) / totalSignals`).
-  - **UI Enriquecida (`BacktestCard.tsx`)**:
-    - La tarjeta y sus tooltips desglosan tanto el rendimiento económico como el desglose estructural de salidas y descartes.
+- **Actualización v2026.08.27.11 — Desacoplamiento de Guardas Mínimas en 1H y Swing (Eliminación de Tautología)**:
+  - **Corrección de Suelo Canónico en Guardas**:
+    - Se elimina la fórmula circular `Math.min(168, Math.max(60, len - forwardWindow)) + forwardWindow` que colapsaba a $(len - FW) + FW = len$ entre 108 y 216 velas de 1H, permitiendo backtests sobre apenas 30 velas evaluadas.
+    - Se establecen suelos absolutos fijos e independientes de `len`:
+      * **VCME Swing**: `baseEvalWindow = 168` $\to$ Suelo mínimo absoluto de **216 velas** ($168 + 48$).
+      * **1H Standard / Confluencia / Scoring**: `baseEvalWindow = 168` $\to$ Suelo mínimo absoluto de **172 velas** ($168 + 4$).
+      * **5m**: Suelo mínimo de **582 / 648 velas** ($576 + FW$).
+      * **1d**: Suelo mínimo de **63 velas** ($60 + 3$).
   - **Suite de Pruebas**:
-    - **72/72 tests unitarios pasando**, Test 66 actualizado para verificar partición estructural disyunta del 100% de señales, 0 errores en ESLint, build de producción limpio.
+    - **73/73 tests unitarios pasando**, incorporando Test 73 para verificar el rechazo de muestras insuficientes ($< 216$ en Swing, $< 172$ en 1H Standard) y la evaluación limpia al alcanzar exactamente el suelo.
+    - 0 errores en ESLint, build de producción limpio.
 
 ---
 

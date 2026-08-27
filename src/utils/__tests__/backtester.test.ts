@@ -2145,6 +2145,30 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourney.confidence, 'HIGH', 'Swing candidate with validated OOS PASS must achieve HIGH confidence');
   });
 
+  // Test 73: Absolute non-tautological data guard rails in 1H and Swing
+  test('non-tautological data guard rails enforce absolute floor on 1H (172) and Swing (216)', () => {
+    const klines1d_60 = generateSyntheticKlines(60, 86400, 100);
+
+    // 1. VCME Swing: 150 1H candles is below the 216 floor (168 + 48) -> must reject as insufficient
+    const klines1h_150 = generateSyntheticKlines(150, 3600, 100);
+    const swingRes150 = backtestMultitemporal(klines1h_150, klines1h_150, klines1d_60, '1h', 'SWING_GUARD', 'swing');
+    assert.strictEqual(swingRes150.insufficient, true, '150 1H candles must be rejected as insufficient data for Swing (floor is 216)');
+
+    // 2. VCME Swing: 216 1H candles meets the exact 216 floor -> evaluates cleanly
+    const klines1h_216 = generateSyntheticKlines(216, 3600, 100);
+    const swingRes216 = backtestMultitemporal(klines1h_216, klines1h_216, klines1d_60, '1h', 'SWING_GUARD', 'swing');
+    assert.strictEqual(swingRes216.insufficient, false, '216 1H candles must evaluate cleanly for Swing');
+
+    // 3. 1H Standard: 150 1H candles is below the 172 floor (168 + 4) -> must reject as insufficient
+    const stdRes150 = backtestStandard(klines1h_150, '1h', 'STD_GUARD');
+    assert.strictEqual(stdRes150.insufficient, true, '150 1H candles must be rejected as insufficient data for 1H Standard (floor is 172)');
+
+    // 4. 1H Standard: 172 1H candles meets the exact 172 floor -> evaluates cleanly
+    const klines1h_172 = generateSyntheticKlines(172, 3600, 100);
+    const stdRes172 = backtestStandard(klines1h_172, '1h', 'STD_GUARD');
+    assert.strictEqual(stdRes172.insufficient, false, '172 1H candles must evaluate cleanly for 1H Standard');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
