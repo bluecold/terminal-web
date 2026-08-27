@@ -1695,6 +1695,43 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(calcDistScore(104.0, ema21, atr), 0.0);
   });
 
+  // Test 62: Square-root time normalization (sqrt(t)) avoids over-penalization of longer holding strategies (VCME)
+  test('evaluateStrategyTournament uses square-root time scaling allowing VCME with high E[R] to beat standard scalp', () => {
+    // Standard: 6 candles (0.5h), E[R] = 0.30R
+    const standardCandidate: StrategyCandidate = {
+      key: 'standard',
+      label: 'Standard (6 candles)',
+      profitFactor: 1.8,
+      expectancyR: 0.30,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 20,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5
+    };
+
+    // VCME: 66 candles (~5.5h = 11x duration), E[R] = 0.90R (3x higher trade expectancy)
+    // Under linear t, VCME velocity is only 0.16 R/h and would lose unjustly.
+    // Under sqrt(t), timeFactor = sqrt(11) = 3.31, normalized expectancy = 0.90/3.31 = 0.272R,
+    // and combined with higher expRScore (0.90 vs 0.30), VCME wins as mathematically expected.
+    const vcmeCandidate: StrategyCandidate = {
+      key: 'multitemporal',
+      label: 'VCME (66 candles)',
+      profitFactor: 2.2,
+      expectancyR: 0.90,
+      avgExposureHours: 5.5,
+      winRate: 0.60,
+      resolved: 20,
+      forwardWindow: 72,
+      maxDrawdownR: 1.2,
+      sortinoRatio: 1.8
+    };
+
+    const tourney = evaluateStrategyTournament([standardCandidate, vcmeCandidate], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'multitemporal', 'VCME with 3x E[R] (0.90R vs 0.30R) must win against standard under sqrt(t) scaling');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

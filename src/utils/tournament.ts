@@ -14,6 +14,7 @@ export interface StrategyCandidate {
   totalSignals?: number;
   forwardWindow?: number;
   avgExposureHours?: number;
+  avgDurationCandles?: number;
   maxDrawdownR?: number;
   maxLossStreak?: number;
   sortinoRatio?: number | null;
@@ -75,26 +76,34 @@ export function evaluateStrategyTournament(
       ? c.expectancyR
       : (c.expectancy !== undefined ? c.expectancy / 1.0 : 0);
 
+    const candleHours = timeframe === '5m' ? (5 / 60) : timeframe === '1h' ? 1.0 : 24.0;
+    const baseCandles = 6;
+    const baseHours = baseCandles * candleHours; // 0.5h on 5m, 6h on 1h, 6d on 1d
+
     let exposureHours = c.avgExposureHours;
     if (exposureHours === undefined || exposureHours <= 0) {
       const defaultCandles = c.forwardWindow && c.forwardWindow > 0 ? c.forwardWindow : (
         c.key === 'multitemporal' ? (timeframe === '1h' ? 48 : 72) :
         c.key === 'multifractal' ? 12 : 6
       );
-      const candleHours = timeframe === '5m' ? (5 / 60) : timeframe === '1h' ? 1.0 : 24.0;
       exposureHours = defaultCandles * candleHours;
     }
+
+    // Square-root time normalization: factor = sqrt(max(1.0, exposureHours / baseHours))
+    // Standard diffusion: returns scale with t, volatility/risk with sqrt(t)
+    const timeFactor = Math.sqrt(Math.max(1.0, exposureHours / baseHours));
+    const timeNormExpR = expR / timeFactor;
 
     const expPerHour = c.expectancyPerHour !== undefined
       ? c.expectancyPerHour
       : (exposureHours > 0 ? expR / exposureHours : expR);
 
-    return { expR, exposureHours, expPerHour };
+    return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR };
   };
 
-  // Helper to calculate composite score normalized by R, velocity, downside risk and Walk-Forward
+  // Helper to calculate composite score normalized by R, square-root time, downside risk and Walk-Forward
   const calcScore = (c: StrategyCandidate): number => {
-    const { expR, expPerHour } = getMetrics(c);
+    const { expR, timeNormExpR } = getMetrics(c);
 
     // Sigmoid sample confidence based on total evaluated trades
     const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
@@ -117,9 +126,9 @@ export function evaluateStrategyTournament(
     }
     const cappedPF = Math.min(Math.max(0, rawPF), maxAttainablePF);
 
-    // Bounded score mappings
+    // Bounded score mappings with square-root time scaling
     const expRScore = Math.max(0, Math.tanh(Math.max(0, expR) / 0.5)) * 3.0;
-    const velocityScore = Math.max(0, Math.tanh(Math.max(0, expPerHour) / 0.75)) * 2.5;
+    const timeNormScore = Math.max(0, Math.tanh(Math.max(0, timeNormExpR) / 0.35)) * 2.5;
     const pfScore = Math.min(2.5, cappedPF * 0.5);
     const wrScore = c.winRate * 2.0;
 
@@ -148,7 +157,7 @@ export function evaluateStrategyTournament(
       }
     }
 
-    const baseScore = ((expRScore * 0.35) + (velocityScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier * wfMultiplier;
+    const baseScore = ((expRScore * 0.35) + (timeNormScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier * wfMultiplier;
     return baseScore * sampleConfidence;
   };
 
