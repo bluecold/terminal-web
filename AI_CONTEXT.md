@@ -293,6 +293,14 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
   - **Suite de Pruebas**:
     - **72/72 tests unitarios pasando**. Tests 58, 59 y 65 actualizados para validar `INSUFFICIENT_OOS`. `npm run lint` con **0 errores y 0 warnings**.
 
+- **Actualización v2026.08.27.6 — Limpieza de Código Huérfano (`avgDurationCandles` en Torneo)**:
+  - **Eliminación de Campo Muerto en `StrategyCandidate`**:
+    - Se elimina la propiedad huérfana `avgDurationCandles?: number;` de `StrategyCandidate` ([`tournament.ts`](file:///d:/Mis%20Cosas/test/FinceptTerminal/terminal-web/src/utils/tournament.ts)) y de los 4 puntos de llamada de backtest (`App.tsx` ×2, `MarketRadar.tsx`, `SignalPanel.tsx`).
+    - `tournament.ts` opera de forma estricta y transparente sobre `avgExposureHours` (exposición total normalizada por hora de ciclo efectivo con cooldown).
+    - `avgDurationCandles` se preserva exclusivamente en `BacktestResult` dentro de `backtester.ts` para telemetría interna de tiempo neto en posición.
+  - **Suite de Pruebas**:
+    - **72/72 tests unitarios pasando**, 0 errores en ESLint, build de producción limpio.
+
 ---
 
 ## 📌 Guía de Arquitectura para la Fase 2 (Proxy de Infraestructura Futuro)

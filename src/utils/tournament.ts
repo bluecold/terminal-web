@@ -14,7 +14,6 @@ export interface StrategyCandidate {
   totalSignals?: number;
   forwardWindow?: number;
   avgExposureHours?: number;
-  avgDurationCandles?: number;
   maxDrawdownR?: number;
   maxLossStreak?: number;
   sortinoRatio?: number | null;
