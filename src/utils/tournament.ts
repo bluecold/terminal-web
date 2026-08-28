@@ -244,29 +244,19 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 3. Fallback: Select best relative strategy using calcScore so signals are not silently swallowed
-  const sortedAll = [...candidates].sort((a, b) => {
-    const scoreA = calcScore(a);
-    const scoreB = calcScore(b);
-    return scoreB - scoreA;
-  });
-  const fallback = sortedAll[0] || candidates[0];
-  const { expR, expPerHour } = getMetrics(fallback);
-  const pfStr = fallback.profitFactor !== null && Number.isFinite(fallback.profitFactor) && fallback.profitFactor < 99.0
-    ? `PF ${fallback.profitFactor.toFixed(2)}`
-    : 'PF N/D';
-
+  // 3. Fallback: No candidate qualifies with positive edge or reliable sample
+  // In institutional quant execution, when no strategy demonstrates positive statistical edge, stay FLAT (NONE)
   return {
-    bestStrategy: fallback.key,
-    strategyLabel: fallback.label,
+    bestStrategy: 'NONE',
+    strategyLabel: 'Sin Estrategia (Flat)',
     confidence: 'NONE',
     compositeScore: 0,
-    profitFactor: fallback.profitFactor,
-    expectancyR: Number(expR.toFixed(3)),
-    expectancyPerHour: Number(expPerHour.toFixed(3)),
-    maxDrawdownR: fallback.maxDrawdownR,
-    sortinoRatio: fallback.sortinoRatio,
-    walkForward: fallback.walkForward,
-    reasoning: `${fallback.label} (${pfStr}, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R)`,
+    profitFactor: null,
+    expectancyR: 0,
+    expectancyPerHour: 0,
+    maxDrawdownR: undefined,
+    sortinoRatio: null,
+    walkForward: undefined,
+    reasoning: 'Sin ventaja estadística demostrada — Permanecer FLAT (Sin trades)',
   };
 }

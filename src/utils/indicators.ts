@@ -1,5 +1,45 @@
 import type { Kline } from '../services/api';
-import { formatSmartPrice, formatSmartNumber } from './formatters';
+import {
+  buildConfluenciaContext,
+  evaluateConfluenciaAt,
+  buildScoringContext,
+  evaluateScoringAt,
+  buildStandardVotingContext,
+  evaluateStandardVotingAt,
+  buildVCMESniperContext,
+  evaluateVCMESniperAt,
+  buildMultifractalMTFContext,
+  evaluateMultifractalMTFAt,
+  type ConfluenciaContext,
+  type ConfluenciaEvaluationResult,
+  type ScoringContext,
+  type StandardVotingContext,
+  type VCMESniperContext,
+  type VCMESniperEvaluationResult,
+  type MultifractalMTFContext,
+  type MultifractalMTFEvaluationResult
+} from './strategyEvaluators';
+
+export {
+  buildConfluenciaContext,
+  evaluateConfluenciaAt,
+  buildScoringContext,
+  evaluateScoringAt,
+  buildStandardVotingContext,
+  evaluateStandardVotingAt,
+  buildVCMESniperContext,
+  evaluateVCMESniperAt,
+  buildMultifractalMTFContext,
+  evaluateMultifractalMTFAt,
+  type ConfluenciaContext,
+  type ConfluenciaEvaluationResult,
+  type ScoringContext,
+  type StandardVotingContext,
+  type VCMESniperContext,
+  type VCMESniperEvaluationResult,
+  type MultifractalMTFContext,
+  type MultifractalMTFEvaluationResult
+};
 
 export interface IndicatorResult {
   value: number;
@@ -330,32 +370,33 @@ export interface EmaCrossover {
   barsAgo: number; // cuántas velas atrás ocurrió el cruce
 }
 
-export function detectEmaCrossover(closes: number[], fastPeriod = 9, slowPeriod = 20, lookback = 5): EmaCrossover {
-  if (closes.length < slowPeriod + lookback) return { type: 'NONE', barsAgo: 0 };
+export function detectEmaCrossoverFromSeries(
+  emaFast: number[],
+  emaSlow: number[],
+  idx: number,
+  lookback = 5
+): EmaCrossover {
+  if (!emaFast || !emaSlow || idx < 1) return { type: 'NONE', barsAgo: 0 };
 
-  const emaFast = calculateEMA(closes, fastPeriod);
-  const emaSlow = calculateEMA(closes, slowPeriod);
+  for (let k = 0; k < lookback; k++) {
+    const currIdx = idx - k;
+    const prevIdx = currIdx - 1;
+    if (prevIdx < 0) break;
 
-  // Buscar cruce en las últimas `lookback` velas
-  for (let i = 1; i <= lookback; i++) {
-    const idx     = closes.length - i;       // vela actual en este paso
-    const idxPrev = idx - 1;                 // vela anterior
-    if (idxPrev < 0) break;
-
-    const fastNow  = emaFast[idx];
-    const slowNow  = emaSlow[idx];
-    const fastPrev = emaFast[idxPrev];
-    const slowPrev = emaSlow[idxPrev];
+    const fastNow = emaFast[currIdx];
+    const slowNow = emaSlow[currIdx];
+    const fastPrev = emaFast[prevIdx];
+    const slowPrev = emaSlow[prevIdx];
 
     if (isNaN(fastNow) || isNaN(slowNow) || isNaN(fastPrev) || isNaN(slowPrev)) continue;
 
     // Cruce alcista: fast cruzó de abajo hacia arriba
     if (fastPrev < slowPrev && fastNow > slowNow) {
-      return { type: 'BULLISH', barsAgo: i - 1 }; // 0 = en la vela actual
+      return { type: 'BULLISH', barsAgo: k };
     }
     // Cruce bajista: fast cruzó de arriba hacia abajo
     if (fastPrev > slowPrev && fastNow < slowNow) {
-      return { type: 'BEARISH', barsAgo: i - 1 };
+      return { type: 'BEARISH', barsAgo: k };
     }
   }
 
@@ -403,67 +444,9 @@ export function lowerWickRatio(c: Kline): number {
   return (Math.min(c.open, c.close) - c.low) / (c.high - c.low);
 }
 
-export function calculateExperimentalSignal(klines: Kline[], interval: string = '1h'): { signal: 'BUY' | 'SELL' | 'NEUTRAL', stopLoss: number, rsi: number, validVolume: boolean, emaCrossover: EmaCrossover } {
-  if (!klines || klines.length < 21) {
-    return { signal: 'NEUTRAL', stopLoss: 0, rsi: 0, validVolume: false, emaCrossover: { type: 'NONE', barsAgo: 0 } };
-  }
-
-  const closes = klines.map(k => k.close);
-  
-  // EMAs
-  const ema9Arr = calculateEMA(closes, 9);
-  const ema20Arr = calculateEMA(closes, 20);
-  const ema9 = ema9Arr[ema9Arr.length - 1];
-  const ema20 = ema20Arr[ema20Arr.length - 1];
-
-  // RSI
-  const rsiObj = calculateRSI(closes, 14);
-  const rsi = rsiObj.value;
-
-  // ATR
-  const atr = calculateATR(klines, 14);
-
-  // Session-based VWAP
-  const vwap = calculateVWAP(klines, interval);
-
-  // Volume
-  const last20Vol = klines.slice(-20).map(k => k.volume);
-  const volAvg = last20Vol.reduce((a, b) => a + b, 0) / 20;
-
-  const curr = klines[klines.length - 1];
-  const prev = klines[klines.length - 2];
-
-  const hammer = isHammer(curr);
-  const engulfing = isEngulfing(curr, prev);
-  const bRatio = candleBodyRatio(curr);
-  const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > ema9;
-  const bullish_candle = hammer || engulfing === 1 || strongBullish;
-  const bearish_candle = engulfing === -1;
-
-  const distVwapAtr = atr > 0 ? Math.abs(curr.close - vwap) / atr : 0;
-  const cp = closePosition(curr);
-  const isNotOverextended = distVwapAtr <= 2.2;
-
-  const is_buy = curr.close > vwap && ema9 > ema20 && curr.volume >= volAvg * 0.8 && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
-  const is_sell = curr.close < vwap && ema9 < ema20 && curr.volume >= volAvg * 0.8 && (bearish_candle || curr.close < ema20) && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
-
-  // EMA Crossover detection
-  const emaCrossover = detectEmaCrossover(closes, 9, 20, 5);
-
-  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  if (is_buy) signal = 'BUY';
-  else if (is_sell) signal = 'SELL';
-
-  const stopLossLong = curr.close - (2 * atr);
-  const stopLossShort = curr.close + (2 * atr);
-
-  return {
-    signal,
-    stopLoss: signal === 'BUY' ? stopLossLong : (signal === 'SELL' ? stopLossShort : 0),
-    rsi,
-    validVolume: curr.volume > volAvg,
-    emaCrossover
-  };
+export function calculateExperimentalSignal(klines: Kline[], interval: string = '1h'): ConfluenciaEvaluationResult {
+  const ctx = buildConfluenciaContext(klines, interval);
+  return evaluateConfluenciaAt(ctx, klines ? klines.length - 1 : 0);
 }
 
 // ==========================================
@@ -471,7 +454,7 @@ export function calculateExperimentalSignal(klines: Kline[], interval: string = 
 // Port of analizar_señal() Python → TypeScript
 // ==========================================
 
-interface ScoringConfig {
+export interface ScoringConfig {
   emaFast: number;
   emaSlow: number;
   emaMajor: number | null;
@@ -483,7 +466,7 @@ interface ScoringConfig {
   useObv: boolean;
 }
 
-const SCORING_CONFIG: Record<string, ScoringConfig> = {
+export const SCORING_CONFIG: Record<string, ScoringConfig> = {
   '5m': { emaFast: 9, emaSlow: 21, emaMajor: null,  rsiPeriod: 7,  rsiOversold: 35, rsiOverbought: 65, bbPeriod: 20, useVwap: true,  useObv: false },
   '1h': { emaFast: 9, emaSlow: 21, emaMajor: 50,    rsiPeriod: 14, rsiOversold: 35, rsiOverbought: 65, bbPeriod: 20, useVwap: true,  useObv: false },
   '1d': { emaFast: 9, emaSlow: 21, emaMajor: 50,    rsiPeriod: 14, rsiOversold: 30, rsiOverbought: 70, bbPeriod: 20, useVwap: false, useObv: true  },
@@ -521,7 +504,7 @@ export interface ScoringResult {
   };
 }
 
-function calculateOBV(klines: Kline[]): number[] {
+export function calculateOBV(klines: Kline[]): number[] {
   const obv: number[] = [0];
   for (let i = 1; i < klines.length; i++) {
     if (klines[i].close > klines[i - 1].close)      obv.push(obv[i - 1] + klines[i].volume);
@@ -536,203 +519,8 @@ export function calculateScoringSignal(
   interval: string,
   weights: ScoringWeights = DEFAULT_WEIGHTS
 ): ScoringResult {
-  const fallback: ScoringResult = {
-    signal: 'HOLD', score: 0, threshold: 3,
-    layers: {
-      trend:    { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-      rsi:      { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-      bollinger:{ score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-      volume:   { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-      candle:   { score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-      structure:{ score: 0, weightedScore: 0, note: 'Datos insuficientes' },
-    }
-  };
-
-  const cfg = SCORING_CONFIG[interval] ?? SCORING_CONFIG['1h'];
-  if (!klines || klines.length < 60) return fallback;
-
-  const closes = klines.map(k => k.close);
-  const curr   = klines[klines.length - 1];
-
-  // ── EMAs ──────────────────────────────────────────────────────────
-  const emaFastArr  = calculateEMA(closes, cfg.emaFast);
-  const emaSlowArr  = calculateEMA(closes, cfg.emaSlow);
-  const emaFast     = emaFastArr[emaFastArr.length - 1];
-  const emaSlow     = emaSlowArr[emaSlowArr.length - 1];
-  let   emaMajorVal = NaN;
-  if (cfg.emaMajor) {
-    const arr = calculateEMA(closes, cfg.emaMajor);
-    emaMajorVal = arr[arr.length - 1];
-  }
-
-  // Layer 1 — Tendencia EMA
-  let s1 = 0; let n1 = '';
-  if (emaFast > emaSlow)      { s1 += 1; n1 += `EMA${cfg.emaFast} > EMA${cfg.emaSlow} (alcista)`; }
-  else if (emaFast < emaSlow) { s1 -= 1; n1 += `EMA${cfg.emaFast} < EMA${cfg.emaSlow} (bajista)`; }
-  if (cfg.emaMajor && !isNaN(emaMajorVal)) {
-    if (curr.close > emaMajorVal)      { s1 += 1; n1 += ` | Sobre EMA${cfg.emaMajor}`; }
-    else                               { s1 -= 1; n1 += ` | Bajo EMA${cfg.emaMajor}`; }
-  }
-
-  // ── RSI ───────────────────────────────────────────────────────────
-  const rsiSeriesFull = calculateRSISeries(closes, cfg.rsiPeriod);
-  const rsi = rsiSeriesFull[rsiSeriesFull.length - 1];
-  const rsiSlope = calculateRSISlope(rsiSeriesFull, rsiSeriesFull.length - 1, 3);
-  const rsiRising = rsiSlope > 0;
-  const rsiFalling = rsiSlope < 0;
-
-  // Layer 2 — RSI (con pendiente)
-  let s2 = 0; let n2 = `RSI(${cfg.rsiPeriod}): ${isNaN(rsi) ? '-' : rsi.toFixed(1)}`;
-  if      (isNaN(rsi))                { n2 += ' | Datos insuficientes'; }
-  else if (rsi < cfg.rsiOversold)     { s2 += 1; n2 += ` | Sobreventa (<${cfg.rsiOversold})`; }
-  else if (rsi > cfg.rsiOverbought)   { s2 -= 1; n2 += ` | Sobrecompra (>${cfg.rsiOverbought})`; }
-  else if (rsi > 50) {
-    if (rsiFalling) { s2 += 0; n2 += ' | Sobre 50 ▼ (desacelerando)'; }
-    else            { s2 += 1; n2 += rsiRising ? ' | Sobre 50 ▲ (momentum +)' : ' | Sobre 50 (momentum +)'; }
-  } else {
-    if (rsiRising) { s2 += 0; n2 += ' | Bajo 50 ▲ (recuperando)'; }
-    else           { s2 -= 1; n2 += rsiFalling ? ' | Bajo 50 ▼ (momentum -)' : ' | Bajo 50 (momentum -)'; }
-  }
-
-  // ── Bollinger Bands %B ────────────────────────────────────────────
-  const bbResult = calculateBollingerBands(closes, cfg.bbPeriod);
-  const bandWidth = bbResult.upper - bbResult.lower;
-  const pctB = bandWidth > 0 ? (curr.close - bbResult.lower) / bandWidth : 0.5;
-
-  // Layer 3 — Bollinger %B & Squeeze
-  const bbMiddle = (bbResult.upper + bbResult.lower) / 2;
-  const bbWidthRatio = bbMiddle > 0 ? bandWidth / bbMiddle : 0;
-  let s3 = 0; let n3 = `%B: ${pctB.toFixed(2)}`;
-  if      (curr.close <= bbResult.lower)  { s3 += 1; n3 += ' | En/bajo banda inf. (rebote)'; }
-  else if (curr.close >= bbResult.upper)  { s3 -= 1; n3 += ' | En/sobre banda sup. (rechazo)'; }
-  else if (pctB < 0.2)                    { s3 += 1; n3 += ' | Cerca banda inf.'; }
-  else if (pctB > 0.8)                    { s3 -= 1; n3 += ' | Cerca banda sup.'; }
-  else                                    { n3 += ' | Dentro de bandas'; }
-  if (bbWidthRatio < 0.05) { n3 += ' | Squeeze (alta compresión)'; }
-
-  // ── Volumen: VWAP o OBV ───────────────────────────────────────────
-  let s4 = 0; let n4 = '';
-
-  if (cfg.useVwap) {
-    const vwap = calculateVWAP(klines, interval);
-    const atr = calculateATR(klines, 14);
-    const isChasing = atr > 0 && Math.abs(curr.close - vwap) > 2.0 * atr;
-    if (isChasing) {
-      s4 -= 1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Chasing (>2 ATR de VWAP)`;
-    } else {
-      if (curr.close > vwap) { s4 += 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio sobre VWAP (compradores)`; }
-      else                   { s4 -= 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio bajo VWAP (vendedores)`; }
-    }
-  } else if (cfg.useObv) {
-    const obvArr    = calculateOBV(klines);
-    const obvEMAArr = calculateEMA(obvArr, 10);
-    const obvLast   = obvArr[obvArr.length - 1];
-    const obvEMA    = obvEMAArr[obvEMAArr.length - 1];
-    if (obvLast > obvEMA) { s4 += 1; n4 = 'OBV > OBV_EMA10 (acumulación)'; }
-    else                  { s4 -= 1; n4 = 'OBV < OBV_EMA10 (distribución)'; }
-  } else {
-    n4 = 'Indicador de volumen no disponible';
-  }
-
-  // Layer 5 — Confirmación de Vela & Ratios de Mecha
-  const body      = curr.close - curr.open;
-  const range     = curr.high - curr.low;
-  const pctBody   = range > 0 ? Math.abs(body) / range : 0;
-  const uWick     = upperWickRatio(curr);
-  const lWick     = lowerWickRatio(curr);
-
-  let s5 = 0; let n5 = `Cuerpo: ${body >= 0 ? '+' : ''}${formatSmartNumber(body)} (${(pctBody * 100).toFixed(0)}%)`;
-  if (pctBody < 0.3) {
-    s5 = 0;
-    n5 += ' | Doji débil';
-  } else {
-    if      (body > 0 && pctBody > 0.5) { s5 += 1; n5 += ' | Alcista fuerte'; }
-    else if (body > 0)                  { s5 += 1; n5 += ' | Alcista moderada'; }
-    else if (body < 0 && pctBody > 0.5) { s5 -= 1; n5 += ' | Bajista fuerte'; }
-    else if (body < 0)                  { s5 -= 1; n5 += ' | Bajista moderada'; }
-    else                                { n5 += ' | Doji (indecisión)'; }
-
-    if (body > 0 && uWick > 0.25) { s5 -= 0.5; n5 += ' (rechazo sup)'; }
-    else if (body < 0 && lWick > 0.25) { s5 += 0.5; n5 += ' (rechazo inf)'; }
-  }
-
-  // ── Layer 6 — Estructura (Soportes / Resistencias) ────────────────
-  const sr = calculateSupportResistance(klines, curr.close);
-  const structureWeight = 1.0;
-  let s6 = 0; let n6 = '';
-
-  if (sr.nearestSupport > 0 || sr.nearestResistance > 0) {
-    const distSupport = sr.nearestSupport > 0 ? (curr.close - sr.nearestSupport) / curr.close : Infinity;
-    const distResist = sr.nearestResistance > 0 ? (sr.nearestResistance - curr.close) / curr.close : Infinity;
-    const nearThreshold = 0.015; // within 1.5% = "near"
-
-    if (distSupport >= 0 && distSupport < nearThreshold && distSupport <= distResist) {
-      s6 += 1;
-      n6 = `Cerca soporte (${formatSmartPrice(sr.nearestSupport)})`;
-    } else if (distResist >= 0 && distResist < nearThreshold && distResist < distSupport) {
-      s6 -= 1;
-      n6 = `Cerca resistencia (${formatSmartPrice(sr.nearestResistance)})`;
-    } else {
-      n6 = `S: ${sr.nearestSupport > 0 ? formatSmartPrice(sr.nearestSupport) : '-'} | R: ${sr.nearestResistance > 0 ? formatSmartPrice(sr.nearestResistance) : '-'}`;
-    }
-  } else {
-    n6 = 'Sin niveles S/R detectados';
-  }
-
-  // Calcular score ponderado
-  const w1 = s1 * weights.trend;
-  const w2 = s2 * weights.rsi;
-  const w3 = s3 * weights.bollinger;
-  const w4 = s4 * weights.volume;
-  const w5 = s5 * weights.candle;
-  const w6 = s6 * structureWeight;
-
-  const totalScore = w1 + w2 + w3 + w4 + w5 + w6;
-
-  // Calcular score máximo teórico para determinar el umbral (50% del máximo)
-  const maxTrend = cfg.emaMajor ? 2 : 1;
-  const maxPossible = (maxTrend * weights.trend) + weights.rsi + weights.bollinger + weights.volume + weights.candle + structureWeight;
-  const threshold = Number((maxPossible * 0.5).toFixed(2));
-
-  let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-  if      (totalScore >=  threshold) signal = 'BUY';
-  else if (totalScore <= -threshold) signal = 'SELL';
-
-  // R:R validation: degrade signal if insufficient room to nearest S/R
-  if (signal !== 'HOLD') {
-    const atr = calculateATR(klines, 14);
-    if (atr > 0) {
-      const slDist = 1.5 * atr;
-      if (signal === 'BUY' && sr.nearestResistance > 0) {
-        const rewardRoom = sr.nearestResistance - curr.close;
-        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
-          signal = 'HOLD';
-          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
-        }
-      } else if (signal === 'SELL' && sr.nearestSupport > 0) {
-        const rewardRoom = curr.close - sr.nearestSupport;
-        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
-          signal = 'HOLD';
-          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
-        }
-      }
-    }
-  }
-
-  return {
-    signal,
-    score: Number(totalScore.toFixed(2)),
-    threshold,
-    layers: {
-      trend:    { score: s1, weightedScore: w1, note: n1 || 'EMAs neutras' },
-      rsi:      { score: s2, weightedScore: w2, note: n2 },
-      bollinger:{ score: s3, weightedScore: w3, note: n3 },
-      volume:   { score: s4, weightedScore: w4, note: n4 },
-      candle:   { score: s5, weightedScore: w5, note: n5 },
-      structure:{ score: s6, weightedScore: w6, note: n6 },
-    }
-  };
+  const ctx = buildScoringContext(klines, interval, weights);
+  return evaluateScoringAt(ctx, klines ? klines.length - 1 : 0);
 }
 
 export function calculateRSISeries(data: number[], period: number = 14): number[] {
@@ -992,8 +780,9 @@ export function calculateMultitemporalSignal(
   const isSupertrendFlipGreen = latestSt.direction === 'UP' && prevSt.direction === 'DOWN';
   const isSupertrendFlipRed = latestSt.direction === 'DOWN' && prevSt.direction === 'UP';
 
-  // 3. Support / Resistance
-  const sr = calculateSupportResistance(klines5m, curr5m.close);
+  // 3. Support / Resistance (100-candle rolling window)
+  const srWindow = klines5m.slice(Math.max(0, klines5m.length - 100));
+  const sr = calculateSupportResistance(srWindow, curr5m.close);
 
   // 4. Evaluate Signals (RSI slope: don't buy into falling momentum, don't sell into rising)
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
@@ -1177,85 +966,13 @@ export interface StandardVotingResult {
   buyVotes: number;
   sellVotes: number;
   rawSignal: string;
+  finalSignal: 'BUY' | 'SELL' | 'NEUTRAL';
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
 }
 
 export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
-  const fallbackResult: StandardVotingResult = { indicators: [], buyVotes: 0, sellVotes: 0, rawSignal: 'NEUTRAL' };
-  if (!klines || klines.length < 35) {
-    return fallbackResult;
-  }
-
-  const closes = klines.map(k => k.close);
-
-  const rsi        = calculateRSI(closes);
-  const macd       = calculateMACD(closes);
-  const bb         = calculateBollingerBands(closes);
-  const supertrend = calculateSupertrend(klines);
-  const stochRsi   = calculateStochRSI(closes);
-  const vol        = calculateVolumeSignal(klines);
-
-  // RSI Slope visual indicator
-  const rsiSeriesForSlope = calculateRSISeries(closes, 14);
-  const slopeDir = calculateRSISlope(rsiSeriesForSlope, rsiSeriesForSlope.length - 1, 3);
-  const slopeArrow = slopeDir > 0 ? ' ▲' : slopeDir < 0 ? ' ▼' : '';
-
-  const colorFor = (sig: string) =>
-    sig === 'BUY' ? 'var(--accent-green)' : sig === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)';
-
-  const indicators = [
-    { name: 'RSI (14)',           value: `${rsi.value}${slopeArrow}`,                                                                         signal: rsi.signal,        color: colorFor(rsi.signal) },
-    { name: 'MACD (12,26,9)',     value: macd.value,                                                                                          signal: macd.signal,       color: colorFor(macd.signal) },
-    { name: 'Bollinger Bands',    value: bb.current.toFixed(2),                                                                               signal: bb.signal,         color: colorFor(bb.signal) },
-    { name: 'Supertrend (10,3)',  value: `ST: $${supertrend.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${supertrend.direction})`, signal: supertrend.signal, color: colorFor(supertrend.signal) },
-    { name: 'Stochastic RSI',     value: `%K: ${stochRsi.k.toFixed(1)} · %D: ${stochRsi.d.toFixed(1)}`,                                      signal: stochRsi.signal,   color: colorFor(stochRsi.signal) },
-    { name: 'Volume',             value: vol.value,                                                                                           signal: vol.signal,        color: colorFor(vol.signal) },
-  ];
-
-  let buyVotes = 0;
-  let sellVotes = 0;
-  indicators.forEach(ind => {
-    if (ind.signal === 'BUY') buyVotes++;
-    if (ind.signal === 'SELL') sellVotes++;
-  });
-
-  let rawSignal = 'NEUTRAL';
-  if (buyVotes >= 3 && sellVotes === 0) {
-    rawSignal = 'STRONG BUY';
-  } else if (buyVotes > sellVotes) {
-    rawSignal = 'BUY';
-  } else if (sellVotes >= 3 && buyVotes === 0) {
-    rawSignal = 'STRONG SELL';
-  } else if (sellVotes > buyVotes) {
-    rawSignal = 'SELL';
-  }
-
-  // Relative volume confirmation filter
-  // BUYs require RVOL >= 1.2 (breakouts need volume confirmation)
-  // SELLs require RVOL >= 0.8 (breakdowns can occur on lower volume / distribution)
-  const lastCandle = klines[klines.length - 1];
-  const lastVol = lastCandle ? lastCandle.volume : 0;
-  const recentVols = klines.slice(Math.max(0, klines.length - 21), klines.length - 1).map(k => k ? k.volume : 0);
-  const avgVol = recentVols.reduce((a, b) => a + b, 0) / Math.max(1, recentVols.length);
-  const rvol = avgVol > 0 ? lastVol / avgVol : 0;
-
-  const rvolThreshold = rawSignal.includes('BUY') ? 0.9 : 0.6;
-  // Weak consensus (margin < 2 votes) requires slightly higher volume confirmation
-  const voteMargin = Math.abs(buyVotes - sellVotes);
-  const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.1) : rvolThreshold;
-
-  if (rawSignal !== 'NEUTRAL' && rvol < effectiveRvolThreshold) {
-    rawSignal = 'NEUTRAL';
-  }
-
-  // Candle anatomy check (closePosition)
-  const cp = closePosition(lastCandle);
-  if (rawSignal.includes('BUY') && cp < 0.45) {
-    rawSignal = 'NEUTRAL';
-  } else if (rawSignal.includes('SELL') && cp > 0.55) {
-    rawSignal = 'NEUTRAL';
-  }
-
-  return { indicators, buyVotes, sellVotes, rawSignal };
+  const ctx = buildStandardVotingContext(klines);
+  return evaluateStandardVotingAt(ctx, klines ? klines.length - 1 : 0);
 }
 
 // ==========================================
@@ -2010,682 +1727,8 @@ export function calculateVCMESniperSignal(
   triggerMode: 'agresivo' | 'conservador' = 'agresivo',
   executionPrice?: number
 ): VCMESniperResult {
-  const fallback: VCMESniperResult = {
-    signal: 'NEUTRAL', mode: 'NONE', tradeType: 'DAY',
-    stopLoss: 0, takeProfit1: 0, takeProfit2: 0, takeProfit3: 0, riskRewardRatio: 0,
-    chandelierExit: 0, positionSizeUnits: 0, riskAmount: 100, confidenceScore: 0,
-    bias1D: 'NEUTRAL', adx1H: 0, momentum1H: 'NEUTRAL',
-    triggerDetail: 'Datos insuficientes',
-    rsi1H: 50, macdHistDirection: 'PLANO',
-    ema200_1D: 0, ema50_1H: 0, vwap5m: 0, bbUpper5m: 0, bbLower5m: 0,
-    isTrendUp: false, nearestSupport: 0, nearestResistance: 0,
-    score: 0, baseScore: 0, adaptiveFactor: 1.0,
-    marketRegime: 'Normal', volatilityProfile: 'Normal', recentPerfLabel: 'Sin datos',
-    atrPercent: 0, avgDailyRange: 0,
-    confidence: 'DESCARTAR'
-  };
-
-  if (!klines5m || klines5m.length < 30) return fallback;
-  if (!klines1h || klines1h.length < 60) return fallback;
-  if (!klines1d || klines1d.length < 30) return fallback;
-
-  const curr5m = klines5m[klines5m.length - 1];
-  const prev5m = klines5m[klines5m.length - 2];
-  const lastIdx = klines5m.length - 1;
-
-  // ═══════════════════════════════════════════════════════════
-  // 1. TIPO DE ACTIVO Y VOLATILIDAD DIARIA (1D Bias - VCME v2.0)
-  // ═══════════════════════════════════════════════════════════
-  const closes1d = klines1d.map(k => k.close);
-  const ema200_1d = closes1d.length >= 200 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
-  const ema50_1d = closes1d.length >= 50 ? calculateEMA(closes1d, 50) : new Array(closes1d.length).fill(NaN);
-
-  const lastEma200_1d = ema200_1d[ema200_1d.length - 1];
-  const lastEma50_1d = ema50_1d[ema50_1d.length - 1];
-  const lastClose1d = closes1d[closes1d.length - 1];
-
-  const adxData1d = calculateADXSeries(klines1d, 14);
-  const lastAdx1d = adxData1d.adx[adxData1d.adx.length - 1];
-  const lastPlusDI1d = adxData1d.plusDI[adxData1d.plusDI.length - 1];
-  const lastMinusDI1d = adxData1d.minusDI[adxData1d.minusDI.length - 1];
-
-  const lastEma200Ref = !isNaN(lastEma200_1d) ? lastEma200_1d : lastEma50_1d;
-  const hasDailyTrend = !isNaN(lastEma200Ref) && !isNaN(lastEma50_1d) && !isNaN(lastAdx1d);
-  let bias1D: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  if (hasDailyTrend) {
-    const bias_long = lastClose1d > lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d > lastEma200_1d) && lastAdx1d > 20 && lastPlusDI1d > lastMinusDI1d;
-    const bias_short = lastClose1d < lastEma200Ref && (isNaN(lastEma200_1d) ? true : lastEma50_1d < lastEma200_1d) && lastAdx1d > 20 && lastMinusDI1d > lastPlusDI1d;
-
-    if (bias_long) bias1D = 'ALCISTA';
-    else if (bias_short) bias1D = 'BAJISTA';
-  }
-
-  // Rango diario promedio (últimas 20 velas)
-  const last20Ranges = klines1d.slice(-20).map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0);
-  const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
-
-  // ═══════════════════════════════════════════════════════════
-  // 2. FILTROS Y SETUP DE 1H (VCME v2.0 Context & Regime)
-  // ═══════════════════════════════════════════════════════════
-  const closes1h = klines1h.map(k => k.close);
-  const ema200_1h = closes1h.length >= 200 ? calculateEMA(closes1h, 200) : new Array(closes1h.length).fill(NaN);
-  const ema50_1h = calculateEMA(closes1h, 50);
-  const ema20_1h = calculateEMA(closes1h, 20);
-  const rsiSeries1h = calculateRSISeries(closes1h, 14);
-  const adxSeries1h = calculateADXSeries(klines1h, 14);
-  const macdData1h = calculateMACDSeries(closes1h);
-  const atrSeries1h = calculateATRSeries(klines1h, 14);
-  const vwapSeries1h = calculateVWAPSeries(klines1h, '1h', symbol);
-  const chandelierData = calculateChandelierExit(klines1h, 22, 3.0);
-
-  // Find latest closed 1H candle before current trigger timeframe candle
-  let idx1h = -1;
-  for (let h = klines1h.length - 1; h >= 0; h--) {
-    const endTime1h = klines1h[h].time + 3600;
-    if (endTime1h <= curr5m.time) {
-      idx1h = h;
-      break;
-    }
-  }
-
-  if (idx1h < 50) {
-    return { ...fallback, bias1D, ema200_1D: lastEma200_1d, triggerDetail: 'Datos 1H insuficientes' };
-  }
-
-  const close1h = closes1h[idx1h];
-  const ema50Val1h = ema50_1h[idx1h];
-  const ema20Val1h = ema20_1h[idx1h];
-  const rsiVal1h = rsiSeries1h[idx1h];
-  const adxVal1h = adxSeries1h.adx[idx1h];
-  const atrVal1h = atrSeries1h[idx1h];
-  const vwapVal1h = vwapSeries1h[idx1h];
-  const macdHist1h = macdData1h.histogram[idx1h];
-  const macdHistPrev1h = idx1h > 0 ? macdData1h.histogram[idx1h - 1] : NaN;
-
-  // Volatility average for regime
-  const atrSma1hArr = new Array(klines1h.length).fill(0);
-  let atr1hSum = 0;
-  for (let idx = 0; idx < Math.min(50, atrSeries1h.length); idx++) {
-    atr1hSum += isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx];
-  }
-  if (atrSeries1h.length >= 50) atrSma1hArr[49] = atr1hSum / 50;
-  for (let idx = 50; idx < atrSeries1h.length; idx++) {
-    atr1hSum = atr1hSum - (isNaN(atrSeries1h[idx - 50]) ? 0 : atrSeries1h[idx - 50]) + (isNaN(atrSeries1h[idx]) ? 0 : atrSeries1h[idx]);
-    atrSma1hArr[idx] = atr1hSum / 50;
-  }
-  const atrSma1h = atrSma1hArr[idx1h] || 1;
-
-  // Evaluate if 1H Setup is armed within the 3-hour window with local regime evaluation (1:1 with backtester.ts)
-  const isSetupLongCandle = (hIdx: number) => {
-    const hist = macdData1h.histogram[hIdx];
-    const prevHist = macdData1h.histogram[hIdx - 1];
-    const ema200Val = !isNaN(ema200_1h[hIdx]) ? ema200_1h[hIdx] : ema50_1h[hIdx];
-    const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
-    const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
-    const adxVal = adxSeries1h.adx[hIdx];
-    const regimeOkLong = adxVal > 20 && slope > 0.0005;
-
-    return (
-      regimeOkLong &&
-      closes1h[hIdx] > vwapSeries1h[hIdx] &&
-      ema20_1h[hIdx] > ema50_1h[hIdx] &&
-      rsiSeries1h[hIdx] >= 50 && rsiSeries1h[hIdx] <= 70 &&
-      hist > 0 &&
-      hist > prevHist
-    );
-  };
-
-  const isSetupShortCandle = (hIdx: number) => {
-    const hist = macdData1h.histogram[hIdx];
-    const prevHist = macdData1h.histogram[hIdx - 1];
-    const ema200Val = !isNaN(ema200_1h[hIdx]) ? ema200_1h[hIdx] : ema50_1h[hIdx];
-    const ema200Prev5 = hIdx >= 5 ? (!isNaN(ema200_1h[hIdx - 5]) ? ema200_1h[hIdx - 5] : ema50_1h[hIdx - 5]) : ema200Val;
-    const slope = (!isNaN(ema200Prev5) && ema200Prev5 > 0) ? (ema200Val - ema200Prev5) / ema200Prev5 : 0;
-    const adxVal = adxSeries1h.adx[hIdx];
-    const regimeOkShort = adxVal > 20 && slope < -0.0005;
-
-    return (
-      regimeOkShort &&
-      closes1h[hIdx] < vwapSeries1h[hIdx] &&
-      ema20_1h[hIdx] < ema50_1h[hIdx] &&
-      rsiSeries1h[hIdx] >= 30 && rsiSeries1h[hIdx] <= 50 &&
-      hist < 0 &&
-      hist < prevHist
-    );
-  };
-
-  const isInvalidatedLong = (hIdx: number) => {
-    return closes1h[hIdx] < vwapSeries1h[hIdx] || ema20_1h[hIdx] < ema50_1h[hIdx];
-  };
-
-  const isInvalidatedShort = (hIdx: number) => {
-    return closes1h[hIdx] > vwapSeries1h[hIdx] || ema20_1h[hIdx] > ema50_1h[hIdx];
-  };
-
-  let setupArmedLong = false;
-  for (let offset = 0; offset < 3; offset++) {
-    const hIdx = idx1h - offset;
-    if (hIdx < 1) break;
-    if (isInvalidatedLong(hIdx)) continue;
-    if (isSetupLongCandle(hIdx)) {
-      setupArmedLong = true;
-      break;
-    }
-  }
-
-  let setupArmedShort = false;
-  for (let offset = 0; offset < 3; offset++) {
-    const hIdx = idx1h - offset;
-    if (hIdx < 1) break;
-    if (isInvalidatedShort(hIdx)) continue;
-    if (isSetupShortCandle(hIdx)) {
-      setupArmedShort = true;
-      break;
-    }
-  }
-
-  let momentum1H: 'ALCISTA' | 'BAJISTA' | 'NEUTRAL' = 'NEUTRAL';
-  if (setupArmedLong) momentum1H = 'ALCISTA';
-  else if (setupArmedShort) momentum1H = 'BAJISTA';
-
-  // ═══════════════════════════════════════════════════════════
-  // 3. INDICADORES DE GATILLO (5m) Y PREPARACIÓN
-  // ═══════════════════════════════════════════════════════════
-  const closes5m = klines5m.map(k => k.close);
-  const bbSeries5m = calculateBollingerBandsSeries(klines5m, 20, 2);
-  const ema9_5m = calculateEMA(closes5m, 9);
-  const ema21_5m = calculateEMA(closes5m, 21);
-  const vwapSeries5m = calculateVWAPSeries(klines5m, style === 'swing' ? '1h' : '5m', symbol);
-  const rsiSeries5m = calculateRSISeries(closes5m, 14);
-  const atrSeries5m = calculateATRSeries(klines5m, 14);
-
-  const vol5m = klines5m.map(k => k.volume);
-  const volSma5m: number[] = new Array(klines5m.length).fill(0);
-  let volSum5m = 0;
-  for (let i = 0; i < Math.min(20, vol5m.length); i++) volSum5m += vol5m[i];
-  for (let i = 20; i < vol5m.length; i++) {
-    volSma5m[i] = volSum5m / 20; // Trailing 20 bars (i-20 to i-1), strictly excluding candle i
-    volSum5m = volSum5m - vol5m[i - 20] + vol5m[i]; // Update sum including candle i for the next index
-  }
-
-  const bbIdx = lastIdx - 19;
-  const bb = bbIdx >= 0 && bbIdx < bbSeries5m.length ? bbSeries5m[bbIdx] : null;
-  const vwap5m = vwapSeries5m[lastIdx];
-  const ema9Val = ema9_5m[lastIdx];
-  const ema21Val = ema21_5m[lastIdx];
-  const rsi5m = rsiSeries5m[lastIdx];
-  const atr5m = atrSeries5m[lastIdx];
-  const volCurr5m = vol5m[lastIdx];
-  
-  const volAvg5m = volSma5m[lastIdx] > 0 ? volSma5m[lastIdx] : calculateRollingVolumeAvg(klines5m, lastIdx, 20);
-  const rvol = volAvg5m > 0 ? volCurr5m / volAvg5m : 1.0;
-
-  if (!bb || isNaN(vwap5m) || isNaN(ema9Val) || isNaN(ema21Val) || isNaN(rsi5m) || isNaN(atr5m)) {
-    return { ...fallback, bias1D, momentum1H, triggerDetail: 'Indicadores de gatillo no calculables' };
-  }
-
-  const bbWidth5m = bbSeries5m.map(b => b.middle > 0 ? (b.upper - b.lower) / b.middle * 100 : 0);
-  const last100Widths = bbWidth5m.slice(-100).filter(v => !isNaN(v)).sort((a, b) => a - b);
-  const p20BBWidth = last100Widths.length > 0 ? last100Widths[Math.floor(last100Widths.length * 0.2)] : 0;
-  const last20Widths = bbWidth5m.slice(-20);
-  const squeezePrev = last20Widths.some(w => w < p20BBWidth);
-
-  let macdHistDir: 'CRECIENTE' | 'DECRECIENTE' | 'PLANO' = 'PLANO';
-  if (!isNaN(macdHist1h) && !isNaN(macdHistPrev1h)) {
-    if (macdHist1h > macdHistPrev1h) macdHistDir = 'CRECIENTE';
-    else if (macdHist1h < macdHistPrev1h) macdHistDir = 'DECRECIENTE';
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // 4. ESTRATEGIAS DE DISPARO Y GATILLO (Asimétrico LONG vs SHORT)
-  // ═══════════════════════════════════════════════════════════
-  
-  const checkBreakoutAtIdx = (idx: number, dir: 'LONG' | 'SHORT') => {
-    if (idx < 20 || idx >= klines5m.length) return false;
-    const k = klines5m[idx];
-    const prevK = klines5m[idx - 1];
-    const b = bbSeries5m[idx - 19];
-    const prevB = bbSeries5m[idx - 20];
-    const rsi = rsiSeries5m[idx];
-    const vw = vwapSeries5m[idx];
-    const rvolLocal = (volSma5m[idx] && volSma5m[idx] > 0) ? k.volume / volSma5m[idx] : 1.0;
-
-    if (!b || !prevB || isNaN(rsi) || isNaN(vw)) return false;
-
-    if (dir === 'LONG') {
-      const gateVWAP = k.close > vw;
-      const gateBreakout = k.close > b.upper && prevK.close <= prevB.upper;
-      const gateVol = rvolLocal >= 1.5;
-      const gateRSI = rsi > 50 && rsi < 75;
-      return gateVWAP && gateBreakout && gateVol && gateRSI;
-    } else {
-      const gateVWAP = k.close < vw;
-      const gateBreakout = k.close < b.lower && prevK.close >= prevB.lower;
-      const gateVol = rvolLocal >= 1.8; // VCME v2.0 Asymmetry: 1.8x for SHORT
-      const gateRSI = rsi < 50 && rsi > 25;
-      return gateVWAP && gateBreakout && gateVol && gateRSI;
-    }
-  };
-
-  // A. PULLBACK GATILLO (Agresivo)
-  const hasPullbackLong = (idx: number) => {
-    if (idx < 10) return false;
-    const low = klines5m[idx].low;
-    const e9 = ema9_5m[idx];
-    const e21 = ema21_5m[idx];
-    const vw = vwapSeries5m[idx];
-    let swingLow10 = Infinity;
-    for (let s = idx - 10; s < idx; s++) {
-      if (klines5m[s].low < swingLow10) swingLow10 = klines5m[s].low;
-    }
-    return low <= Math.max(e9, e21, vw) && low > swingLow10;
-  };
-
-  const hasPullbackShort = (idx: number) => {
-    if (idx < 10) return false;
-    const high = klines5m[idx].high;
-    const e9 = ema9_5m[idx];
-    const e21 = ema21_5m[idx];
-    const vw = vwapSeries5m[idx];
-    let swingHigh10 = -Infinity;
-    for (let s = idx - 10; s < idx; s++) {
-      if (klines5m[s].high > swingHigh10) swingHigh10 = klines5m[s].high;
-    }
-    return high >= Math.min(e9, e21, vw) && high < swingHigh10;
-  };
-
-  const maxPrevHigh3 = Math.max(klines5m[lastIdx - 1].high, klines5m[lastIdx - 2].high, klines5m[lastIdx - 3].high);
-  const condPullbackLong = triggerMode === 'agresivo' &&
-                           (hasPullbackLong(lastIdx) || hasPullbackLong(lastIdx - 1) || hasPullbackLong(lastIdx - 2)) &&
-                           curr5m.close > maxPrevHigh3 &&
-                           curr5m.close > curr5m.open &&
-                           rvol >= 1.5 &&
-                           curr5m.close > vwap5m;
-
-  const minPrevLow3 = Math.min(klines5m[lastIdx - 1].low, klines5m[lastIdx - 2].low, klines5m[lastIdx - 3].low);
-  const condPullbackShort = triggerMode === 'agresivo' &&
-                            (hasPullbackShort(lastIdx) || hasPullbackShort(lastIdx - 1) || hasPullbackShort(lastIdx - 2)) &&
-                            curr5m.close < minPrevLow3 &&
-                            curr5m.close < curr5m.open &&
-                            rvol >= 1.8 && // VCME v2.0 Asymmetry: 1.8x volume for SHORT
-                            curr5m.close < vwap5m;
-
-  // B. BREAKOUT GATILLO
-  let condBreakoutLong = false;
-  let condBreakoutShort = false;
-
-  if (triggerMode === 'conservador') {
-    let recentBreakoutIdx = -1;
-    for (let offset = 1; offset <= 5; offset++) {
-      const idx = lastIdx - offset;
-      if (checkBreakoutAtIdx(idx, 'LONG')) {
-        recentBreakoutIdx = idx;
-        break;
-      }
-    }
-
-    if (recentBreakoutIdx !== -1) {
-      const breakoutBB = bbSeries5m[recentBreakoutIdx - 19];
-      if (breakoutBB) {
-        const level = breakoutBB.upper;
-        const retestSostenido = curr5m.low >= level * 0.998 && curr5m.close > level;
-        if (retestSostenido) condBreakoutLong = true;
-      }
-    }
-
-    let recentBreakdownIdx = -1;
-    for (let offset = 1; offset <= 5; offset++) {
-      const idx = lastIdx - offset;
-      if (checkBreakoutAtIdx(idx, 'SHORT')) {
-        recentBreakdownIdx = idx;
-        break;
-      }
-    }
-
-    if (recentBreakdownIdx !== -1) {
-      const breakdownBB = bbSeries5m[recentBreakdownIdx - 19];
-      if (breakdownBB) {
-        const level = breakdownBB.lower;
-        const retestSostenido = curr5m.high <= level * 1.002 && curr5m.close < level;
-        if (retestSostenido) condBreakoutShort = true;
-      }
-    }
-  } else {
-    const orb = getOpeningRange(klines5m, lastIdx, style === 'swing' ? '1h' : '5m', symbol);
-    const prevOrb = getOpeningRange(klines5m, lastIdx - 1, style === 'swing' ? '1h' : '5m', symbol);
-
-    const rvolBreakoutLong = (volSma5m[lastIdx - 1] && volSma5m[lastIdx - 1] > 0) ? vol5m[lastIdx - 1] / volSma5m[lastIdx - 1] : 1.0;
-    const breakoutLongPrev = prevOrb.isActive &&
-                             prev5m.close > prevOrb.high + 0.10 * atrSeries5m[lastIdx - 1] &&
-                             bbIdx > 0 && prev5m.close > bbSeries5m[bbIdx - 1].upper &&
-                             rvolBreakoutLong >= 1.5 &&
-                             (prev5m.close - bbSeries5m[bbIdx - 1].upper) <= 1.0 * atrSeries5m[lastIdx - 1];
-
-    condBreakoutLong = squeezePrev && breakoutLongPrev && curr5m.close > orb.high;
-
-    const rvolBreakoutShort = (volSma5m[lastIdx - 1] && volSma5m[lastIdx - 1] > 0) ? vol5m[lastIdx - 1] / volSma5m[lastIdx - 1] : 1.0;
-    const breakoutShortPrev = prevOrb.isActive &&
-                              prev5m.close < prevOrb.low - 0.10 * atrSeries5m[lastIdx - 1] &&
-                              bbIdx > 0 && prev5m.close < bbSeries5m[bbIdx - 1].lower &&
-                              rvolBreakoutShort >= 1.8 && // VCME v2.0 Asymmetry: 1.8x
-                              (bbSeries5m[bbIdx - 1].lower - prev5m.close) <= 1.0 * atrSeries5m[lastIdx - 1];
-
-    condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.close < orb.low;
-  }
-
-  // C. MEAN REVERSION
-  const condMRLong = bias1D === 'NEUTRAL' &&
-                     curr5m.close < bb.lower &&
-                     rsi5m < 25 &&
-                     checkBullishDivergence(klines5m, rsiSeries5m, lastIdx, 10) &&
-                     curr5m.close > curr5m.open;
-
-  const condMRShort = bias1D === 'NEUTRAL' &&
-                      curr5m.close > bb.upper &&
-                      rsi5m > 75 &&
-                      checkBearishDivergence(klines5m, rsiSeries5m, lastIdx, 10) &&
-                      curr5m.close < curr5m.open;
-
-  // ═══════════════════════════════════════════════════════════
-  // 5. FILTROS PREVIOS Y CALIDAD DE VELA (VCME v2.0 Sec 3.5 & Sec 4/5)
-  // ═══════════════════════════════════════════════════════════
-  const minutesSinceOpen = (() => {
-    const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
-    if (isCrypto) return 60;
-    let sessionStartIdx = lastIdx;
-    const expectedStep = style === 'swing' ? 3600 : 300;
-    const offset = 18000;
-    const curDay = Math.floor((curr5m.time - offset) / 86400);
-    while (sessionStartIdx > 0) {
-      const prevTime = klines5m[sessionStartIdx - 1].time;
-      const gap = klines5m[sessionStartIdx].time - prevTime;
-      if (gap > expectedStep * 3 || Math.floor((prevTime - offset) / 86400) !== curDay) {
-        break;
-      }
-      sessionStartIdx--;
-    }
-    const unitMinutes = style === 'swing' ? 60 : 5;
-    return (lastIdx - sessionStartIdx + (style === 'swing' ? 1 : 0)) * unitMinutes;
-  })();
-
-  const candleRange = curr5m.high - curr5m.low;
-  const strengthCandleLong = candleRange > 0 ? (curr5m.close > curr5m.open) && ((curr5m.close - curr5m.low) > 0.60 * candleRange) : false;
-  const strengthCandleShort = candleRange > 0 ? (curr5m.close < curr5m.open) && ((curr5m.high - curr5m.close) > 0.60 * candleRange) : false;
-
-  const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m &&
-                      candleBodyRatio(curr5m) >= 0.3 &&
-                      strengthCandleLong &&
-                      upperWickRatio(curr5m) <= 0.35 &&
-                      minutesSinceOpen >= 5 &&
-                      rvol < 8.0;
-
-  const qualityShort = (vwap5m - curr5m.close) <= 2.0 * atr5m &&
-                       candleBodyRatio(curr5m) >= 0.3 &&
-                       strengthCandleShort &&
-                       lowerWickRatio(curr5m) <= 0.35 &&
-                       minutesSinceOpen >= 5 &&
-                       rvol < 8.0;
-
-  // ═══════════════════════════════════════════════════════════
-  // 6. CONFIDENCE SCORE FÓRMULA CONTINUA (VCME v2.0 Sec 6: 0.0 a 1.0)
-  // ═══════════════════════════════════════════════════════════
-  const getContinuousConfidence = (dir: 'LONG' | 'SHORT') => {
-    const isLong = dir === 'LONG';
-    const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
-    const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
-    const macdScore = 0.20 * (isLong ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
-    const distRatio = Math.abs(curr5m.close - ema21Val) / (atr5m || 1);
-    const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
-    const vwapScore = 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0));
-    return Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
-  };
-
-  const confidenceScoreLong = getContinuousConfidence('LONG');
-  const confidenceScoreShort = getContinuousConfidence('SHORT');
-
-  const srLevel = calculateSupportResistance(klines5m, curr5m.close);
-  const distSupport = srLevel.nearestSupport > 0 ? (curr5m.close - srLevel.nearestSupport) / curr5m.close : Infinity;
-  const distResist = srLevel.nearestResistance > 0 ? (srLevel.nearestResistance - curr5m.close) / curr5m.close : Infinity;
-
-  // Legacy Discrete Score 0-9 for UI compatibility
-  const getConfluenceScore = (dir: 'LONG' | 'SHORT') => {
-    let pt = 0;
-    const isLong = dir === 'LONG';
-    if (isLong ? bias1D === 'ALCISTA' : bias1D === 'BAJISTA') pt += 2;
-    if (lastAdx1d > 25) pt += 1;
-    if (rvol >= 2.0) pt += 2;
-    if (isLong ? close1h > vwapVal1h : close1h < vwapVal1h) pt += 1;
-    if (isLong ? (macdHist1h > 0 && macdHist1h > macdHistPrev1h) : (macdHist1h < 0 && macdHist1h < macdHistPrev1h)) pt += 1;
-    if (squeezePrev) pt += 1;
-    if (isLong ? distSupport < 0.005 : distResist < 0.005) pt += 1;
-
-    return pt;
-  };
-
-  const scoreLong = getConfluenceScore('LONG');
-  const scoreShort = getConfluenceScore('SHORT');
-
-  // ═══════════════════════════════════════════════════════════
-  // 7. DETERMINAR SEÑAL FINAL, CLASIFICACIÓN Y SUPRESIÓN
-  // ═══════════════════════════════════════════════════════════
-  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  let mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
-  let triggerDetail = 'Sin disparo de gatillo';
-
-  const triggerLong = (setupArmedLong && (condPullbackLong || condBreakoutLong)) && qualityLong;
-  const triggerShort = (setupArmedShort && (condPullbackShort || condBreakoutShort)) && qualityShort;
-
-  const triggerMRLong = condMRLong && qualityLong;
-  const triggerMRShort = condMRShort && qualityShort;
-
-  if (triggerLong) {
-    signal = 'BUY';
-    mode = condPullbackLong ? 'PULLBACK' : 'BREAKOUT';
-    triggerDetail = condPullbackLong ? 'Gatillo Pullback en 5m (Ruptura micro-máximo)' : 'Gatillo Breakout 5m (Ruptura ORB/Bollinger Squeeze)';
-  } else if (triggerShort) {
-    signal = 'SELL';
-    mode = condPullbackShort ? 'PULLBACK' : 'BREAKOUT';
-    triggerDetail = condPullbackShort ? 'Gatillo Pullback en 5m (Ruptura micro-mínimo)' : 'Gatillo Breakdown 5m (Ruptura ORB/Bollinger Squeeze)';
-  } else if (triggerMRLong) {
-    signal = 'BUY';
-    mode = 'MEAN_REVERSION';
-    triggerDetail = 'Gatillo Reversión a la Media (Sobreventa extrema BB + Divergencia RSI)';
-  } else if (triggerMRShort) {
-    signal = 'SELL';
-    mode = 'MEAN_REVERSION';
-    triggerDetail = 'Gatillo Reversión a la Media (Sobrecompra extrema BB + Divergencia RSI)';
-  }
-
-  const confidenceScore = signal === 'BUY' ? confidenceScoreLong : (signal === 'SELL' ? confidenceScoreShort : Math.max(confidenceScoreLong, confidenceScoreShort));
-  const baseScore = signal === 'BUY' ? scoreLong : (signal === 'SELL' ? scoreShort : Math.max(scoreLong, scoreShort));
-  const finalScorePercent = Math.round(confidenceScore * 100);
-
-  // Suppress signal if confidence score is below 0.65 threshold (VCME v2.0 Sec 6)
-  if (signal !== 'NEUTRAL' && confidenceScore < 0.65) {
-    signal = 'NEUTRAL';
-    mode = 'NONE';
-    triggerDetail = `Confidence Score insuficiente: ${(confidenceScore * 100).toFixed(0)}% (requerido >= 65%)`;
-  }
-
-  // Clasificación Trade Type (DAY vs SWING - Sec 8.3 sincronizado con backtester.ts)
-  let tradeType: 'DAY' | 'SWING' = 'DAY';
-  if (lastAdx1d > 30) {
-    if ((signal === 'BUY' && macdHist1h > macdHistPrev1h) ||
-        (signal === 'SELL' && macdHist1h < macdHistPrev1h)) {
-      tradeType = 'SWING';
-    }
-  }
-
-  let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
-  if (signal !== 'NEUTRAL') {
-    if (confidenceScore >= 0.75) confidence = 'ALTA';
-    else if (confidenceScore >= 0.65) confidence = 'MODERADA';
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // 8. GESTIÓN DE RIESGO ASIMÉTRICA Y CHANDELIER EXIT (VCME v2.0)
-  // ═══════════════════════════════════════════════════════════
-  let stopLoss = 0;
-  let takeProfit1 = 0;
-  let takeProfit2 = 0;
-  let takeProfit3 = 0;
-  let riskRewardRatio = 0;
-  let chandelierExit = 0;
-
-  const entry = (executionPrice && executionPrice > 0) ? executionPrice : curr5m.close;
-  
-  const lookbackS = Math.max(0, lastIdx - (tradeType === 'SWING' ? 5 : 10));
-  let swingLow = Infinity;
-  let swingHigh = -Infinity;
-  for (let s = lookbackS; s < lastIdx; s++) {
-    if (klines5m[s].low < swingLow) swingLow = klines5m[s].low;
-    if (klines5m[s].high > swingHigh) swingHigh = klines5m[s].high;
-  }
-
-  // Asymmetric SL multipliers (LONG: 1.5 ATR / SHORT: 1.8 ATR)
-  const atrMultLong = 1.5;
-  const atrMultShort = 1.8;
-  const tp1Mult = 2.0;
-  const tp2Mult = 3.5;
-  const tp3Mult = 5.0;
-
-  const chandelierLong = chandelierData.long[idx1h];
-  const chandelierShort = chandelierData.short[idx1h];
-
-  if (signal === 'BUY') {
-    const slATR = entry - atrMultLong * atr5m;
-    const slStruct = swingLow > 0 ? (swingLow - 0.20 * atr5m) : slATR;
-    stopLoss = Math.min(slATR, slStruct);
-    let risk = entry - stopLoss;
-    if (risk <= 0) {
-      signal = 'NEUTRAL';
-      mode = 'NONE';
-      confidence = 'DESCARTAR';
-      triggerDetail = 'Descartado: Stop loss inválido (riesgo <= 0)';
-      stopLoss = 0;
-    } else {
-      const minRisk = 0.8 * atr5m;
-      const maxRisk = 1.8 * atr5m;
-
-      if (risk < minRisk) {
-        stopLoss = entry - minRisk;
-        risk = minRisk;
-      }
-
-      const riskPercent = entry > 0 ? risk / entry : 0;
-      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
-      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
-        signal = 'NEUTRAL';
-        mode = 'NONE';
-        confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
-        stopLoss = 0;
-      } else {
-        chandelierExit = !isNaN(chandelierLong) ? chandelierLong : (entry - 3.0 * atrVal1h);
-        takeProfit1 = entry + tp1Mult * risk;
-        takeProfit2 = entry + tp2Mult * risk;
-        takeProfit3 = entry + tp3Mult * risk;
-        riskRewardRatio = tp1Mult;
-      }
-    }
-  } else if (signal === 'SELL') {
-    const slATR = entry + atrMultShort * atr5m;
-    const slStruct = swingHigh > 0 ? (swingHigh + 0.20 * atr5m) : slATR;
-    stopLoss = Math.max(slATR, slStruct);
-    let risk = stopLoss - entry;
-    if (risk <= 0) {
-      signal = 'NEUTRAL';
-      mode = 'NONE';
-      confidence = 'DESCARTAR';
-      triggerDetail = 'Descartado: Stop loss inválido (riesgo <= 0)';
-      stopLoss = 0;
-    } else {
-      const minRisk = 0.8 * atr5m;
-      const maxRisk = 1.8 * atr5m;
-
-      if (risk < minRisk) {
-        stopLoss = entry + minRisk;
-        risk = minRisk;
-      }
-
-      const riskPercent = entry > 0 ? risk / entry : 0;
-      const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
-      if (risk > maxRisk || riskPercent > maxAllowedRisk) {
-        signal = 'NEUTRAL';
-        mode = 'NONE';
-        confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
-        stopLoss = 0;
-      } else {
-        chandelierExit = !isNaN(chandelierShort) ? chandelierShort : (entry + 3.0 * atrVal1h);
-        takeProfit1 = entry - tp1Mult * risk;
-        takeProfit2 = entry - tp2Mult * risk;
-        takeProfit3 = entry - tp3Mult * risk;
-        riskRewardRatio = tp1Mult;
-      }
-    }
-  }
-
-  // Position sizing (1% risk, max 20% position size limit - Sec 7)
-  const accountEquity = 10000;
-  const riskAmount = 100; // 1% of 10,000 USD
-  const stopDistance = Math.abs(entry - stopLoss);
-  let positionSizeUnits = (signal !== 'NEUTRAL' && stopDistance > 0) ? riskAmount / stopDistance : 0;
-  const maxUnits = entry > 0 ? (0.20 * accountEquity) / entry : 0;
-  positionSizeUnits = Math.min(positionSizeUnits, maxUnits);
-
-  const adaptiveFactor = 1.0;
-  const marketRegime = atrVal1h > 1.2 * atrSma1h ? 'Alta Volatilidad' : 'Normal';
-  const volatilityProfile = avgDailyRange > 3.5 ? 'Alta Volatilidad' : 'Normal';
-  const recentPerfLabel = 'VCME v2.0 Activo';
-
-  const sr = (Math.abs(entry - curr5m.close) < 0.0001) ? srLevel : calculateSupportResistance(klines5m, entry);
-  const atrPercent = entry > 0 ? (atr5m / entry * 100) : 0;
-
-  return {
-    signal,
-    mode,
-    tradeType,
-    stopLoss,
-    takeProfit1,
-    takeProfit2,
-    takeProfit3,
-    riskRewardRatio,
-    chandelierExit,
-    positionSizeUnits,
-    riskAmount,
-    confidenceScore,
-    bias1D,
-    adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
-    momentum1H,
-    triggerDetail,
-    rsi1H: Number(rsiVal1h.toFixed(1)),
-    macdHistDirection: macdHistDir,
-    ema200_1D: lastEma200_1d,
-    ema50_1H: ema50Val1h,
-    vwap5m,
-    bbUpper5m: bb.upper,
-    bbLower5m: bb.lower,
-    isTrendUp: bias1D === 'ALCISTA',
-    nearestSupport: sr.nearestSupport,
-    nearestResistance: sr.nearestResistance,
-    score: finalScorePercent,
-    baseScore,
-    adaptiveFactor,
-    marketRegime,
-    volatilityProfile,
-    recentPerfLabel,
-    atrPercent: Number(atrPercent.toFixed(2)),
-    avgDailyRange: Number(avgDailyRange.toFixed(2)),
-    confidence,
-    snapshot: {
-      atr_5m: Number(atr5m.toFixed(2)),
-      atr_1H: Number(atrVal1h.toFixed(2)),
-      ema21_1H: Number(ema20Val1h.toFixed(2)),
-      vwap_5m: Number(vwap5m.toFixed(2)),
-      rvol: Number(rvol.toFixed(2))
-    }
-  };
+  const ctx = buildVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
+  return evaluateVCMESniperAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
 }
 
 // ============================================================================
@@ -3014,179 +2057,6 @@ export function calculateMultifractalMTFSignal(
   _symbol: string = 'ASSET',
   executionPrice?: number
 ): MultifractalMTFSignalResult {
-  if (!klines5m || klines5m.length < 20) {
-    return {
-      signal: 'NEUTRAL',
-      strategy: 'NONE',
-      stopLoss: 0,
-      triggerPrice: 0,
-      isCompressed1H: false,
-      bias1D: 'NEUTRAL',
-      activeVolumePercent5M: 0,
-      volumeMultiplier5M: 0,
-      andianGreen: 0,
-      andianRed: 0,
-      andianOrange: 0,
-      volatilityWidth1H: 0,
-      dreadBlitzMCD: 0,
-      isOverbought5M: false,
-      isOversold5M: false,
-      reasoning: 'Datos insuficientes — se requieren al menos 20 velas de 5m'
-    };
-  }
-
-  // 1. MACRO FILTER (1D - Andian)
-  // Bug #5 fix: if klines1d is insufficient, return NEUTRAL bias instead of
-  // falling back to klines5m. 5m candles do not represent daily bull/bear strength.
-  let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-  let lastAndian: ReturnType<typeof calculateAndianOscillator>[number] = { green: 0, red: 0, orange: 0, bias: 'NEUTRAL' };
-  if (klines1d.length >= 14) {
-    const andianSeries = calculateAndianOscillator(klines1d);
-    if (andianSeries.length > 0) {
-      lastAndian = andianSeries[andianSeries.length - 1];
-      bias1D = lastAndian.bias;
-    }
-  }
-
-  // 2. CONTEXT FILTER (1H - Revolution Volatility Band Squeeze)
-  // Bug #6 fix: if klines1h is insufficient, isCompressed1H = false (not a valid
-  // squeeze reading). Without Layer 2, only Mean Reversion strategy can fire.
-  let isCompressed1H = false;
-  let current1HBand = { width: 0, midpoint: 0, upper: 0, lower: 0 };
-  if (klines1h.length >= 20) {
-    const volBands1H = calculateRevolutionVolatilityBand(klines1h);
-    const recent1H = volBands1H.slice(-4);
-    isCompressed1H = recent1H.some(b => b.isCompressed);
-    if (volBands1H.length > 0) {
-      current1HBand = volBands1H[volBands1H.length - 1];
-    }
-  }
-
-  // 3. TRIGGER CONDITIONS (5M - Volume & Volatility / Dread Blitz)
-  const volBands5M = calculateRevolutionVolatilityBand(klines5m);
-  const volComp5M = calculateVolumeComposition(klines5m);
-  const dreadBlitz5M = calculateDreadBlitz(klines5m);
-
-  const currCandle = klines5m[klines5m.length - 1];
-  const currVolComp = volComp5M[volComp5M.length - 1] || { volumeMultiplier: 1, activeBuyPercent: 50, activeSellPercent: 50, isPassiveBuyAbsorption: false, isPassiveSellAbsorption: false };
-  const curr5MBand = volBands5M[volBands5M.length - 1] || { upper: currCandle.high, lower: currCandle.low, midpoint: currCandle.close };
-  const currDread = dreadBlitz5M[dreadBlitz5M.length - 1] || { isOverbought: false, isOversold: false, mcd: 0 };
-  const prevDread = dreadBlitz5M.length > 1 ? dreadBlitz5M[dreadBlitz5M.length - 2] : currDread;
-  const prevCandle = klines5m.length > 1 ? klines5m[klines5m.length - 2] : currCandle;
-
-  // The formatter handles EST/EDT automatically and timestamps are Unix seconds.
-  const isNyseOpening = isNyseOpeningWindow(currCandle.time, _symbol);
-  const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
-
-  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  let strategy: 'BREAKOUT_EXPANSION' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
-  let stopLoss = 0;
-  let reasoning = '';
-
-  // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN DE VOLATILIDAD (LONG)
-  if (
-    bias1D === 'BULLISH' &&
-    isCompressed1H &&
-    currCandle.close > curr5MBand.upper &&
-    currVolComp.volumeMultiplier >= minVolMultiplier &&
-    currVolComp.activeBuyPercent >= 65
-  ) {
-    signal = 'BUY';
-    strategy = 'BREAKOUT_EXPANSION';
-    stopLoss = curr5MBand.midpoint;
-    reasoning = `Placing SL at channel midpoint (${formatSmartPrice(stopLoss)}) for institutional breakout expansion hypothesis.`;
-  }
-  // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN DE VOLATILIDAD (SHORT)
-  else if (
-    bias1D === 'BEARISH' &&
-    isCompressed1H &&
-    currCandle.close < curr5MBand.lower &&
-    currVolComp.volumeMultiplier >= minVolMultiplier &&
-    currVolComp.activeSellPercent >= 65
-  ) {
-    signal = 'SELL';
-    strategy = 'BREAKOUT_EXPANSION';
-    stopLoss = curr5MBand.midpoint;
-    reasoning = `Placing SL at channel midpoint (${formatSmartPrice(stopLoss)}) for institutional breakdown expansion hypothesis.`;
-  }
-  // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (LONG)
-  else if (
-    currDread.isOversold &&
-    currCandle.low < prevCandle.low &&
-    currDread.mcd > prevDread.mcd && // Bullish Divergence
-    currVolComp.isPassiveBuyAbsorption
-  ) {
-    signal = 'BUY';
-    strategy = 'MEAN_REVERSION';
-    stopLoss = currCandle.low - (curr5MBand.upper - curr5MBand.lower) * 0.25;
-    reasoning = `Placing SL below absorption low (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
-  }
-  // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (SHORT)
-  else if (
-    currDread.isOverbought &&
-    currCandle.high > prevCandle.high &&
-    currDread.mcd < prevDread.mcd && // Bearish Divergence
-    currVolComp.isPassiveSellAbsorption
-  ) {
-    signal = 'SELL';
-    strategy = 'MEAN_REVERSION';
-    stopLoss = currCandle.high + (curr5MBand.upper - curr5MBand.lower) * 0.25;
-    reasoning = `Placing SL above absorption high (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
-  }
-
-  // 4. RISK BOUNDS & DIRECTIONAL VALIDITY (Institutional Parity)
-  const atrSeries5M = calculateATRSeries(klines5m, 14);
-  const atr5m = (atrSeries5M.length > 0 && !isNaN(atrSeries5M[atrSeries5M.length - 1]) && atrSeries5M[atrSeries5M.length - 1] > 0)
-    ? atrSeries5M[atrSeries5M.length - 1]
-    : (currCandle.close * 0.005);
-  const minRisk = 0.8 * atr5m;
-  const maxRisk = 2.0 * atr5m;
-  const maxAllowedRiskPct = 0.025; // 2.5% max risk for 12-candle horizon
-
-  const triggerPrice = (executionPrice && executionPrice > 0) ? executionPrice : currCandle.close;
-
-  if (signal !== 'NEUTRAL' && stopLoss > 0) {
-    let risk = signal === 'BUY' ? triggerPrice - stopLoss : stopLoss - triggerPrice;
-    const isValidRisk = signal === 'BUY' ? stopLoss < triggerPrice : stopLoss > triggerPrice;
-
-    if (!isValidRisk || risk <= 0) {
-      signal = 'NEUTRAL';
-      strategy = 'NONE';
-      stopLoss = 0;
-      reasoning = 'Señal descartada: stop loss inválido o en precio de entrada (riesgo cero)';
-    } else {
-      if (risk < minRisk) {
-        stopLoss = signal === 'BUY' ? triggerPrice - minRisk : triggerPrice + minRisk;
-        risk = minRisk;
-      }
-      const riskPercent = risk / triggerPrice;
-      if (risk > maxRisk || riskPercent > maxAllowedRiskPct) {
-        signal = 'NEUTRAL';
-        strategy = 'NONE';
-        stopLoss = 0;
-        reasoning = `Señal descartada: riesgo excesivo (${(riskPercent * 100).toFixed(2)}% > 2.50%) inalcanzable en 12 velas`;
-      }
-    }
-  }
-
-  const activeVolPercent = signal === 'SELL' ? currVolComp.activeSellPercent : currVolComp.activeBuyPercent;
-
-  return {
-    signal,
-    strategy,
-    stopLoss,
-    triggerPrice,
-    isCompressed1H,
-    bias1D,
-    activeVolumePercent5M: activeVolPercent,
-    volumeMultiplier5M: currVolComp.volumeMultiplier,
-    andianGreen: lastAndian.green,
-    andianRed: lastAndian.red,
-    andianOrange: lastAndian.orange,
-    volatilityWidth1H: current1HBand.width,
-    dreadBlitzMCD: currDread.mcd,
-    isOverbought5M: currDread.isOverbought,
-    isOversold5M: currDread.isOversold,
-    reasoning: reasoning || 'Sin señal activa — esperando alineación de compuertas MTF'
-  };
+  const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
+  return evaluateMultifractalMTFAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
 }

@@ -15,8 +15,7 @@ import {
   backtestConfluencia,
   backtestScoring,
   backtestMultitemporal,
-  backtestMultifractalMTF,
-  getTrendFilter
+  backtestMultifractalMTF
 } from '../utils/backtester';
 import { formatSmartPrice } from '../utils/formatters';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
@@ -211,9 +210,9 @@ export default function MarketRadar({
       const voting1h = closed1h.length >= 35 ? calculateStandardVoting(closed1h) : null;
       const voting1d = closed1d.length >= 30 ? calculateStandardVoting(closed1d) : null;
 
-      const sig5m = voting5m ? voting5m.rawSignal : 'NEUTRAL';
-      const sig1h = voting1h ? voting1h.rawSignal : 'NEUTRAL';
-      const sig1d = voting1d ? voting1d.rawSignal : 'NEUTRAL';
+      const sig5m = voting5m ? voting5m.signal : 'NEUTRAL';
+      const sig1h = voting1h ? voting1h.signal : 'NEUTRAL';
+      const sig1d = voting1d ? voting1d.signal : 'NEUTRAL';
 
       const isBuy5m = sig5m.includes('BUY');
       const isBuy1h = sig1h.includes('BUY');
@@ -224,17 +223,17 @@ export default function MarketRadar({
       const isSell1d = sig1d.includes('SELL');
 
       // Helper to assign signal score (-1.0 to +1.0)
-      const getSigScore = (sig: string) => {
-        if (sig === 'STRONG BUY') return 1.0;
-        if (sig === 'BUY') return 0.6;
-        if (sig === 'STRONG SELL') return -1.0;
-        if (sig === 'SELL') return -0.6;
-        return 0;
+      const getSigScore = (voting: typeof voting5m) => {
+        if (!voting || voting.signal === 'NEUTRAL') return 0;
+        const isBuy = voting.signal.includes('BUY');
+        const isStrong = voting.rawSignal.includes('STRONG') || (isBuy ? voting.buyVotes >= 4 : voting.sellVotes >= 4);
+        if (isBuy) return isStrong ? 1.0 : 0.8;
+        return isStrong ? -1.0 : -0.8;
       };
 
-      const score5m = getSigScore(sig5m);
-      const score1h = getSigScore(sig1h);
-      const score1d = getSigScore(sig1d);
+      const score5m = getSigScore(voting5m);
+      const score1h = getSigScore(voting1h);
+      const score1d = getSigScore(voting1d);
 
       // Weighted multitemporal score (1D: 45%, 1H: 35%, 5m: 20%)
       const weightedScore = (score1d * 0.45) + (score1h * 0.35) + (score5m * 0.20);
@@ -285,16 +284,6 @@ export default function MarketRadar({
         overallSig = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol).signal;
       } else {
         overallSig = sig5m;
-      }
-
-      if (tourney.bestStrategy !== 'multitemporal' && tourney.bestStrategy !== 'multifractal') {
-        const closes5m = closed5m.map(k => k.close);
-        const trend = getTrendFilter(closes5m);
-        if (trend === 'UP' && (overallSig === 'SELL' || overallSig === 'STRONG SELL')) {
-          overallSig = 'NEUTRAL';
-        } else if (trend === 'DOWN' && (overallSig === 'BUY' || overallSig === 'STRONG BUY')) {
-          overallSig = 'NEUTRAL';
-        }
       }
 
       // ── 3. RVOL (Rolling 20-bar Volume SMA excluding trigger candle) & Bollinger Volatility ──

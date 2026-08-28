@@ -10,7 +10,7 @@ import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, type VCMESniperResult, type MultifractalMTFSignalResult } from './utils/indicators';
-import { getTrendFilter, backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF, createFallbackBacktestResult, type BacktestResult } from './utils/backtester';
+import { backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF, createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult } from './utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import { APP_VERSION } from './version';
 import {
@@ -181,18 +181,9 @@ function App() {
       signal = result.signal;
     } else {
       const voting = calculateStandardVoting(data);
-      signal = voting.rawSignal;
+      signal = voting.signal;
     }
 
-    if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
-      const closes = data.map(k => k.close);
-      const trend = getTrendFilter(closes);
-      if (trend === 'UP' && (signal === 'SELL' || signal === 'STRONG SELL')) {
-        signal = 'NEUTRAL';
-      } else if (trend === 'DOWN' && (signal === 'BUY' || signal === 'STRONG BUY')) {
-        signal = 'NEUTRAL';
-      }
-    }
     return signal;
   };
 
@@ -546,17 +537,7 @@ function App() {
             signalKlines = closed5m;
           } else {
             const voting = calculateStandardVoting(closedData);
-            overallSignal = voting.rawSignal;
-          }
-
-          if (bestStrategy !== 'NONE' && bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
-            const closesList = closedData.map(k => k.close);
-            const trend = getTrendFilter(closesList);
-            if (trend === 'UP' && (overallSignal === 'SELL' || overallSignal === 'STRONG SELL')) {
-              overallSignal = 'NEUTRAL';
-            } else if (trend === 'DOWN' && (overallSignal === 'BUY' || overallSignal === 'STRONG BUY')) {
-              overallSignal = 'NEUTRAL';
-            }
+            overallSignal = voting.signal;
           }
 
           // ── Check signal validity & handle Cooldown ──────────────────────
@@ -588,12 +569,7 @@ function App() {
           const alreadyFiredForCandle = candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal);
 
           const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
-          const cooldownMs = signalInterval === '5m'
-            ? 15 * 60 * 1000        // 15 min for 5m intraday day trading
-            : signalInterval === '1h'
-              ? 60 * 60 * 1000      // 1 hour for 1h swing trading
-              : 12 * 60 * 60 * 1000; // 12 hours for 1d position trading
-
+          const cooldownMs = getStrategyCooldownMs(signalInterval, executionStyle);
           const isCooldownElapsed = (now - lastAlertTime) >= cooldownMs;
 
           // Allow alert if:

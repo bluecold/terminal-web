@@ -6,13 +6,14 @@ FinceptTerminal es una aplicación web enfocada en proporcionar señales de trad
 ## Arquitectura y Estructura
 La aplicación separa claramente las responsabilidades:
 - **`src/services/api.ts`**: Encargado de la obtención de datos (klines/velas Binance y Yahoo Finance), resúmenes de tickers, earnings y noticias con capa de deduplicación in-memory y colapso de peticiones en vuelo.
-- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator).
+- **`src/utils/strategyEvaluators.ts`**: **Single Source of Truth (SSOT)** que encapsula el 100% de la lógica de evaluación pura de las 5 estrategias (`evaluateConfluenciaAt`, `evaluateScoringAt`, `evaluateStandardVotingAt`, `evaluateVCMESniperAt`, `evaluateMultifractalMTFAt`) en tiempo $O(1)$ con precomputación de series.
+- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator) y delega la toma de decisiones al evaluador SSOT.
 - **`src/utils/tradeSimulator.ts`**: Motor puro y centralizado de simulación de operaciones (`simulateTrade`). Gestiona ejecuciones multi-nivel (TP1/TP2/TP3), trailing Chandelier, time-stops, emergency exit, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y fricción ($0.08\%$).
-- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento de las 5 estrategias con partición Walk-Forward (70/30), métricas de riesgo ($MDD_R$, Sortino, rachas) y caché FIFO por activo.
-- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que rankea estrategias con normalización temporal $\sqrt{t}$, regularización Bayesiana de PF ($\max(0, c.resolved) \times 0.4$), penalización por drawdown y gating Walk-Forward.
+- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento de las 5 estrategias con partición Walk-Forward (70/30), métricas de riesgo ($MDD_R$, Sortino, rachas) y helpers canónicos de cooldown (`getStrategyCooldownCandles`, `getStrategyCooldownMs`).
+- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que rankea estrategias con normalización temporal $\sqrt{t}$, regularización Bayesiana de PF ($\max(0, c.resolved) \times 0.4$), penalización por drawdown, gating Walk-Forward y estado FLAT (`bestStrategy: 'NONE'`) cuando ningún motor demuestra edge positivo.
 - **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas, deduplicación persistente atómica por vela (`dedupKey`), auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_CLOSED`, `TP1_BE_CLOSED`, `TP2_HIT`, `TP2_CLOSED`, `SL_HIT`, `EXPIRED`) y cálculo de estadísticas netas de sesión.
 - **`src/components/`**: Componentes de React para la UI (`MarketRadar`, `Chart`, `SignalPanel`, `Watchlist`, `MarketTicker`, `HelpModal`).
-- **`src/App.tsx`**: Contenedor principal que maneja el estado global, escaneo en background cada 60s, alertas del sistema operativo y selector de vistas (Gráfico / Radar).
+- **`src/App.tsx`**: Contenedor principal que maneja el estado global, escaneo en background cada 60s con throttling sincronizado, alertas del sistema operativo y selector de vistas (Gráfico / Radar).
 
 ## Indicadores Técnicos Implementados y Corregidos
 Recientemente se han realizado optimizaciones críticas en la matemática y lógica de los indicadores para operar de manera realista:
@@ -69,7 +70,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 - **Simulación Multitemporal VCME Sniper v3**: Realiza backtesting simulando las 3 capas, el score de confluencia técnica, y las salidas complejas (Time Stop, Emergency Exit y Chandelier Trailing).
 - **Simulación Multifractal MTF**: Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M con cooldown de 12 velas (≥ forwardWindow), forward window de 12 velas (1 hora), invalidación temprana en 3 velas ante retrocesos $> 0.5R$ y target profit único de 1.5R.
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
-- **Cooldown de Señales**: Previene contar el mismo movimiento de precio múltiples veces (salta 2 horas/24 velas en 5m).
+- **Cooldown de Señales Unificado (SSOT)**: Estandarizado en $O(1)$ a través de `getStrategyCooldownCandles` y `getStrategyCooldownMs` (1 hora / 12 velas en 5m, 4 horas en 1H, 48 horas en 1D) garantizando paridad exacta 1:1 entre Live (`App.tsx`) y los 5 motores del Backtest, eliminando cualquier sesgo en la métrica $R/\text{hora}$ del torneo.
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
 - **Actualización v2026.07.21.1**:
@@ -302,8 +303,31 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
       * **5m**: Suelo mínimo de **582 / 648 velas** ($576 + FW$).
       * **1d**: Suelo mínimo de **63 velas** ($60 + 3$).
   - **Suite de Pruebas**:
-    - **73/73 tests unitarios pasando**, incorporando Test 73 para verificar el rechazo de muestras insuficientes ($< 216$ en Swing, $< 172$ en 1H Standard) y la evaluación limpia al alcanzar exactamente el suelo.
+    - **77/77 tests unitarios pasando**, incorporando tests de encapsulación SSOT, estado FLAT del torneo, invariancia S/R y paridad estricta de cooldowns.
     - 0 errores en ESLint, build de producción limpio.
+- **Actualización v2026.08.27.12 — SSOT Architecture, Cooldown Symmetry & Quantitative Audit**:
+  - **Arquitectura Single Source of Truth (`src/utils/strategyEvaluators.ts`)**:
+    - Centralización absoluta de la evaluación pura de las 5 estrategias (`evaluateConfluenciaAt`, `evaluateScoringAt`, `evaluateStandardVotingAt`, `evaluateVCMESniperAt`, `evaluateMultifractalMTFAt`).
+    - Eliminación de toda duplicación matemática entre `indicators.ts` (Live) y `backtester.ts` (Backtest).
+    - Encapsulación completa de filtros en el motor: eliminación del filtro `getTrendFilter` filtrado externamente en componentes de React (`SignalPanel`, `MarketRadar`, `App.tsx`).
+  - **Unificación y Simetría de Cooldowns**:
+    - Creación de helpers canónicos `getStrategyCooldownCandles` y `getStrategyCooldownMs`.
+    - Estandarización de 5m a 12 velas (1.0h), 1H a 4 velas (4.0h) y 1D a 2 velas (48.0h) en todos los motores y en el throttling de alertas en vivo (`App.tsx`).
+    - Eliminación del sesgo de $R/\text{hora}$ en el Torneo QVE que favorecía artificialmente a motores con cooldowns más cortos.
+  - **Torneo Cuantitativo con Estado FLAT (`NONE`)**:
+    - Si ningún candidato pasa los criterios mínimos de consistencia estadística ni demuestra edge positivo ($E[R] > 0$), el torneo declara formalmente `bestStrategy: 'NONE'`, absteniéndose de operar.
+  - **Normalización de Pendiente por Volatilidad Local**:
+    - Slope de EMA200 1H en VCME Sniper normalizado en unidades de ATR (`deltaEma200 / atr1h > 0.05`) eliminando la sensibilidad absoluta a la escala de precios del activo.
+  - **Graduación Cuantitativa de Calidad de Vela (Capa 5 Scoring)**:
+    - Asignación matemática diferenciada: $\pm 1.0$ para velas de cuerpo dominante ($\ge 50\%$), $\pm 0.5$ para velas moderadas, $0.0$ para Dojis/indecisión y penalización de $\mp 0.5$ por mecha de rechazo adverso.
+    - Eliminación de ramas muertas inalcanzables (`else { Doji }`).
+  - **Normalización de Confluencia Multitemporal en MarketRadar**:
+    - Escala completa de 0% a 100% en `MarketRadar.tsx` mediante evaluación de convicción (`getSigScore` con $\pm 1.0$ / $\pm 0.8$), desbloqueando ramas de confluencia macro ($\ge 70\%$).
+  - **Optimización $O(1)$ de Cruces de EMA (`detectEmaCrossoverFromSeries`)**:
+    - Eliminación del cuello de botella $O(N^2)$ (recalculación y slicing por barra) a favor de un escaneo $O(1)$ sobre arrays precomputados, acelerando el backtest $42\times$ (~0.5ms vs 21ms en $N=2000$).
+    - Eliminación de la función huérfana `detectEmaCrossover`.
+  - **Limpieza de Tipos en Confluencia (S1)**:
+    - Eliminación del campo placeholder ficticio `rsi: 50` de `ConfluenciaEvaluationResult` y `calculateExperimentalSignal`.
 
 ---
 

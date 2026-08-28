@@ -5,8 +5,7 @@ import {
   backtestConfluencia,
   backtestScoring,
   backtestMultitemporal,
-  backtestMultifractalMTF,
-  getTrendFilter
+  backtestMultifractalMTF
 } from '../utils/backtester';
 import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
@@ -249,10 +248,6 @@ export default function SignalPanel({
     return klines.length > 1 ? klines.slice(0, -1) : klines;
   }, [klines]);
 
-  const closedCloses = useMemo(() => {
-    return closes.length > 1 ? closes.slice(0, -1) : closes;
-  }, [closes]);
-
   // Extract klines for the VCME Sniper 3-layer strategy
   const klines5m = useMemo(() => allKlines['5m'] || [], [allKlines]);
   const klines1h = useMemo(() => allKlines['1h'] || [], [allKlines]);
@@ -336,35 +331,16 @@ export default function SignalPanel({
   }, [bestStrategy]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const rawOverallSignal = useMemo(() => {
+  const overallSignal = useMemo(() => {
     if (bestStrategy === 'NONE') return 'NEUTRAL';
     if (bestStrategy === 'confluencia') return exp.signal;
     if (bestStrategy === 'scoring') return score.signal;
     if (bestStrategy === 'multitemporal') return multi.signal;
     if (bestStrategy === 'multifractal') return multifractal.signal;
-    return rawSignal;
-  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, rawSignal]);
+    return voting.signal;
+  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, voting.signal]);
 
-  const trend = useMemo(() => getTrendFilter(closedCloses), [closedCloses]);
-  let overallSignal = rawOverallSignal;
   let overallColor = 'var(--text-primary)';
-  let isFiltered = false;
-  let filterReason = '';
-
-  if (bestStrategy !== 'multitemporal' && bestStrategy !== 'multifractal') {
-    if (trend === 'UP' && (rawOverallSignal === 'SELL' || rawOverallSignal === 'STRONG SELL')) {
-      overallSignal = 'NEUTRAL';
-      overallColor = 'var(--text-secondary)';
-      isFiltered = true;
-      filterReason = 'Señal de VENTA bloqueada por tendencia alcista macro (EMA 200)';
-    } else if (trend === 'DOWN' && (rawOverallSignal === 'BUY' || rawOverallSignal === 'STRONG BUY')) {
-      overallSignal = 'NEUTRAL';
-      overallColor = 'var(--text-secondary)';
-      isFiltered = true;
-      filterReason = 'Señal de COMPRA bloqueada por tendencia bajista macro (EMA 200)';
-    }
-  }
-
   if (overallSignal.includes('BUY')) {
     overallColor = 'var(--accent-green)';
   } else if (overallSignal.includes('SELL')) {
@@ -376,7 +352,7 @@ export default function SignalPanel({
   let overallColorGlow = 'none';
   let overallBorder = 'var(--border-color)';
   let overallBg = 'linear-gradient(135deg, rgba(255, 255, 255, 0.01) 0%, rgba(0, 0, 0, 0.1) 100%)';
-  if (!isFiltered && closes.length > 0) {
+  if (closes.length > 0) {
     if (overallSignal.includes('BUY')) {
       overallColorGlow = '0 0 20px rgba(16, 185, 129, 0.12)';
       overallBorder = 'rgba(16, 185, 129, 0.25)';
@@ -541,7 +517,7 @@ export default function SignalPanel({
             <span style={{ opacity: 0.85, fontWeight: '500' }}>· {tournamentResult.reasoning}</span>
           </div>
         )}
-        {isFiltered && (
+        {bestStrategy === 'standard' && voting.rawSignal !== 'NEUTRAL' && voting.signal === 'NEUTRAL' && (
           <div style={{ 
             color: 'var(--accent-blue)', 
             fontSize: '0.75rem', 
@@ -554,7 +530,7 @@ export default function SignalPanel({
             justifyContent: 'center',
             gap: '6px'
           }}>
-            <span>⚠️</span> <span>{filterReason}</span>
+            <span>⚠️</span> <span>Señal preliminar ({voting.rawSignal}) filtrada por confirmación interna (RVOL / EMA 200 / Anatomía)</span>
           </div>
         )}
       </div>

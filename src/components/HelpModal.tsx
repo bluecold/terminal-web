@@ -254,9 +254,9 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 howItWorks={[
                   'EMA 9 > EMA 20 para BUY (tendencia de corto plazo alcista)',
                   'Precio sobre VWAP de sesión (compradores dominan)',
-                  'Volumen de la vela > promedio de 20 velas (confirmación)',
+                  'Volumen de la vela ≥ 80% del promedio de 20 velas (confirmación)',
                   'Patrón de vela válido: martillo, envolvente alcista, o cierre fuerte (cuerpo ≥ 40%)',
-                  'closePosition ≥ 0.60: el cierre está en el tercio superior de la vela',
+                  'closePosition: ≥ 0.50 para BUY (mitad superior) / ≤ 0.50 para SELL (mitad inferior)',
                   'Filtro anti-chasing: precio no más de 2.2 × ATR del VWAP',
                 ]}
                 strengths={['Muy intuitivo — basado en principios clásicos de price action', 'Bajo ruido cuando el mercado tiene dirección clara', 'Rápido de calcular — sin dependencias multitemporal']}
@@ -304,7 +304,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   'Filtro final: EMA 200 como tendencia macro + closePosition de la vela',
                 ]}
                 strengths={['Robusto: requiere consenso, no depende de un solo indicador', 'El filtro EMA 200 evita operar contra la tendencia mayor', 'Transparente — podés ver exactamente qué vota cada indicador en la UI']}
-                weaknesses={['Los indicadores clásicos son laggeados: señalan movimientos que ya empezaron', 'En tendencias fuertes, RSI y Bollinger están permanentemente en zona extrema → muchos NEUTRALes', 'RVOL asimétrico: BUY necesita 1.2×, SELL solo 0.8×; leve bias alcista']}
+                weaknesses={['Los indicadores clásicos son laggeados: señalan movimientos que ya empezaron', 'En tendencias fuertes, RSI y Bollinger están permanentemente en zona extrema → muchos NEUTRALes', 'RVOL adaptativo: BUY base 0.9×, SELL base 0.6×; sube a 1.1× si el margen de votos es estrecho (< 2)']}
                 bestFor="Mercados con impulso claro y volumen confirmatorio. Bueno en timeframes 1h y 1d"
                 considerations="El indicador de pendiente RSI (▲/▼) en la UI es puramente informativo. El voto del RSI no cambia por la pendiente, pero te ayuda a leer si el momentum está acelerando o frenando antes de entrar."
               />
@@ -318,7 +318,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 description="Motor algorítmico cuantitativo de grado institucional. Utiliza 3 capas secuenciales (1D Juez → 1H Contexto/Régimen → 5m Gatillo) con asimetría LONG/SHORT, score de confianza matemático continuo (0.0–1.0), clasificación dinámica DAY/SWING y salidas complejas por Chandelier Exit."
                 howItWorks={[
                   'CAPA 1 (1D Bias): Cierre > EMA 200, EMA 50 > EMA 200, ADX > 20 y +DI > -DI (para LONG)',
-                  'CAPA 2 (1H Contexto & Régimen): Cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50-70, MACD Hist en expansión positiva + filtro de pendiente de la EMA 200 1H (> 0.0005)',
+                  'CAPA 2 (1H Contexto & Régimen): Cierre > VWAP 1H, EMA 20 > EMA 50, RSI entre 50-70, MACD Hist en expansión positiva + filtro de pendiente de la EMA 200 1H adaptado a volatilidad (> 0.05 × ATR 1H)',
                   'CAPA 3 (Gatillo 5m): Asimétrico. LONG exige RVOL ≥ 1.5x y cierre en el 40% superior. SHORT exige RVOL ≥ 1.8x y cierre en el 40% inferior (evita short squeezes)',
                   'Score de Confianza Continuo [0.0–1.0]: Pondera RVOL (30%), Bias 1D (25%), MACD 1H (20%), Distancia a EMA21 con campana óptima a 0.5 ATR (15%) y VWAP (10%). Umbral mínimo de activación: 65% (0.65)',
                   'Clasificación DAY vs SWING: Clasifica según ADX 1H > 30. Trades DAY incluyen time-stop de 40 min; trades SWING ejecutan trailing stop continuo en 1H',
@@ -345,9 +345,9 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   'CAPA 3B — Dread Blitz MCD (5M): oscilador de momentum (precio vs EMA12 / ATR) con Bollinger Bands para detectar sobrecompra/sobreventa',
                   'Estrategia Ruptura: las 3 capas alineadas + cierre fuera de banda + volumen institucional',
                   'Estrategia Reversión: Dread Blitz en zona extrema + divergencia + absorción pasiva en mechas (no requiere compresión 1H)',
-                  'Invalidación temprana: si en las primeras 3 velas el precio cruza el midpoint de la banda, el trade se invalida automáticamente',
+                  'Corte adverso temprano: si en las primeras 3 velas el precio retrocede ≥ 0.5R en contra de la entrada, se cierra la posición con pérdida reducida (-0.5R en lugar de -1.0R de SL completo)',
                 ]}
-                strengths={['Captura movimientos explosivos de alta volatilidad', 'La estrategia de Reversión no necesita la compresión 1H → más oportunidades', 'El Andian Oscillator es un sesgo macro no convencional, menos "seguido por todos"', 'Invalidación temprana limita las pérdidas en falsas rupturas']}
+                strengths={['Captura movimientos explosivos de alta volatilidad', 'La estrategia de Reversión no necesita la compresión 1H → más oportunidades', 'El Andian Oscillator es un sesgo macro no convencional, menos "seguido por todos"', 'Corte temprano a -0.5R reduce drásticamente el impacto de pérdidas en falsas rupturas']}
                 weaknesses={['Altamente dependiente de datos 1D y 1H: sin ellos opera degradado', 'En mercados muy tendenciales el Dread Blitz está siempre en overbought sin reversar', 'El Andian Oscillator necesita ≥ 14 velas diarias para ser válido', 'Las señales de Ruptura en NYSE opening (9:30-9:45 EST) requieren RVOL 2.5× en lugar de 1.5×']}
                 bestFor="Crypto en 5M durante expansiones de volatilidad, y acciones con compresión previa clara (squeeze en Bollinger 1H)"
                 considerations="Este motor es el que más depende de las condiciones de mercado. En rangos laterales prolongados puede no disparar nada durante horas. Eso es correcto — está esperando que la compresión libere energía. Si el ancho de las bandas 1H lleva días comprimido, la próxima señal tiene alta probabilidad de capturar un movimiento amplio."

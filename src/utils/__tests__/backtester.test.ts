@@ -1,6 +1,8 @@
 import assert from 'node:assert';
 import {
   backtestStandard,
+  backtestConfluencia,
+  backtestScoring,
   backtestMultitemporal,
   backtestMultifractalMTF,
   computeStandardSignalsSeries,
@@ -8,9 +10,13 @@ import {
   computeScoringSignalsSeries,
   calculateRiskMetrics,
   calculateWalkForward,
+  getStrategyCooldownCandles,
+  getStrategyCooldownMs,
   type RecordedTrade
 } from '../backtester';
 import {
+  calculateStandardVoting,
+  calculateScoringSignal,
   calculateVCMESniperSignal,
   calculateMultifractalMTFSignal,
   calculateRollingVolumeAvg,
@@ -1180,14 +1186,14 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert(typeof btResult.totalSignals === 'number', 'totalSignals must be a valid number');
   });
 
-  // Test 44: Classic Strategy 2-Hour (24 Candle) Cooldown Parity
-  test('backtestStandard enforces documented 2-hour (24 candles) cooldown on 5m', () => {
+  // Test 44: Classic Strategy 1-Hour (12 Candle) Cooldown Parity
+  test('backtestStandard enforces canonical 1-hour (12 candles) cooldown on 5m', () => {
     // Generate trending klines of 600 bars
     const klines = generateSyntheticKlines(600, 300, 100, 0.10);
     const result = backtestStandard(klines, '5m', 'COOLDOWN_TEST');
 
-    // In a 576-bar eval window, max possible signals with 24-candle cooldown is 576 / 24 = 24
-    assert.ok(result.totalSignals <= 24, `Total signals (${result.totalSignals}) must not exceed window / cooldown (24)`);
+    // In a 576-bar eval window, max possible signals with 12-candle cooldown is 576 / 12 = 48
+    assert.ok(result.totalSignals <= 48, `Total signals (${result.totalSignals}) must not exceed window / cooldown (48)`);
     assert.strictEqual(result.insufficient, false);
   });
 
@@ -2051,8 +2057,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const stdRes = backtestStandard(klines, '5m', 'CYCLE_TEST');
 
     assert.ok(stdRes.totalSignals > 0, 'Should have generated signals');
-    // On 5m, cooldown is 24 candles = 2.0 hours. Effective cycle must be >= 2.0 hours.
-    assert.ok(stdRes.avgExposureHours >= 2.0, `avgExposureHours must be >= 2.0h with 24-candle cooldown (got ${stdRes.avgExposureHours}h)`);
+    // On 5m, cooldown is 12 candles = 1.0 hour. Effective cycle must be >= 1.0 hour.
+    assert.ok(stdRes.avgExposureHours >= 1.0, `avgExposureHours must be >= 1.0h with 12-candle cooldown (got ${stdRes.avgExposureHours}h)`);
     // avgDurationCandles retains pure in-market holding duration (< 24 candles)
     assert.ok(stdRes.avgDurationCandles <= 10, `avgDurationCandles should reflect pure trade holding duration (got ${stdRes.avgDurationCandles})`);
   });
@@ -2167,6 +2173,99 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const klines1h_172 = generateSyntheticKlines(172, 3600, 100);
     const stdRes172 = backtestStandard(klines1h_172, '1h', 'STD_GUARD');
     assert.strictEqual(stdRes172.insufficient, false, '172 1H candles must evaluate cleanly for 1H Standard');
+  });
+
+  // Test 74: StandardVoting and all strategy evaluators export standardized signal property matching backtester series
+  test('StandardVoting and all strategy evaluators encapsulate 100% of decision logic without UI-level filter leakage', () => {
+    const klines = generateSyntheticKlines(250, 3600, 100);
+    const voting = calculateStandardVoting(klines);
+
+    assert.ok(typeof voting.signal === 'string', 'StandardVoting must export top-level signal');
+    assert.ok(['BUY', 'SELL', 'NEUTRAL'].includes(voting.signal), 'voting.signal must be valid BUY/SELL/NEUTRAL');
+    assert.strictEqual(voting.signal, voting.finalSignal, 'voting.signal must match voting.finalSignal (with internal EMA200 / RVOL)');
+
+    const series = computeStandardSignalsSeries(klines);
+    assert.strictEqual(voting.signal, series[series.length - 1], 'Live voting.signal must strictly equal series[len - 1]');
+  });
+
+  // Test 75: Strategy Tournament returns FLAT (NONE) when no candidate has positive statistical edge
+  test('Strategy Tournament returns FLAT (NONE) when no candidate demonstrates edge', () => {
+    const losingCandidate1: StrategyCandidate = {
+      key: 'standard',
+      label: 'Standard Losing',
+      profitFactor: 0.70,
+      expectancyR: -0.25,
+      winRate: 0.35,
+      resolved: 10,
+      forwardWindow: 6
+    };
+    const losingCandidate2: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Confluencia Losing',
+      profitFactor: 0.60,
+      expectancyR: -0.40,
+      winRate: 0.30,
+      resolved: 12,
+      forwardWindow: 6
+    };
+
+    const tourney = evaluateStrategyTournament([losingCandidate1, losingCandidate2], '5m');
+    assert.strictEqual(tourney.confidence, 'NONE', 'Confidence must be NONE');
+    assert.strictEqual(tourney.bestStrategy, 'NONE', 'bestStrategy must be NONE (FLAT) when all candidates lose');
+    assert.strictEqual(tourney.strategyLabel, 'Sin Estrategia (Flat)', 'Label must indicate Flat status');
+  });
+
+  // Test 76: S2 Scoring S/R and R:R evaluation is strictly invariant to total dataset size (100-bar rolling window)
+  test('S2 Scoring evaluates S/R on uniform 100-bar rolling window with exact live vs backtest parity regardless of dataset length', () => {
+    // Generate synthetic dataset of 1000 candles with swing pivots
+    const fullKlines = generateSyntheticKlines(1000, 300, 100, 0.02);
+    const shortKlines = fullKlines.slice(-300); // 300 candles (e.g. smaller API fetch)
+
+    // Evaluate live on full vs short
+    const liveFull = calculateScoringSignal(fullKlines, '5m');
+    const liveShort = calculateScoringSignal(shortKlines, '5m');
+
+    // Both should evaluate on the identical last 100 candles
+    assert.strictEqual(liveFull.signal, liveShort.signal, 'Live signal on 1000 bars must match live signal on 300 bars');
+    assert.strictEqual(liveFull.score, liveShort.score, 'Live score must match regardless of dataset length');
+
+    // Backtest series on full dataset must match live on full dataset at the last bar
+    const series = computeScoringSignalsSeries(fullKlines, '5m');
+    const expectedSeriesSignal = liveFull.signal === 'HOLD' ? 'NEUTRAL' : liveFull.signal;
+    assert.strictEqual(expectedSeriesSignal, series[series.length - 1], 'Live scoring signal must strictly match series[len - 1]');
+  });
+
+  // Test 77: All 5 strategy engines and Live execution share canonical 1-hour (12 candles) cooldown on 5m
+  test('all 5 strategy engines and live execution share canonical 1-hour (12 candles) cooldown on 5m ensuring R/h symmetry', () => {
+    // 1. Canonical helpers
+    assert.strictEqual(getStrategyCooldownCandles('5m'), 12, '5m cooldown in candles must be 12 (1 hour)');
+    assert.strictEqual(getStrategyCooldownMs('5m'), 3600000, '5m live cooldown in ms must be 3600000 (1 hour)');
+    assert.strictEqual(getStrategyCooldownCandles('1h'), 4, '1h cooldown in candles must be 4 (4 hours)');
+    assert.strictEqual(getStrategyCooldownMs('1h'), 14400000, '1h live cooldown in ms must be 14400000 (4 hours)');
+    assert.strictEqual(getStrategyCooldownCandles('1d'), 2, '1d cooldown in candles must be 2 (48 hours)');
+    assert.strictEqual(getStrategyCooldownMs('1d'), 172800000, '1d live cooldown in ms must be 172800000 (48 hours)');
+
+    // 2. Cross-engine cooldown symmetry on 5m
+    const klines5m = generateSyntheticKlines(600, 300, 100, 0.05);
+    const klines1h = generateSyntheticKlines(250, 3600, 100, 0.05);
+    const klines1d = generateSyntheticKlines(220, 86400, 100, 0.05);
+
+    const stdRes = backtestStandard(klines5m, '5m', 'UNIFIED_CD');
+    const confRes = backtestConfluencia(klines5m, '5m', 'UNIFIED_CD');
+    const scoreRes = backtestScoring(klines5m, '5m', undefined, 'UNIFIED_CD');
+    const vcmeRes = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'UNIFIED_CD', 'dayTrading');
+    const mfRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'UNIFIED_CD');
+
+    // All evaluated strategies on 5m with short holding times must resolve to EXACTLY 1.0h cycle baseline (12 candles * 5m = 1.0h)
+    // and strictly reject the legacy 24-candle (2.0h) drift.
+    for (const [name, res] of [['Standard', stdRes], ['Confluencia', confRes], ['Scoring', scoreRes], ['VCME', vcmeRes], ['Multifractal', mfRes]] as const) {
+      if (res && res.totalSignals > 0) {
+        assert.ok(
+          res.avgExposureHours >= 1.0 && res.avgExposureHours <= 1.25,
+          `Engine ${name} avgExposureHours (${res.avgExposureHours}h) must strictly match 1.0h unified baseline (got ${res.avgExposureHours}h)`
+        );
+      }
+    }
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
