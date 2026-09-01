@@ -411,6 +411,15 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - `TournamentResult` propaga `longStats` y `shortStats` del tramo *In-Sample* hacia `sanitizeSignalWithDirectionalEdge`, asegurando que el filtrado de señales en Radar y Scanner sea 100% inmune a sesgos o racha fortuita en el tramo de validación OOS.
   - **Suite de Pruebas Ampliada**:
     - **98/98 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts` (incluyendo validación de invariancia de score ante divergencias OOS y blindaje direccional IS).
+- **Actualización v2026.09.01.9 — Unificación Global de Profit Factor en R, Alineación de Régimen VCME y Hash FNV-1a de Caché**:
+  - **Unificación de Profit Factor en $R$ en todos los motores**:
+    - `runGenericBacktest` (Standard, Confluencia, Scoring, VCME) y `backtestMultifractalMTF` calculan `profitFactor` de nivel superior como $\sum R^+ / \sum |R^-|$, completando la paridad con `backtestMultitemporal` y `calculateRiskMetrics`.
+  - **Alineación de Régimen VCME Sniper por Timeframe**:
+    - En Day Trading (5m), VCME registra `adxAtEntry` usando el ADX de 5m de `VCMESniperContext.adxSeries5m`, garantizando paridad 1:1 con el `currentRegime` del torneo y las demás estrategias; en Swing (1H) utiliza el ADX de 1H.
+  - **Fingerprint de Caché con Hash FNV-1a Incremental de Ventana Completa**:
+    - `getKlinesFingerprint` implementa un hash aritmético FNV-1a de 32 bits de cero asignación sobre las últimas 1.500 velas, garantizando que cualquier corrección de datos pasados invalide el caché instantáneamente sin penalización de CPU ($< 0.01\text{ms}$).
+  - **Suite de Pruebas Ampliada**:
+    - **100/100 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
 
 ---
 

@@ -3262,6 +3262,37 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(btSwing.regimeStats !== undefined, 'Swing VCME must produce valid regimeStats');
   });
 
+  // Test 100: Cache fingerprint uses full-window FNV-1a incremental hashing preventing stale cache on intermediate historical corrections
+  test('getKlinesFingerprint invalidates backtest cache on intermediate historical candle correction', () => {
+    const klinesOriginal: Kline[] = [];
+    for (let i = 0; i < 200; i++) {
+      klinesOriginal.push({
+        time: 1700000000 + i * 300,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100.5,
+        volume: 1000
+      });
+    }
+
+    // Clone dataset and modify an intermediate candle (index 50) without altering length, last candle, or penultimate candle
+    const klinesModified: Kline[] = klinesOriginal.map(k => ({ ...k }));
+    klinesModified[50] = {
+      ...klinesModified[50],
+      close: 105.0, // Historical correction / revised tick
+      high: 106.0
+    };
+
+    // Run backtest on original and cache it
+    const res1 = backtestStandard(klinesOriginal, '5m', 'HASH_TEST_SYM');
+    // Run backtest on modified dataset with the same symbol/timeframe
+    const res2 = backtestStandard(klinesModified, '5m', 'HASH_TEST_SYM');
+
+    // The results must NOT be the same cached instance reference, because the fingerprint detected the intermediate change
+    assert.notStrictEqual(res1, res2, 'Modified intermediate candle must invalidate cache and produce a fresh backtest result');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

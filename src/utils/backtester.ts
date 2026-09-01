@@ -712,17 +712,35 @@ const backtestCache = new Map<string, { fingerprint: string; result: BacktestRes
 
 function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
   let fp = '';
-  for (let i = 0; i < seriesList.length; i++) {
-    const s = seriesList[i];
-    if (s && s.length > 0) {
-      const last = s[s.length - 1];
-      const prev = s.length > 1 ? s[s.length - 2] : null;
-      const lastOhlcv = `${last.time}_${last.open}_${last.high}_${last.low}_${last.close}_${last.volume}`;
-      const prevMetrics = prev ? `${prev.close}_${prev.volume}` : '0_0';
-      fp += `${s.length}_${lastOhlcv}_${prevMetrics}|`;
-    } else {
-      fp += '0_0|';
+  for (let sIdx = 0; sIdx < seriesList.length; sIdx++) {
+    const s = seriesList[sIdx];
+    if (!s || s.length === 0) {
+      fp += '0:0|';
+      continue;
     }
+    const len = s.length;
+    // FNV-1a 32-bit offset basis
+    let hash = 2166136261 >>> 0;
+    const startIdx = Math.max(0, len - 1500);
+
+    for (let i = startIdx; i < len; i++) {
+      const k = s[i];
+      hash = (hash ^ k.time) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      hash = (hash ^ (Math.round(k.open * 100000) | 0)) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      hash = (hash ^ (Math.round(k.high * 100000) | 0)) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      hash = (hash ^ (Math.round(k.low * 100000) | 0)) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      hash = (hash ^ (Math.round(k.close * 100000) | 0)) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      hash = (hash ^ (Math.round(k.volume) | 0)) >>> 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+
+    const last = s[len - 1];
+    fp += `${len}:${last.time}:${hash.toString(16)}|`;
   }
   return fp;
 }
