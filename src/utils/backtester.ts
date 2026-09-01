@@ -175,8 +175,8 @@ function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
 
   let wins = 0;
   let losses = 0;
-  let totalGainPct = 0;
-  let totalLossPct = 0;
+  let totalGainR = 0;
+  let totalLossR = 0;
   let totalR = 0;
   let cumR = 0;
   let peakR = 0;
@@ -195,17 +195,17 @@ function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
       losses++;
     }
 
-    if (trade.pnlPct > 0) {
-      totalGainPct += trade.pnlPct;
-    } else if (trade.pnlPct < 0) {
-      totalLossPct += Math.abs(trade.pnlPct);
+    if (trade.realizedR > 0) {
+      totalGainR += trade.realizedR;
+    } else if (trade.realizedR < 0) {
+      totalLossR += Math.abs(trade.realizedR);
     }
   }
 
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(2)) : 0;
   const expectancyR = trades.length > 0 ? Number((totalR / trades.length).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : (totalGainPct > 0 ? null : 1.0);
+  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
 
   return {
     signals: trades.length,
@@ -307,8 +307,8 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
   let downsideSumSq = 0;
   let totalR = 0;
 
-  let longSignals = 0, longWins = 0, longLosses = 0, longGainPct = 0, longLossPct = 0, longTotalR = 0;
-  let shortSignals = 0, shortWins = 0, shortLosses = 0, shortGainPct = 0, shortLossPct = 0, shortTotalR = 0;
+  let longSignals = 0, longWins = 0, longLosses = 0, longGainR = 0, longLossR = 0, longTotalR = 0;
+  let shortSignals = 0, shortWins = 0, shortLosses = 0, shortGainR = 0, shortLossR = 0, shortTotalR = 0;
 
   let trendSignals = 0, trendWins = 0, trendLosses = 0, trendTotalR = 0;
   let rangeSignals = 0, rangeWins = 0, rangeLosses = 0, rangeTotalR = 0;
@@ -339,20 +339,20 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
       longTotalR += trade.realizedR;
       if (trade.realizedR > 0) {
         longWins++;
-        longGainPct += trade.pnlPct;
+        longGainR += trade.realizedR;
       } else if (trade.realizedR < 0) {
         longLosses++;
-        longLossPct += Math.abs(trade.pnlPct);
+        longLossR += Math.abs(trade.realizedR);
       }
     } else if (trade.dir === 'SELL') {
       shortSignals++;
       shortTotalR += trade.realizedR;
       if (trade.realizedR > 0) {
         shortWins++;
-        shortGainPct += trade.pnlPct;
+        shortGainR += trade.realizedR;
       } else if (trade.realizedR < 0) {
         shortLosses++;
-        shortLossPct += Math.abs(trade.pnlPct);
+        shortLossR += Math.abs(trade.realizedR);
       }
     }
 
@@ -383,12 +383,12 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
   const longResolved = longWins + longLosses;
   const longWR = longResolved > 0 ? Number((longWins / longResolved).toFixed(2)) : 0;
   const longExpR = longSignals > 0 ? Number((longTotalR / longSignals).toFixed(3)) : 0;
-  const longPF = longLossPct > 0 ? Number((longGainPct / longLossPct).toFixed(2)) : (longGainPct > 0 ? null : 1.0);
+  const longPF = longLossR > 0 ? Number((longGainR / longLossR).toFixed(2)) : (longGainR > 0 ? null : 1.0);
 
   const shortResolved = shortWins + shortLosses;
   const shortWR = shortResolved > 0 ? Number((shortWins / shortResolved).toFixed(2)) : 0;
   const shortExpR = shortSignals > 0 ? Number((shortTotalR / shortSignals).toFixed(3)) : 0;
-  const shortPF = shortLossPct > 0 ? Number((shortGainPct / shortLossPct).toFixed(2)) : (shortGainPct > 0 ? null : 1.0);
+  const shortPF = shortLossR > 0 ? Number((shortGainR / shortLossR).toFixed(2)) : (shortGainR > 0 ? null : 1.0);
 
   const trendResolved = trendWins + trendLosses;
   const trendWR = trendResolved > 0 ? Number((trendWins / trendResolved).toFixed(2)) : 0;
@@ -1014,6 +1014,8 @@ function runBacktestGenericOptimized(
   const discards   = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalGainR   = 0;
+  let totalLossR   = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
   let totalCycleCandles = 0;
@@ -1075,6 +1077,12 @@ function runBacktestGenericOptimized(
       losses++;
     }
 
+    if (outcome.realizedR > 0) {
+      totalGainR += outcome.realizedR;
+    } else if (outcome.realizedR < 0) {
+      totalLossR += Math.abs(outcome.realizedR);
+    }
+
     if (outcome.pnlPct > 0) {
       totalGainPct += outcome.pnlPct;
     } else if (outcome.pnlPct < 0) {
@@ -1090,7 +1098,7 @@ function runBacktestGenericOptimized(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
+  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;

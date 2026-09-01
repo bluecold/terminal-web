@@ -2958,6 +2958,22 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourneyFailedWf.bestStrategy, 'NONE');
   });
 
+  // Test 94: Profit factor is calculated from R-multiples rather than raw percentage PnL
+  test('profitFactor in calculateRiskMetrics and backtesting unifies strictly on R-multiples', () => {
+    // 2 trades:
+    // Trade 1: Scalp with tiny stop. 0.5% stop, +1.0% gain -> +2.0R win
+    // Trade 2: Wide swing with larger stop. 4.0% stop, -4.0% loss -> -1.0R loss
+    // In raw %: Gain = +1.0%, Loss = -4.0% -> PF_% would be 1.0 / 4.0 = 0.25 (misleadingly awful!)
+    // In R-multiples: Gain = +2.0R, Loss = -1.0R -> PF_R is 2.0 / 1.0 = 2.00 (accurately reflects 2:1 risk payoff!)
+    const trades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 2.0, pnlPct: 1.0, outcome: 'win' },
+      { dir: 'BUY', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss' }
+    ];
+
+    const metrics = calculateRiskMetrics(trades);
+    assert.strictEqual(metrics.longStats.profitFactor, 2.0, 'Long PF must equal 2.0R / 1.0R = 2.00, not 1% / 4% = 0.25');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
