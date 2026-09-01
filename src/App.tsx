@@ -568,7 +568,6 @@ function App() {
           }
 
           const signalKey = `${symbol}-${signalInterval}`;
-          const prevSignal = lastSignalsRef.current[signalKey];
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
 
           // Option A: Single position per symbol & timeframe
@@ -583,9 +582,6 @@ function App() {
             return;
           }
 
-          const isFirstScan = prevSignal === undefined;
-          const isDirectionChange = prevSignal !== undefined && prevSignal !== overallSignal;
-
           // Identify closed trigger candle timestamp for persistent atomic deduplication
           const triggerCandle = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1] : null;
           const candleTimestamp = triggerCandle ? triggerCandle.time : 0;
@@ -596,13 +592,13 @@ function App() {
 
           const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
           const cooldownMs = getStrategyCooldownMs(signalInterval, executionStyle);
-          const isCooldownElapsed = (now - lastAlertTime) >= cooldownMs;
+          const isCooldownElapsed = lastAlertTime === 0 || (now - lastAlertTime) >= cooldownMs;
 
           // Allow alert if:
           // 1. Signal is actionable (BUY/SELL)
           // 2. This closed candle has not already fired (atomic candle deduplication)
-          // 3. Direction has changed (instant reversal), cooldown has elapsed (continuation setup), or it's cold start
-          if (isActionableSignal && !alreadyFiredForCandle && (isDirectionChange || isCooldownElapsed || isFirstScan)) {
+          // 3. Persistent cooldown has elapsed (never bypassed by F5 reloads or NEUTRAL transitions)
+          if (isActionableSignal && !alreadyFiredForCandle && isCooldownElapsed) {
             // Set alert cooldown timestamp with persistence
             setAlertCooldown(`${symbol}-${signalInterval}`, now);
 
