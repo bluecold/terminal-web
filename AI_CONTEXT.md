@@ -358,6 +358,28 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - 0 errores y 0 warnings en ESLint (`npx eslint .`).
     - 0 errores de tipado en TypeScript (`tsc -b`).
     - **86/86 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
+- **Actualización v2026.09.01.6 — Integridad de Datos OHLCV, Paridad de Cooldown Post-Exit, Blindaje Asíncrono de Radar y Confluencia Adaptativa**:
+  - **Sanitizador y Geometrización Estricta de Velas (`sanitizeKlines` en `src/services/api.ts`)**:
+    - Descarta velas nulas (`null`), no numéricas (`NaN`) o no positivas (`<= 0`) de feeds externos (Yahoo/Binance) en situaciones de *halts* o gaps.
+    - Repara geometrías anómalas garantizando $high = \max(high, open, close)$ y $low = \min(low, open, close)$.
+    - Valida que `volume` sea finito y no negativo, deduplica timestamps y ordena de forma estrictamente ascendente.
+  - **Paridad Total de Cooldown Post-Exit en los 5 Motores del Backtest**:
+    - En `runGenericBacktest` y `backtestMultifractalMTF`, el cooldown se computa a partir de la salida real de la operación (`nextAllowedIdx = exitIdx + cooldownPeriod`), garantizando estricta simetría temporal con `backtestMultitemporal` (VCME) y reflejando con exactitud la inmovilización de capital.
+  - **Detección de Gaps en Primera Vela Post-Entrada**:
+    - Corrección en `simulateTrade` (`sessionGapCutoff`) para evaluar $f > \text{entryCandleIdx} \land f > 0$, previniendo omitir saltos overnight en la primera barra forward.
+  - **Optimización de VCME Swing en Acciones Multisesión**:
+    - El filtro `isNearSessionEnd` se limitó a `style === 'dayTrading'`, impidiendo que el lookahead de 6 velas descarte indebidamente operaciones Swing horarias en NYSE/NASDAQ.
+  - **Filtro Direccional Unificado Radar ↔ Scanner (`sanitizeSignalWithDirectionalEdge`)**:
+    - Función centralizada en `src/utils/tournament.ts` con umbral mínimo de muestra $N \ge 3$ operaciones resueltas, neutralizando señales que carecen de expectativa histórica positiva ($E[R] < 0$).
+  - **Desacoplamiento de Caché en MarketRadar y Recalculación en Vivo**:
+    - Almacena en caché únicamente el torneo QVE y métricas base mediante fingerprints OHLCV atómicos, recalculando siempre la señal final y el precio de entrada contra la cotización en tiempo real.
+  - **Protección Generacional Integral contra Race Conditions en MarketRadar**:
+    - Propagación de `targetGen` a `scanSymbol` y compuerta `isCurrentGen()` que impide que peticiones asíncronas de filtros o presets anteriores alteren `failureMapRef` (evitando bloqueos erróneos de 10 min por Circuit Breaker) o `calcCacheRef`.
+  - **Confluencia Multitemporal, RVOL y Régimen de Volatilidad Adaptativos al Perfil**:
+    - En **Swing Trading**: Ponderación institucional $1\text{H } (50\%) + 1\text{D } (35\%) + 5\text{m } (15\%)$, RVOL horario ($\text{step} = 3600\text{s}$) y Squeeze de Bollinger evaluado sobre `closed1h` (compresiones multijornada).
+    - En **Day Trading**: Ponderación táctica $5\text{m } (50\%) + 1\text{H } (30\%) + 1\text{D } (20\%)$, RVOL intradiario ($\text{step} = 300\text{s}$) y Squeeze sobre `closed5m`.
+  - **Suite de Pruebas Ampliada**:
+    - **88/88 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
 
 ---
 
