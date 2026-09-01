@@ -182,10 +182,21 @@ export function evaluateStrategyTournament(
     return timeNormScore * ddPenalty * sortinoMultiplier * regimeMultiplier;
   };
 
+  // Helper to check if a candidate's regime performance is decisively toxic under Bayesian uncertainty
+  // Replaces the brittle step-function (N>=3 && E[R]<0) with an empirical Bayes toxicity threshold (-0.15R shrunk)
+  const isRegimeDecisivelyToxic = (regimeStats?: RegimeStats): boolean => {
+    if (!currentRegime || !regimeStats) return false;
+    const stats = currentRegime === 'trending' ? regimeStats.trending : regimeStats.ranging;
+    if (!stats || stats.signals < 3) return false;
+    const regimeShrink = stats.signals / (stats.signals + 4);
+    const shrunkRegimeExpR = stats.expectancyR * regimeShrink;
+    return shrunkRegimeExpR < -0.15;
+  };
+
   // 1. Check for HIGH confidence candidates:
   // - In-Sample robust edge: isMetrics.resolved >= minHighResolved, isMetrics.profitFactor >= 1.25, isMetrics.expR > 0
   // - Blind Out-of-Sample Certification: c.walkForward.status === 'PASS' (OOS confirms positive edge in blind validation)
-  // - Regime Hard Gate: Strategy must NOT possess negative expectancy in the active market regime
+  // - Regime Hard Gate: Strategy must NOT possess decisively toxic expectancy in the active market regime
   const highCandidates = candidates
     .filter(c => {
       const isMetrics = getMetrics(c, true);
@@ -193,14 +204,7 @@ export function evaluateStrategyTournament(
         ? true
         : isMetrics.profitFactor >= 1.25;
       const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
-
-      let regimeOk = true;
-      if (currentRegime && isMetrics.regimeStats) {
-        const stats = currentRegime === 'trending' ? isMetrics.regimeStats.trending : isMetrics.regimeStats.ranging;
-        if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
-          regimeOk = false;
-        }
-      }
+      const regimeOk = !isRegimeDecisivelyToxic(isMetrics.regimeStats);
 
       return isMetrics.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk && regimeOk;
     })
@@ -257,12 +261,9 @@ export function evaluateStrategyTournament(
       // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
       if (c.walkForward && c.walkForward.status === 'FAIL') return false;
 
-      // Regime Hard Gate: Reject candidates with negative expectancy in active regime (IS-based)
-      if (currentRegime && isMetrics.regimeStats) {
-        const stats = currentRegime === 'trending' ? isMetrics.regimeStats.trending : isMetrics.regimeStats.ranging;
-        if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
-          return false;
-        }
+      // Regime Hard Gate: Reject candidates with decisively toxic expectancy in active regime (IS-based)
+      if (isRegimeDecisivelyToxic(isMetrics.regimeStats)) {
+        return false;
       }
 
       if (isMetrics.profitFactor === null || !Number.isFinite(isMetrics.profitFactor) || isMetrics.profitFactor >= 99.0) {

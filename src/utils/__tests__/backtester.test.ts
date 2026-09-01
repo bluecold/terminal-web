@@ -3099,7 +3099,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       sortinoRatio: 1.5,
       regimeStats: {
         trending: { signals: 10, wins: 8, losses: 2, winRate: 0.80, expectancyR: 0.80 },
-        ranging:  { signals: 10, wins: 2, losses: 8, winRate: 0.20, expectancyR: -0.20 }
+        ranging:  { signals: 10, wins: 2, losses: 8, winRate: 0.20, expectancyR: -0.30 }
       }
     };
 
@@ -3291,6 +3291,53 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // The results must NOT be the same cached instance reference, because the fingerprint detected the intermediate change
     assert.notStrictEqual(res1, res2, 'Modified intermediate candle must invalidate cache and produce a fresh backtest result');
+  });
+
+  // Test 101: Regime gate uses Bayesian uncertainty threshold avoiding false disqualification on noisy small samples (-0.02R) while hard-gating severe toxicity (-0.60R)
+  test('evaluateStrategyTournament regime gate tolerates noisy small samples and hard-gates decisive toxicity', () => {
+    // 1. Candidate with small noisy sample (N=3, E[R]=-0.02R, shrunk=-0.008R). Must NOT be hard-gated to NONE
+    const noisySmallSampleCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Noisy Regime Strategy',
+      profitFactor: 1.8,
+      expectancyR: 0.40,
+      expectancyPerHour: 0.8,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 16,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5,
+      regimeStats: {
+        trending: { signals: 3, wins: 1, losses: 2, winRate: 0.33, expectancyR: -0.02 }
+      }
+    };
+
+    const tourneyNoisy = evaluateStrategyTournament([noisySmallSampleCandidate], '5m', 'trending');
+    assert.strictEqual(tourneyNoisy.bestStrategy, 'confluencia', 'Noisy -0.02R over 3 trades must not be hard-gated');
+    assert.strictEqual(tourneyNoisy.confidence, 'HIGH');
+
+    // 2. Candidate with decisively toxic small sample (N=3, E[R]=-0.60R, shrunk=-0.257R < -0.15R). MUST be hard-gated to NONE
+    const toxicSmallSampleCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Toxic Regime Strategy',
+      profitFactor: 1.8,
+      expectancyR: 0.40,
+      expectancyPerHour: 0.8,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 16,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5,
+      regimeStats: {
+        trending: { signals: 3, wins: 0, losses: 3, winRate: 0.0, expectancyR: -0.60 }
+      }
+    };
+
+    const tourneyToxic = evaluateStrategyTournament([toxicSmallSampleCandidate], '5m', 'trending');
+    assert.strictEqual(tourneyToxic.bestStrategy, 'NONE', 'Decisively toxic regime edge (-0.60R) must be hard-gated to FLAT/NONE');
+    assert.strictEqual(tourneyToxic.confidence, 'NONE');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
