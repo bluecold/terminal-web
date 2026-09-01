@@ -15,7 +15,7 @@ import {
   type ScoringWeights,
 } from '../utils/indicators';
 import { formatSmartPrice } from '../utils/formatters';
-import { runQVESelection, type ConfidenceLevel } from '../utils/tournament';
+import { runQVESelection, sanitizeSignalWithDirectionalEdge, type ConfidenceLevel } from '../utils/tournament';
 
 // Clock helper to isolate Date.now() access from component render body
 function getNowTimestamp(): number {
@@ -346,6 +346,14 @@ export default function MarketRadar({
       } else {
         overallSig = calculateStandardVoting(analytics.qve.triggerKlines).signal;
       }
+
+      // Validate directional expectancy (min 3 resolved trades)
+      overallSig = sanitizeSignalWithDirectionalEdge(
+        overallSig,
+        analytics.qve.tournament.longStats,
+        analytics.qve.tournament.shortStats,
+        3
+      );
 
       const rowResult: RadarRowData = {
         symbol,

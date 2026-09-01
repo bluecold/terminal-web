@@ -11,7 +11,7 @@ import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
 import { createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult, type DirectionalStats } from './utils/backtester';
-import { runQVESelection, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
+import { runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import { APP_VERSION } from './version';
 import {
   calculateAlertLevels,
@@ -556,16 +556,14 @@ function App() {
             overallSignal = voting.signal;
           }
 
-          // ── Check signal validity & handle Cooldown ──────────────────────
-          const isBuySig = overallSignal.includes('BUY');
-          const isSellSig = overallSignal.includes('SELL');
+          // ── Validate directional expectancy (min 3 resolved trades) ──────
           const currentCached = bestStrategyRef.current[symbol];
-          const dirStats = isBuySig ? currentCached?.longStats : (isSellSig ? currentCached?.shortStats : undefined);
-          const isDirectionalEdgeNegative = dirStats !== undefined && dirStats.signals >= 2 && dirStats.expectancyR < 0;
-
-          if (isDirectionalEdgeNegative) {
-            overallSignal = 'NEUTRAL';
-          }
+          overallSignal = sanitizeSignalWithDirectionalEdge(
+            overallSignal,
+            currentCached?.longStats,
+            currentCached?.shortStats,
+            3
+          );
 
           const signalKey = `${symbol}-${signalInterval}`;
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');

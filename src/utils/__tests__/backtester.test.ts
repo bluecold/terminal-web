@@ -47,7 +47,7 @@ import {
   type AuditAlertItem
 } from '../alertTracker';
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
-import { evaluateStrategyTournament, runQVESelection, type StrategyCandidate } from '../tournament';
+import { evaluateStrategyTournament, runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate } from '../tournament';
 import { simulateTrade, type TradeLevels } from '../tradeSimulator';
 import type { Kline } from '../../services/api';
 
@@ -2633,6 +2633,44 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       targetInterval: '5m'
     });
     assert.strictEqual(qve5m.candidates.length, 5, 'All 5 candidates must be present in 5m');
+  });
+
+  // Test 87: sanitizeSignalWithDirectionalEdge unifies directional filtering across Radar and Scanner with min 3 trades
+  test('sanitizeSignalWithDirectionalEdge unifies directional filtering across Radar and Scanner with min 3 trades', () => {
+    // 1. BUY signal with negative expectancy on 1-2 trades should NOT be neutralized (noise tolerance)
+    assert.strictEqual(
+      sanitizeSignalWithDirectionalEdge('BUY', { signals: 2, expectancyR: -0.25 }, undefined, 3),
+      'BUY',
+      'BUY signal with < 3 historical trades must not be neutralized'
+    );
+
+    // 2. BUY signal with negative expectancy on >= 3 trades MUST be neutralized
+    assert.strictEqual(
+      sanitizeSignalWithDirectionalEdge('BUY', { signals: 3, expectancyR: -0.15 }, undefined, 3),
+      'NEUTRAL',
+      'BUY signal with >= 3 trades and negative E[R] must be neutralized to NEUTRAL'
+    );
+
+    // 3. BUY signal with positive expectancy on >= 3 trades is preserved
+    assert.strictEqual(
+      sanitizeSignalWithDirectionalEdge('BUY', { signals: 5, expectancyR: 0.40 }, undefined, 3),
+      'BUY',
+      'BUY signal with positive E[R] must be preserved'
+    );
+
+    // 4. SELL signal with negative expectancy on >= 3 trades MUST be neutralized
+    assert.strictEqual(
+      sanitizeSignalWithDirectionalEdge('STRONG_SELL', undefined, { signals: 4, expectancyR: -0.30 }, 3),
+      'NEUTRAL',
+      'SELL signal with >= 3 trades and negative E[R] must be neutralized'
+    );
+
+    // 5. SELL signal with positive expectancy on >= 3 trades is preserved
+    assert.strictEqual(
+      sanitizeSignalWithDirectionalEdge('STRONG_SELL', undefined, { signals: 4, expectancyR: 0.20 }, 3),
+      'SELL',
+      'SELL signal with positive E[R] must be preserved'
+    );
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

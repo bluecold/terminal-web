@@ -490,3 +490,28 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
     btMF,
   };
 }
+
+/**
+ * Validates whether a generated BUY/SELL signal possesses a positive historical directional expectancy.
+ * Neutralizes signals if the strategy has a negative expectancy in that direction over a statistically
+ * meaningful sample (default: >= 3 trades).
+ */
+export function sanitizeSignalWithDirectionalEdge(
+  rawSignal: string,
+  longStats?: { signals: number; expectancyR: number },
+  shortStats?: { signals: number; expectancyR: number },
+  minTrades: number = 3
+): 'BUY' | 'SELL' | 'NEUTRAL' {
+  if (!rawSignal || rawSignal === 'NEUTRAL') return 'NEUTRAL';
+  const isBuy = rawSignal.includes('BUY');
+  const isSell = rawSignal.includes('SELL');
+
+  if (isBuy && longStats && longStats.signals >= minTrades && longStats.expectancyR < 0) {
+    return 'NEUTRAL';
+  }
+  if (isSell && shortStats && shortStats.signals >= minTrades && shortStats.expectancyR < 0) {
+    return 'NEUTRAL';
+  }
+  return isBuy ? 'BUY' : isSell ? 'SELL' : 'NEUTRAL';
+}
+
