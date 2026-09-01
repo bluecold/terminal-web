@@ -2771,6 +2771,46 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(result.signals[23], 'NEUTRAL', 'Low volume candle must vote NEUTRAL');
   });
 
+  // Test 90: Scoring Layer 4 VWAP overextension is directionally symmetrical
+  test('Scoring Layer 4 VWAP overextension is directionally symmetrical and does not chase crashes', () => {
+    // Generate 65 baseline candles where VWAP is ~100 and ATR is ~1.0
+    const klines: Kline[] = [];
+    for (let i = 0; i < 65; i++) {
+      klines.push({
+        time: 1700000000 + i * 300,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100,
+        volume: 1000
+      });
+    }
+
+    // 1. Candle overextended UP (> +2.5 ATR above VWAP ~100): close = 106 (> +2 ATR with ATR ~2.0)
+    const klinesBullOverextended = [...klines, {
+      time: 1700000000 + 65 * 300,
+      open: 105,
+      high: 106.5,
+      low: 104.5,
+      close: 106, // +6.0 above VWAP
+      volume: 1000
+    }];
+    const scoreBull = calculateScoringSignal(klinesBullOverextended, '5m');
+    assert.strictEqual(scoreBull.layers.volume.score, -1, 'Bullish overextension > +2 ATR must vote -1 (reversion pull)');
+
+    // 2. Candle overextended DOWN (< -2.5 ATR below VWAP ~100): close = 94 (< -2 ATR with ATR ~2.0)
+    const klinesBearOverextended = [...klines, {
+      time: 1700000000 + 65 * 300,
+      open: 95,
+      high: 95.5,
+      low: 93.5,
+      close: 94, // -6.0 below VWAP
+      volume: 1000
+    }];
+    const scoreBear = calculateScoringSignal(klinesBearOverextended, '5m');
+    assert.strictEqual(scoreBear.layers.volume.score, 1, 'Bearish overextension < -2 ATR must vote +1 (reversion pull) and not sell');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

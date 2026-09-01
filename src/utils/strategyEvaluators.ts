@@ -307,13 +307,23 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   if (cfg.useVwap) {
     const vwap = ctx.vwapSeries[i];
     const atr = ctx.atrSeries[i];
-    const isChasing = atr > 0 && Math.abs(closeVal - vwap) > 2.0 * atr;
-    if (isChasing) {
-      s4 -= 1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Chasing (>2 ATR de VWAP)`;
+    const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
+
+    if (distAtr > 2.0) {
+      s4 = -1;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión alcista (>+2 ATR)`;
+    } else if (distAtr < -2.0) {
+      s4 = +1;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión bajista (<-2 ATR)`;
+    } else if (distAtr > 0) {
+      s4 = +1;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio sobre VWAP (compradores)`;
+    } else if (distAtr < 0) {
+      s4 = -1;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio bajo VWAP (vendedores)`;
     } else {
-      if (closeVal > vwap) { s4 += 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio sobre VWAP (compradores)`; }
-      else                 { s4 -= 1; n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio bajo VWAP (vendedores)`; }
+      s4 = 0;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio en VWAP`;
     }
   } else if (cfg.useObv) {
     const obvLast = ctx.obvArr[i];
