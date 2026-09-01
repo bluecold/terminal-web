@@ -27,6 +27,7 @@ export interface ExitPolicy {
   frictionPct?: number;                               // Friction/commissions deducted from net return (default: 0.08%)
   floatingClosePrice?: number;                        // If provided and trade is still open, compute floating PnL on this price
   maxExpiryTimestampMs?: number;                      // Timestamp in ms beyond which the trade is expired
+  isCandleClosed?: (k: Kline) => boolean;            // Identifies whether a candle is finalized closed vs forming live
 }
 
 export type ExitReason = 
@@ -90,9 +91,10 @@ export function simulateTrade(
 
   for (let f = startIdx; f <= maxIdx; f++) {
     const k = klines[f];
+    const isClosed = policy.isCandleClosed ? policy.isCandleClosed(k) : true;
 
     // Expiration check based on absolute timestamp
-    if (policy.maxExpiryTimestampMs && k.time * 1000 >= policy.maxExpiryTimestampMs) {
+    if (isClosed && policy.maxExpiryTimestampMs && k.time * 1000 >= policy.maxExpiryTimestampMs) {
       exitIdx = f;
       exitPrice = k.close;
       const tp1P = tp1Hit ? 0.50 * (isBuy ? (tp1 - entryPrice) / entryPrice * 100 : (entryPrice - tp1) / entryPrice * 100) : 0;
@@ -189,7 +191,7 @@ export function simulateTrade(
           currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
-        } else if (k.close <= activeSL) {
+        } else if (isClosed && k.close <= activeSL) {
           // Conservative intra-candle re-check: candle hit TP1 but closed at or below Breakeven
           exitIdx = f;
           exitPrice = activeSL;
@@ -214,7 +216,7 @@ export function simulateTrade(
         const runnerFloatingR = riskDist > 0 ? 0.25 * ((k.close - entryPrice) / riskDist) : 0.25 * r2;
         realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
 
-        if (k.close <= activeSL) {
+        if (isClosed && k.close <= activeSL) {
           // Conservative intra-candle re-check: candle hit TP2 but closed at or below TP1
           const tp3Gain = ((activeSL - entryPrice) / entryPrice) * 25;
           grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
@@ -236,7 +238,7 @@ export function simulateTrade(
         const chandelierSL = highestHigh - 2.5 * currentATR;
         const ema9Val = policy.ema9Series && policy.ema9Series[f] ? policy.ema9Series[f] : NaN;
 
-        if (k.close <= chandelierSL || (!isNaN(ema9Val) && ema9Val > 0 && k.close < ema9Val)) {
+        if (isClosed && (k.close <= chandelierSL || (!isNaN(ema9Val) && ema9Val > 0 && k.close < ema9Val))) {
           const tp1Gain = ((tp1 - entryPrice) / entryPrice) * 50;
           const tp2Gain = ((tp2 - entryPrice) / entryPrice) * 25;
           const runnerGain = ((k.close - entryPrice) / entryPrice) * 25;
@@ -264,7 +266,7 @@ export function simulateTrade(
       }
 
       // ── 5. Early Adverse Cutoff (Multifractal) ───────────────────────────
-      if (policy.earlyAdverseCutoffBars && candleCount <= policy.earlyAdverseCutoffBars && currentStatus === 'OPEN') {
+      if (isClosed && policy.earlyAdverseCutoffBars && candleCount <= policy.earlyAdverseCutoffBars && currentStatus === 'OPEN') {
         const adverseDiff = entryPrice - k.close;
         const cutoffDist = (policy.earlyAdverseCutoffR ?? 0.5) * riskDist;
         if (adverseDiff > cutoffDist) {
@@ -280,7 +282,7 @@ export function simulateTrade(
       }
 
       // ── 6. Inactivity Time-Stop (8 candles) ─────────────────────────────
-      if (policy.timeStopBars && policy.timeStopBars > 0 && candleCount >= policy.timeStopBars && currentStatus === 'OPEN') {
+      if (isClosed && policy.timeStopBars && policy.timeStopBars > 0 && candleCount >= policy.timeStopBars && currentStatus === 'OPEN') {
         const currentGain = k.close - entryPrice;
         if (currentGain < 0.5 * riskDist) {
           const diffPct = (currentGain / entryPrice) * 100;
@@ -296,7 +298,7 @@ export function simulateTrade(
       }
 
       // ── 7. Emergency Exit (VWAP + EMA21 breach at candle close) ─────────
-      if (policy.emergencyExitFn && policy.emergencyExitFn(k, f, 'BUY')) {
+      if (isClosed && policy.emergencyExitFn && policy.emergencyExitFn(k, f, 'BUY')) {
         const tp1P = tp1Hit ? 0.50 * ((tp1 - entryPrice) / entryPrice * 100) : 0;
         const tp2P = (tp2Hit && isVCME_Runner) ? 0.25 * ((tp2 - entryPrice) / entryPrice * 100) : 0;
         const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit && isVCME_Runner ? 0.25 : 0);
@@ -368,7 +370,7 @@ export function simulateTrade(
           currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
-        } else if (k.close >= activeSL) {
+        } else if (isClosed && k.close >= activeSL) {
           // Conservative intra-candle re-check: candle hit TP1 but closed at or above Breakeven
           exitIdx = f;
           exitPrice = activeSL;
@@ -393,7 +395,7 @@ export function simulateTrade(
         const runnerFloatingR = riskDist > 0 ? 0.25 * ((entryPrice - k.close) / riskDist) : 0.25 * r2;
         realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
 
-        if (k.close >= activeSL) {
+        if (isClosed && k.close >= activeSL) {
           // Conservative intra-candle re-check: candle hit TP2 but closed at or above TP1
           const tp3Gain = ((entryPrice - activeSL) / entryPrice) * 25;
           grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
@@ -415,7 +417,7 @@ export function simulateTrade(
         const chandelierSL = lowestLow + 2.5 * currentATR;
         const ema9Val = policy.ema9Series && policy.ema9Series[f] ? policy.ema9Series[f] : NaN;
 
-        if (k.close >= chandelierSL || (!isNaN(ema9Val) && ema9Val > 0 && k.close > ema9Val)) {
+        if (isClosed && (k.close >= chandelierSL || (!isNaN(ema9Val) && ema9Val > 0 && k.close > ema9Val))) {
           const tp1Gain = ((entryPrice - tp1) / entryPrice) * 50;
           const tp2Gain = ((entryPrice - tp2) / entryPrice) * 25;
           const runnerGain = ((entryPrice - k.close) / entryPrice) * 25;
@@ -430,8 +432,8 @@ export function simulateTrade(
         } else if (k.low <= tp3) {
           const tp1Gain = ((entryPrice - tp1) / entryPrice) * 50;
           const tp2Gain = ((entryPrice - tp2) / entryPrice) * 25;
-          const tp3Gain = ((entryPrice - tp3) / entryPrice) * 25;
-          grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
+          const runnerGain = ((entryPrice - tp3) / entryPrice) * 25;
+          grossPnlPct = Number((tp1Gain + tp2Gain + runnerGain).toFixed(2));
           realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * r3).toFixed(2));
           exitIdx = f;
           exitPrice = tp3;
@@ -443,7 +445,7 @@ export function simulateTrade(
       }
 
       // 5. Early Adverse Cutoff (Multifractal)
-      if (policy.earlyAdverseCutoffBars && candleCount <= policy.earlyAdverseCutoffBars && currentStatus === 'OPEN') {
+      if (isClosed && policy.earlyAdverseCutoffBars && candleCount <= policy.earlyAdverseCutoffBars && currentStatus === 'OPEN') {
         const adverseDiff = k.close - entryPrice;
         const cutoffDist = (policy.earlyAdverseCutoffR ?? 0.5) * riskDist;
         if (adverseDiff > cutoffDist) {
@@ -459,7 +461,7 @@ export function simulateTrade(
       }
 
       // 6. Inactivity Time-Stop (8 candles)
-      if (policy.timeStopBars && policy.timeStopBars > 0 && candleCount >= policy.timeStopBars && currentStatus === 'OPEN') {
+      if (isClosed && policy.timeStopBars && policy.timeStopBars > 0 && candleCount >= policy.timeStopBars && currentStatus === 'OPEN') {
         const currentGain = entryPrice - k.close;
         if (currentGain < 0.5 * riskDist) {
           const diffPct = (currentGain / entryPrice) * 100;
@@ -475,7 +477,7 @@ export function simulateTrade(
       }
 
       // 7. Emergency Exit (VWAP + EMA21 breach at candle close)
-      if (policy.emergencyExitFn && policy.emergencyExitFn(k, f, 'SELL')) {
+      if (isClosed && policy.emergencyExitFn && policy.emergencyExitFn(k, f, 'SELL')) {
         const tp1P = tp1Hit ? 0.50 * ((entryPrice - tp1) / entryPrice * 100) : 0;
         const tp2P = (tp2Hit && isVCME_Runner) ? 0.25 * ((entryPrice - tp2) / entryPrice * 100) : 0;
         const leftWeight = 1 - (tp1Hit ? 0.50 : 0) - (tp2Hit && isVCME_Runner ? 0.25 : 0);
@@ -494,12 +496,13 @@ export function simulateTrade(
 
   // If trade did not terminate on a stop or target within forward window, calculate timeout/floating PnL
   if (!isTerminated) {
+    const lastK = klines[maxIdx];
+    const isLastKClosed = policy.isCandleClosed ? policy.isCandleClosed(lastK) : true;
     const candlesEvaluated = maxIdx - entryCandleIdx;
-    const isExpiredByTime = policy.maxExpiryTimestampMs !== undefined && klines[maxIdx].time * 1000 >= policy.maxExpiryTimestampMs;
+    const isExpiredByTime = isLastKClosed && policy.maxExpiryTimestampMs !== undefined && lastK.time * 1000 >= policy.maxExpiryTimestampMs;
 
-    if (candlesEvaluated >= policy.forwardWindow || isExpiredByTime) {
+    if ((isLastKClosed && candlesEvaluated >= policy.forwardWindow) || isExpiredByTime) {
       // Expiration: maximum strategy horizon reached
-      const lastK = klines[maxIdx];
       exitIdx = maxIdx;
       exitPrice = policy.floatingClosePrice !== undefined ? policy.floatingClosePrice : lastK.close;
       exitReason = 'TIMEOUT';

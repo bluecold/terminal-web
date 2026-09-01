@@ -191,13 +191,13 @@ export function updateAlertsOutcome(
     // A candle is confirmed closed only if its close boundary has passed in time
     const isCandleClosed = (k: Kline) => (k.time + durationSec) * 1000 <= nowMs;
 
-    // Filter only CLOSED candles that finished AFTER the alert was fired
+    // Include all candles (closed and currently forming live candle) that occurred AFTER the alert was fired
     const candlesToEvaluate = symbolKlines.filter(k => {
       const isAfterAlert = alert.candleTimestamp && alert.candleTimestamp > 0
         ? k.time > alert.candleTimestamp
         : (k.time + durationSec) * 1000 > alert.timestamp;
 
-      return isAfterAlert && isCandleClosed(k);
+      return isAfterAlert;
     });
 
     const isMultifractal = alert.strategy?.includes('Multifractal');
@@ -285,7 +285,8 @@ export function updateAlertsOutcome(
       ema9Series: mappedEma9Series,
       frictionPct: 0.08,
       floatingClosePrice: latestPrice,
-      maxExpiryTimestampMs
+      maxExpiryTimestampMs,
+      isCandleClosed,
     };
 
     const sim = simulateTrade(evalKlines, 0, isBuy ? 'BUY' : 'SELL', levels, policy);

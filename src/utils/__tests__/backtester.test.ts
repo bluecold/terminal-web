@@ -435,8 +435,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(pass3[0].status, 'TP1_BE_CLOSED', 'Alert should transition to TP1_BE_CLOSED only when post-TP1 candle hits entry price');
   });
 
-  // Test 18: Unclosed live candle repainting immunity
-  test('updateAlertsOutcome ignores unclosed live candle extremes for terminal status and updates floating PnL', () => {
+  // Test 18: Live forming candle intra-bar TP/SL execution vs close-based exits
+  test('updateAlertsOutcome executes intra-candle TP/SL immediately on forming candle but guards close-based exits', () => {
     const nowSec = Math.floor(Date.now() / 1000);
     const alertTime = Date.now() - 60000; // fired 1 minute ago
 
@@ -459,7 +459,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     };
 
     // The live 1H candle started 10 minutes ago and is currently in formation (ends in 50 minutes)
-    // It has a spike to 125 (would hit TP2 if evaluated), but it is NOT closed yet!
+    // It has a spike to 125 (hits TP1 110 and TP2 120 intra-candle!), while currently trading at 105
     const liveCandleTime = nowSec - 600;
     const klinesMap = {
       'BTCUSDT:1h': [
@@ -471,8 +471,9 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     };
 
     const updated = updateAlertsOutcome([alert], klinesMap);
-    assert.strictEqual(updated[0].status, 'OPEN', 'Alert must stay OPEN and NOT freeze as TP2_HIT from an unclosed candle');
-    assert.strictEqual(updated[0].pnlPercent, 4.92, 'Floating PnL should be calculated net of friction (105 vs 100 = +5% gross - 0.08% friction = +4.92% net)');
+    // In live execution, hitting TP2 (125 >= 120) fills the TP limit orders immediately on the exchange
+    assert.strictEqual(updated[0].status, 'TP2_HIT', 'Alert must progress to TP2_HIT because TP limit was filled intra-candle');
+    assert(updated[0].pnlPercent > 0, 'PnL should reflect locked TP1 + TP2 partials + floating runner');
   });
 
   // Test 19: Multi-Timeframe Cache Invalidation via Auxiliary Timeframe Fingerprint
