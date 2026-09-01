@@ -3013,6 +3013,59 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourney.confidence, 'HIGH');
   });
 
+  // Test 96: Dynamic Tournament Conditioning on current market regime (regimeStats)
+  test('evaluateStrategyTournament dynamically selects and gates strategies based on active market regime', () => {
+    // Strategy Trend: Excels in trending markets (+0.80R), loses in ranging (-0.20R)
+    const trendStrategy: StrategyCandidate = {
+      key: 'multitemporal',
+      label: 'Trend Follower',
+      profitFactor: 2.0,
+      expectancyR: 0.50,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 20,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5,
+      regimeStats: {
+        trending: { signals: 10, wins: 8, losses: 2, winRate: 0.80, expectancyR: 0.80 },
+        ranging:  { signals: 10, wins: 2, losses: 8, winRate: 0.20, expectancyR: -0.20 }
+      }
+    };
+
+    // Strategy Range: Excels in ranging markets (+0.70R), loses in trending (-0.30R)
+    const rangeStrategy: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Mean Reversion',
+      profitFactor: 2.0,
+      expectancyR: 0.50,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 20,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5,
+      regimeStats: {
+        trending: { signals: 10, wins: 2, losses: 8, winRate: 0.20, expectancyR: -0.30 },
+        ranging:  { signals: 10, wins: 8, losses: 2, winRate: 0.80, expectancyR: 0.70 }
+      }
+    };
+
+    // 1. In Trending market (ADX > 25): Trend strategy wins; Range strategy is hard-gated (negative trending expectancy)
+    const tourneyTrending = evaluateStrategyTournament([trendStrategy, rangeStrategy], '5m', 'trending');
+    assert.strictEqual(tourneyTrending.bestStrategy, 'multitemporal', 'Trend strategy must win in trending regime');
+    assert.strictEqual(tourneyTrending.confidence, 'HIGH');
+    assert.ok(tourneyTrending.reasoning.includes('🔥 Tendencia (ADX>25)'));
+
+    // 2. In Ranging market (ADX <= 25): Range strategy wins; Trend strategy is hard-gated (negative ranging expectancy)
+    const tourneyRanging = evaluateStrategyTournament([trendStrategy, rangeStrategy], '5m', 'ranging');
+    assert.strictEqual(tourneyRanging.bestStrategy, 'confluencia', 'Range strategy must win in ranging regime');
+    assert.strictEqual(tourneyRanging.confidence, 'HIGH');
+    assert.ok(tourneyRanging.reasoning.includes('💤 Rango (ADX≤25)'));
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

@@ -11,7 +11,7 @@ import {
   backtestMultitemporal,
   backtestMultifractalMTF,
 } from './backtester';
-import { getConfirmedClosedKlines, type ScoringWeights } from './indicators';
+import { getConfirmedClosedKlines, calculateADXSeries, type ScoringWeights } from './indicators';
 
 export type ConfidenceLevel = 'HIGH' | 'LIMITED' | 'NONE';
 
@@ -48,21 +48,23 @@ export interface TournamentResult {
   walkForward?: WalkForwardResult;
   longStats?: DirectionalStats;
   shortStats?: DirectionalStats;
+  currentRegime?: 'trending' | 'ranging';
   reasoning: string;
 }
 
 /**
  * Evaluates candidates using an R-multiple, capital exposure, downside risk and Walk-Forward validated model:
  * - Normalizes performance by R per trade (E[R]) and velocity (R per hour of exposure)
- * - Penalizes excessive drawdowns (MDD > 3.0R) and boosts high Sortino ratio systems
+ * - Penalizes excessive drawdowns (MDD > 2.5R) and boosts high Sortino ratio systems
  * - Enforces Walk-Forward validation: requires In-Sample (70%) and Out-of-Sample (30%) consistency (WF != FAIL for HIGH confidence)
  * - Treats zero-loss samples (PF = null / undefined / 99.9) as undefined (PF N/D), preventing single-trade singularities
- * - Applies a sample-size sigmoid penalty curve to balance statistical significance
- * - Selects the most capital-efficient, risk-adjusted and out-of-sample robust strategy
+ * - Regularizes sample size via monotonic Bayesian Shrinkage
+ * - Conditions strategy selection and scoring on current market regime (trending ADX > 25 vs ranging ADX <= 25)
  */
 export function evaluateStrategyTournament(
   candidates: StrategyCandidate[],
-  timeframe: string
+  timeframe: string,
+  currentRegime?: 'trending' | 'ranging'
 ): TournamentResult {
   if (candidates.length === 0) {
     return {
@@ -75,6 +77,7 @@ export function evaluateStrategyTournament(
       expectancyPerHour: 0,
       maxDrawdownR: 0,
       sortinoRatio: null,
+      currentRegime,
       reasoning: 'Sin candidatos para evaluar',
     };
   }
@@ -116,7 +119,7 @@ export function evaluateStrategyTournament(
     return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR };
   };
 
-  // Helper to calculate Bayesian Shrunk Expectancy score normalized by time and downside risk
+  // Helper to calculate Bayesian Shrunk Expectancy score normalized by time, downside risk and current regime
   // Evaluated strictly on In-Sample (or full sample if no split) without OOS contamination (purely blind OOS)
   const calcScore = (c: StrategyCandidate): number => {
     const { expR, resolved, maxDrawdownR, timeFactor } = getMetrics(c, true);
@@ -144,12 +147,24 @@ export function evaluateStrategyTournament(
       sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
     }
 
-    return timeNormScore * ddPenalty * sortinoMultiplier;
+    // 5. Regime-specific Bayesian modulation:
+    let regimeMultiplier = 1.0;
+    if (currentRegime && c.regimeStats) {
+      const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+      if (stats && stats.signals > 0) {
+        const regimeShrink = stats.signals / (stats.signals + 4);
+        const shrunkRegimeExpR = stats.expectancyR * regimeShrink;
+        regimeMultiplier = Math.max(0.70, Math.min(1.30, 1.0 + Math.tanh(shrunkRegimeExpR * 0.40) * 0.25));
+      }
+    }
+
+    return timeNormScore * ddPenalty * sortinoMultiplier * regimeMultiplier;
   };
 
   // 1. Check for HIGH confidence candidates:
   // - In-Sample robust edge: resolved >= minHighResolved, PF >= 1.25, expR > 0
   // - Blind Out-of-Sample Certification: c.walkForward.status === 'PASS' (OOS confirms positive edge in blind validation)
+  // - Regime Hard Gate: Strategy must NOT possess negative expectancy in the active market regime
   const highCandidates = candidates
     .filter(c => {
       const isMetrics = getMetrics(c, true);
@@ -157,7 +172,16 @@ export function evaluateStrategyTournament(
         ? true
         : isMetrics.profitFactor >= 1.25;
       const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
-      return c.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk;
+
+      let regimeOk = true;
+      if (currentRegime && c.regimeStats) {
+        const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+        if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
+          regimeOk = false;
+        }
+      }
+
+      return c.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk && regimeOk;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
@@ -178,6 +202,9 @@ export function evaluateStrategyTournament(
     const wfInfo = winner.walkForward && winner.walkForward.status === 'PASS' && winner.walkForward.outOfSample.signals > 0
       ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R`
       : '';
+    const regimeInfo = currentRegime
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX>25)' : '💤 Rango (ADX≤25)'}`
+      : '';
 
     return {
       bestStrategy: winner.key,
@@ -192,11 +219,12 @@ export function evaluateStrategyTournament(
       walkForward: winner.walkForward,
       longStats: winner.longStats,
       shortStats: winner.shortStats,
-      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades)`,
+      currentRegime,
+      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades${regimeInfo})`,
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (minimum sample minLimitedResolved, positive expectancy, and WF not FAIL)
+  // 2. Check for LIMITED confidence candidates (minimum sample minLimitedResolved, positive expectancy, WF not FAIL, and regime not toxic)
   const limitedCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
@@ -204,6 +232,15 @@ export function evaluateStrategyTournament(
       if (expR <= 0) return false;
       // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
       if (c.walkForward && c.walkForward.status === 'FAIL') return false;
+
+      // Regime Hard Gate: Reject candidates with negative expectancy in active regime
+      if (currentRegime && c.regimeStats) {
+        const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+        if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
+          return false;
+        }
+      }
+
       if (c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0) {
         return true;
       }
@@ -223,6 +260,9 @@ export function evaluateStrategyTournament(
       : winner.walkForward?.status === 'NO_OOS_TRADES' && winner.resolved >= minHighResolved
       ? ' · Sin trades en OOS'
       : '';
+    const regimeInfo = currentRegime
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX>25)' : '💤 Rango (ADX≤25)'}`
+      : '';
 
     return {
       bestStrategy: winner.key,
@@ -237,7 +277,8 @@ export function evaluateStrategyTournament(
       walkForward: winner.walkForward,
       longStats: winner.longStats,
       shortStats: winner.shortStats,
-      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfOosNote})`,
+      currentRegime,
+      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfOosNote}${regimeInfo})`,
     };
   }
 
@@ -253,6 +294,7 @@ export function evaluateStrategyTournament(
     maxDrawdownR: undefined,
     sortinoRatio: null,
     walkForward: undefined,
+    currentRegime,
     reasoning: 'Sin ventaja estadística demostrada o muestra insuficiente (<3 trades) — Permanecer FLAT (Sin trades)',
   };
 }
@@ -276,6 +318,7 @@ export interface QVESelectionResult {
   winRate: number;
   expectancyR: number;
   expectancyPerHour: number;
+  currentRegime?: 'trending' | 'ranging';
   tournament: TournamentResult;
   candidates: StrategyCandidate[];
   targetInterval: string;
@@ -437,7 +480,17 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
     },
   ];
 
-  const tournament = evaluateStrategyTournament(candidates, evalInterval);
+  // ── Detect current market regime on confirmed trigger candles ───────────
+  let currentRegime: 'trending' | 'ranging' | undefined = undefined;
+  if (triggerKlines && triggerKlines.length >= 28) {
+    const adxSeries = calculateADXSeries(triggerKlines, 14);
+    const lastAdx = adxSeries.adx[adxSeries.adx.length - 1];
+    if (lastAdx !== undefined && !isNaN(lastAdx)) {
+      currentRegime = lastAdx > 25 ? 'trending' : 'ranging';
+    }
+  }
+
+  const tournament = evaluateStrategyTournament(candidates, evalInterval, currentRegime);
   const bestStrategy = tournament.bestStrategy;
   const strategyLabel = tournament.strategyLabel;
   const bestCandidate = candidates.find(c => c.key === bestStrategy);
@@ -451,6 +504,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
     winRate: bestWinRate,
     expectancyR: tournament.expectancyR,
     expectancyPerHour: tournament.expectancyPerHour,
+    currentRegime,
     tournament,
     candidates,
     targetInterval: evalInterval,
