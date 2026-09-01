@@ -50,7 +50,7 @@ import {
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
 import { evaluateStrategyTournament, runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate } from '../tournament';
 import { simulateTrade, type TradeLevels } from '../tradeSimulator';
-import { buildConfluenciaContext } from '../strategyEvaluators';
+import { buildConfluenciaContext, buildVCMESniperContext } from '../strategyEvaluators';
 import { sanitizeKlines, type Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -3211,6 +3211,55 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const sellSanitized = sanitizeSignalWithDirectionalEdge('SELL', tourney.longStats, tourney.shortStats, 3);
     assert.strictEqual(buySanitized, 'BUY', 'BUY with positive IS edge must be allowed');
     assert.strictEqual(sellSanitized, 'NEUTRAL', 'SELL with negative IS edge must be blocked to NEUTRAL');
+  });
+
+  // Test 99: VCME Sniper records adxAtEntry corresponding to execution style timeframe (5m in DayTrading, 1H in Swing)
+  test('VCME Sniper records adxAtEntry matching execution timeframe for tournament regime parity', () => {
+    const klines5m: Kline[] = [];
+    const klines1h: Kline[] = [];
+    const klines1d: Kline[] = [];
+
+    for (let i = 0; i < 650; i++) {
+      klines5m.push({
+        time: 1700000000 + i * 300,
+        open: 100 + i * 0.1,
+        high: 100.5 + i * 0.1,
+        low: 99.8 + i * 0.1,
+        close: 100.4 + i * 0.1,
+        volume: 1000 + i * 5
+      });
+    }
+
+    for (let i = 0; i < 200; i++) {
+      klines1h.push({
+        time: 1700000000 + i * 3600,
+        open: 100 + i * 0.5,
+        high: 101 + i * 0.5,
+        low: 99.5 + i * 0.5,
+        close: 100.8 + i * 0.5,
+        volume: 12000
+      });
+    }
+
+    for (let i = 0; i < 50; i++) {
+      klines1d.push({
+        time: 1700000000 + i * 86400,
+        open: 100 + i * 2,
+        high: 103 + i * 2,
+        low: 99 + i * 2,
+        close: 102.5 + i * 2,
+        volume: 250000
+      });
+    }
+
+    const ctx = buildVCMESniperContext(klines5m, klines1h, klines1d, 'TEST', 'dayTrading');
+    assert.ok(ctx.adxSeries5m && ctx.adxSeries5m.adx.length > 0, 'VCMESniperContext must compute and expose adxSeries5m');
+
+    const btDay = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'TEST_DAY', 'dayTrading');
+    const btSwing = backtestMultitemporal(klines1h, klines1h, klines1d, '1h', 'TEST_SWING', 'swing');
+
+    assert.ok(btDay.regimeStats !== undefined, 'DayTrading VCME must produce valid regimeStats');
+    assert.ok(btSwing.regimeStats !== undefined, 'Swing VCME must produce valid regimeStats');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

@@ -912,7 +912,11 @@ export function backtestMultitemporal(
     totalDurationCandles += tradeDuration;
     totalCycleCandles += tradeDuration + cooldownPeriod;
 
-    const adxVal = evalRes.adx1H > 0 ? evalRes.adx1H : undefined;
+    const adxVal = style === 'swing'
+      ? (evalRes.adx1H > 0 ? evalRes.adx1H : undefined)
+      : ((ctx.adxSeries5m && i >= 0 && i < ctx.adxSeries5m.adx.length && !isNaN(ctx.adxSeries5m.adx[i]))
+          ? ctx.adxSeries5m.adx[i]
+          : (evalRes.adx1H > 0 ? evalRes.adx1H : undefined));
     recordedTrades.push({
       dir: evalRes.signal as 'BUY' | 'SELL',
       realizedR: sim.realizedR,

@@ -661,6 +661,7 @@ export interface VCMESniperContext {
   vwapSeries5m: number[];
   rsiSeries5m: number[];
   atrSeries5m: number[];
+  adxSeries5m: ReturnType<typeof calculateADXSeries>;
   vol5m: number[];
   volSma5m: number[];
   bbWidth5m: number[];
@@ -724,6 +725,7 @@ export function buildVCMESniperContext(
   const vwapSeries5m = klines5m ? calculateVWAPSeries(klines5m, style === 'swing' ? '1h' : '5m', symbol) : [];
   const rsiSeries5m = calculateRSISeries(closes5m, 14);
   const atrSeries5m = klines5m ? calculateATRSeries(klines5m, 14) : [];
+  const adxSeries5m = klines5m ? calculateADXSeries(klines5m, 14) : { adx: [], plusDI: [], minusDI: [] };
 
   const vol5m = klines5m ? klines5m.map(k => k.volume) : [];
   const volSma5m: number[] = new Array(len5m).fill(0);
@@ -773,7 +775,7 @@ export function buildVCMESniperContext(
     closes1h, ema200_1h, ema50_1h, ema20_1h, rsiSeries1h, adxSeries1h,
     macdData1h, atrSeries1h, vwapSeries1h, chandelierData, atrSma1hArr,
     closes5m, bbSeries5m, ema9_5m, ema21_5m, vwapSeries5m, rsiSeries5m,
-    atrSeries5m, vol5m, volSma5m, bbWidth5m,
+    atrSeries5m, adxSeries5m, vol5m, volSma5m, bbWidth5m,
     idx1hMap, idx1dMap
   };
 }
