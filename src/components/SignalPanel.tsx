@@ -1339,15 +1339,15 @@ export default function SignalPanel({
                               <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.stopLoss)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 ({executionStyle === 'swing' ? '2.0R' : '1.5R'} — cerrar 50% + BE):</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 (2.0R — cerrar 50% + BE):</span>
                               <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit1)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 ({executionStyle === 'swing' ? '4.0R' : '2.5R'} — cerrar 25%):</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 (3.5R — cerrar 25%):</span>
                               <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit2)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🚀 TP3 ({executionStyle === 'swing' ? '5.0R' : '3.5R'} — 25% + trailing):</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🚀 TP3 (5.0R — 25% + trailing):</span>
                               <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(multi.takeProfit3)}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
