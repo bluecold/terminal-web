@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Eye, AlertTriangle, ShieldCheck, Zap } from 'lucide-react';
-import { fetchKlines } from '../services/api';
+import { fetchKlines, type Kline } from '../services/api';
 import {
   calculateStandardVoting,
   calculateExperimentalSignal,
@@ -91,8 +91,27 @@ export default function MarketRadar({
   // Circuit breaker: track consecutive errors per symbol to avoid repeated failing requests (10 min backoff)
   const failureMapRef = useRef<Map<string, { count: number; lastFailed: number }>>(new Map());
 
-  // Smart calculation cache: avoid recalculating 55 backtests if candles & profile haven't changed
-  const calcCacheRef = useRef<Map<string, { hash: string; data: RadarRowData }>>(new Map());
+  // Smart calculation cache: cache heavy QVE tournament and multi-timeframe analytics, but always recalculate live signals with current price
+  interface CachedRadarAnalytics {
+    hash: string;
+    sig5m: string;
+    sig1h: string;
+    sig1d: string;
+    confluenceScore: number;
+    isFullConfluence: boolean;
+    confluenceType: 'BUY_3' | 'SELL_3' | 'BUY_2' | 'SELL_2' | 'PARTIAL' | 'NEUTRAL';
+    qve: ReturnType<typeof runQVESelection>;
+    rvol: number;
+    volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL';
+    bbWidthPercent: number;
+  }
+  const calcCacheRef = useRef<Map<string, CachedRadarAnalytics>>(new Map());
+
+  const getKlinesFingerprint = (klines: Kline[]) => {
+    if (!klines || klines.length === 0) return '0';
+    const last = klines[klines.length - 1];
+    return `${klines.length}_${last.time}_${last.close}_${last.high}_${last.low}_${last.volume}`;
+  };
 
   const symbolsToScan = useMemo(() => {
     if (activePreset === 'watchlist') {
@@ -188,122 +207,144 @@ export default function MarketRadar({
       const closed1h = getConfirmedClosedKlines(k1h, '1h', symbol);
       const closed1d = getConfirmedClosedKlines(k1d, '1d', symbol);
 
-      // Smart cache check by candle timestamps, user profile, and scoring weights
-      const last5mTime = closed5m.length > 0 ? closed5m[closed5m.length - 1].time : 0;
-      const last1hTime = closed1h.length > 0 ? closed1h[closed1h.length - 1].time : 0;
-      const last1dTime = closed1d.length > 0 ? closed1d[closed1d.length - 1].time : 0;
+      // Smart cache check using robust OHLCV candle fingerprints, user profile, and scoring weights
+      const fp5m = getKlinesFingerprint(closed5m);
+      const fp1h = getKlinesFingerprint(closed1h);
+      const fp1d = getKlinesFingerprint(closed1d);
       const wKey = scoringWeights ? `${scoringWeights.trend}_${scoringWeights.rsi}_${scoringWeights.bollinger}_${scoringWeights.volume}_${scoringWeights.candle}` : 'default';
-      const cacheHash = `${symbol}_${last5mTime}_${last1hTime}_${last1dTime}_${executionStyle}_${triggerMode}_${wKey}`;
+      const cacheHash = `${symbol}_${fp5m}_${fp1h}_${fp1d}_${executionStyle}_${triggerMode}_${wKey}`;
 
-      if (!forceFresh) {
-        const cached = calcCacheRef.current.get(symbol);
-        if (cached && cached.hash === cacheHash) {
-          return {
-            ...cached.data,
-            price,
-            changePercent,
-            loading: false,
-          };
+      let analytics: CachedRadarAnalytics;
+      const cached = !forceFresh ? calcCacheRef.current.get(symbol) : undefined;
+
+      if (cached && cached.hash === cacheHash) {
+        analytics = cached;
+      } else {
+        // ── 1. Multitemporal Signals & Weighted Confluence ────────
+        const voting5m = closed5m.length >= 35 ? calculateStandardVoting(closed5m) : null;
+        const voting1h = closed1h.length >= 35 ? calculateStandardVoting(closed1h) : null;
+        const voting1d = closed1d.length >= 30 ? calculateStandardVoting(closed1d) : null;
+
+        const sig5m = voting5m ? voting5m.signal : 'NEUTRAL';
+        const sig1h = voting1h ? voting1h.signal : 'NEUTRAL';
+        const sig1d = voting1d ? voting1d.signal : 'NEUTRAL';
+
+        const isBuy5m = sig5m.includes('BUY');
+        const isBuy1h = sig1h.includes('BUY');
+        const isBuy1d = sig1d.includes('BUY');
+
+        const isSell5m = sig5m.includes('SELL');
+        const isSell1h = sig1h.includes('SELL');
+        const isSell1d = sig1d.includes('SELL');
+
+        // Helper to assign signal score (-1.0 to +1.0)
+        const getSigScore = (voting: typeof voting5m) => {
+          if (!voting || voting.signal === 'NEUTRAL') return 0;
+          const isBuy = voting.signal.includes('BUY');
+          const isStrong = voting.rawSignal.includes('STRONG') || (isBuy ? voting.buyVotes >= 4 : voting.sellVotes >= 4);
+          if (isBuy) return isStrong ? 1.0 : 0.8;
+          return isStrong ? -1.0 : -0.8;
+        };
+
+        const score5m = getSigScore(voting5m);
+        const score1h = getSigScore(voting1h);
+        const score1d = getSigScore(voting1d);
+
+        // Weighted Multi-Timeframe Score: 5m (50%), 1h (30%), 1d (20%)
+        const weightedScore = (score5m * 0.50) + (score1h * 0.30) + (score1d * 0.20);
+        const confluenceScore = Number((Math.abs(weightedScore) * 100).toFixed(0));
+
+        const buyCount = (isBuy5m ? 1 : 0) + (isBuy1h ? 1 : 0) + (isBuy1d ? 1 : 0);
+        const sellCount = (isSell5m ? 1 : 0) + (isSell1h ? 1 : 0) + (isSell1d ? 1 : 0);
+
+        let isFullConfluence = false;
+        let confluenceType: 'BUY_3' | 'SELL_3' | 'BUY_2' | 'SELL_2' | 'PARTIAL' | 'NEUTRAL' = 'NEUTRAL';
+
+        if (buyCount === 3) {
+          isFullConfluence = true;
+          confluenceType = 'BUY_3';
+        } else if (sellCount === 3) {
+          isFullConfluence = true;
+          confluenceType = 'SELL_3';
+        } else if (buyCount === 2) {
+          confluenceType = 'BUY_2';
+        } else if (sellCount === 2) {
+          confluenceType = 'SELL_2';
+        } else if (confluenceScore >= 40) {
+          confluenceType = 'PARTIAL';
         }
+
+        // ── 2. QVE Tournament (Synced with Profile & Weights) ──
+        const qve = runQVESelection({
+          symbol,
+          data5m: closed5m,
+          data1h: closed1h,
+          data1d: closed1d,
+          executionStyle,
+          triggerMode,
+          scoringWeights,
+        });
+
+        // ── 3. RVOL & Bollinger Volatility ──
+        const rvol = closed5m.length > 0 ? calculateTimeOfDayRVOL(closed5m, closed5m.length - 1, 10, 300) : 1.0;
+
+        let volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
+        let bbWidthPercent = 0;
+
+        if (closed5m.length >= 20) {
+          const bbSeries = calculateBollingerBandsSeries(closed5m, 20, 2);
+          if (bbSeries.length > 0) {
+            const volStatus = calculateBollingerVolatilityStatus(bbSeries, 50);
+            volatilityStatus = volStatus.status;
+            bbWidthPercent = volStatus.widthPercent;
+          }
+        }
+
+        analytics = {
+          hash: cacheHash,
+          sig5m,
+          sig1h,
+          sig1d,
+          confluenceScore,
+          isFullConfluence,
+          confluenceType,
+          qve,
+          rvol,
+          volatilityStatus,
+          bbWidthPercent,
+        };
+
+        calcCacheRef.current.set(symbol, analytics);
       }
 
-      // ── 1. Multitemporal Signals & Weighted Confluence ────────
-      const voting5m = closed5m.length >= 35 ? calculateStandardVoting(closed5m) : null;
-      const voting1h = closed1h.length >= 35 ? calculateStandardVoting(closed1h) : null;
-      const voting1d = closed1d.length >= 30 ? calculateStandardVoting(closed1d) : null;
-
-      const sig5m = voting5m ? voting5m.signal : 'NEUTRAL';
-      const sig1h = voting1h ? voting1h.signal : 'NEUTRAL';
-      const sig1d = voting1d ? voting1d.signal : 'NEUTRAL';
-
-      const isBuy5m = sig5m.includes('BUY');
-      const isBuy1h = sig1h.includes('BUY');
-      const isBuy1d = sig1d.includes('BUY');
-
-      const isSell5m = sig5m.includes('SELL');
-      const isSell1h = sig1h.includes('SELL');
-      const isSell1d = sig1d.includes('SELL');
-
-      // Helper to assign signal score (-1.0 to +1.0)
-      const getSigScore = (voting: typeof voting5m) => {
-        if (!voting || voting.signal === 'NEUTRAL') return 0;
-        const isBuy = voting.signal.includes('BUY');
-        const isStrong = voting.rawSignal.includes('STRONG') || (isBuy ? voting.buyVotes >= 4 : voting.sellVotes >= 4);
-        if (isBuy) return isStrong ? 1.0 : 0.8;
-        return isStrong ? -1.0 : -0.8;
-      };
-
-      const score5m = getSigScore(voting5m);
-      const score1h = getSigScore(voting1h);
-      const score1d = getSigScore(voting1d);
-
-      // Weighted Multi-Timeframe Score: 5m (50%), 1h (30%), 1d (20%)
-      const weightedScore = (score5m * 0.50) + (score1h * 0.30) + (score1d * 0.20);
-      const confluenceScore = Number((Math.abs(weightedScore) * 100).toFixed(0));
-
-      const buyCount = (isBuy5m ? 1 : 0) + (isBuy1h ? 1 : 0) + (isBuy1d ? 1 : 0);
-      const sellCount = (isSell5m ? 1 : 0) + (isSell1h ? 1 : 0) + (isSell1d ? 1 : 0);
-
-      let isFullConfluence = false;
-      let confluenceType: 'BUY_3' | 'SELL_3' | 'BUY_2' | 'SELL_2' | 'PARTIAL' | 'NEUTRAL' = 'NEUTRAL';
-
-      if (buyCount === 3) {
-        isFullConfluence = true;
-        confluenceType = 'BUY_3';
-      } else if (sellCount === 3) {
-        isFullConfluence = true;
-        confluenceType = 'SELL_3';
-      } else if (buyCount === 2) {
-        confluenceType = 'BUY_2';
-      } else if (sellCount === 2) {
-        confluenceType = 'SELL_2';
-      } else if (confluenceScore >= 40) {
-        confluenceType = 'PARTIAL';
-      }
-
-      // ── 2. QVE Tournament & Overall Signal (Synced with Profile & Weights) ──
-      const qve = runQVESelection({
-        symbol,
-        data5m: closed5m,
-        data1h: closed1h,
-        data1d: closed1d,
-        executionStyle,
-        triggerMode,
-        scoringWeights,
-      });
-
+      // ── Always Recalculate Live Execution Price & Final Signal with Real-time Quote ──
       const triggerRaw = executionStyle === 'swing' ? k1h : k5m;
-      const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, qve.triggerKlines);
+      const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, analytics.qve.triggerKlines);
       const mfEntryPrice = getEffectiveExecutionPrice(k5m, closed5m);
 
       let overallSig = 'NEUTRAL';
-      if (qve.bestStrategy === 'NONE') {
+      if (analytics.qve.bestStrategy === 'NONE') {
         overallSig = 'NEUTRAL';
-      } else if (qve.bestStrategy === 'confluencia') {
-        overallSig = calculateExperimentalSignal(qve.triggerKlines, qve.targetInterval).signal;
-      } else if (qve.bestStrategy === 'scoring') {
-        overallSig = calculateScoringSignal(qve.triggerKlines, qve.targetInterval, scoringWeights).signal;
-      } else if (qve.bestStrategy === 'multitemporal') {
-        overallSig = calculateVCMESniperSignal(qve.triggerKlines, closed1h, closed1d, symbol, qve.winRate, qve.profitFactor, executionStyle, triggerMode, triggerEntryPrice).signal;
-      } else if (qve.bestStrategy === 'multifractal') {
+      } else if (analytics.qve.bestStrategy === 'confluencia') {
+        overallSig = calculateExperimentalSignal(analytics.qve.triggerKlines, analytics.qve.targetInterval).signal;
+      } else if (analytics.qve.bestStrategy === 'scoring') {
+        overallSig = calculateScoringSignal(analytics.qve.triggerKlines, analytics.qve.targetInterval, scoringWeights).signal;
+      } else if (analytics.qve.bestStrategy === 'multitemporal') {
+        overallSig = calculateVCMESniperSignal(
+          analytics.qve.triggerKlines,
+          closed1h,
+          closed1d,
+          symbol,
+          analytics.qve.winRate,
+          analytics.qve.profitFactor,
+          executionStyle,
+          triggerMode,
+          triggerEntryPrice
+        ).signal;
+      } else if (analytics.qve.bestStrategy === 'multifractal') {
         overallSig = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol, mfEntryPrice).signal;
       } else {
-        overallSig = calculateStandardVoting(qve.triggerKlines).signal;
-      }
-
-      // ── 3. RVOL (Time-of-Day slot comparison with fallback to 20-bar SMA) & Bollinger Volatility ──
-      const rvol = closed5m.length > 0 ? calculateTimeOfDayRVOL(closed5m, closed5m.length - 1, 10, 300) : 1.0;
-
-      let volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
-      let bbWidthPercent = 0;
-
-      if (closed5m.length >= 20) {
-        const bbSeries = calculateBollingerBandsSeries(closed5m, 20, 2);
-        if (bbSeries.length > 0) {
-          const volStatus = calculateBollingerVolatilityStatus(bbSeries, 50);
-          volatilityStatus = volStatus.status;
-          bbWidthPercent = volStatus.widthPercent;
-        }
+        overallSig = calculateStandardVoting(analytics.qve.triggerKlines).signal;
       }
 
       const rowResult: RadarRowData = {
@@ -312,24 +353,23 @@ export default function MarketRadar({
         isCrypto,
         price,
         changePercent,
-        signal5m: sig5m,
-        signal1h: sig1h,
-        signal1d: sig1d,
+        signal5m: analytics.sig5m,
+        signal1h: analytics.sig1h,
+        signal1d: analytics.sig1d,
         overallSignal: overallSig,
-        isFullConfluence,
-        confluenceType,
-        confluenceScore,
-        qveStrategy: qve.strategyLabel,
-        qveProfitFactor: qve.profitFactor,
-        qveConfidence: qve.confidence,
-        rvol,
-        volatilityStatus,
-        bbWidthPercent,
+        isFullConfluence: analytics.isFullConfluence,
+        confluenceType: analytics.confluenceType,
+        confluenceScore: analytics.confluenceScore,
+        qveStrategy: analytics.qve.strategyLabel,
+        qveProfitFactor: analytics.qve.profitFactor,
+        qveConfidence: analytics.qve.confidence,
+        rvol: analytics.rvol,
+        volatilityStatus: analytics.volatilityStatus,
+        bbWidthPercent: analytics.bbWidthPercent,
         loading: false,
         isOffline: false,
       };
 
-      calcCacheRef.current.set(symbol, { hash: cacheHash, data: rowResult });
       return rowResult;
     } catch (e) {
       console.error(`Error scanning radar for ${symbol}`, e);
