@@ -1692,7 +1692,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(stdResult.walkForward.isWindow > 0);
     assert.ok(stdResult.walkForward.oosWindow > 0);
     assert.strictEqual(
-      stdResult.walkForward.inSample.signals + stdResult.walkForward.outOfSample.signals,
+      stdResult.walkForward.inSample.signals + stdResult.walkForward.outOfSample.signals + (stdResult.walkForward.purgedSignals ?? 0),
       stdResult.totalSignals
     );
     assert.ok(['PASS', 'FAIL', 'INSUFFICIENT_OOS', 'NO_OOS_TRADES'].includes(stdResult.walkForward.status));
@@ -3398,6 +3398,31 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const tourney = evaluateStrategyTournament([zeroISCandidate], '5m');
     assert.strictEqual(tourney.bestStrategy, 'NONE', 'Candidate with 0 IS trades must be rejected to FLAT/NONE');
     assert.strictEqual(tourney.confidence, 'NONE');
+  });
+
+  // Test 104: Purged Walk-Forward purges boundary straddling trades and eliminates lookahead contamination
+  test('calculateWalkForward purges boundary straddling trades preventing IS lookahead contamination', () => {
+    // Total 100 candles (0..99), splitIdx = 70
+    // Trade 1: strictly In-Sample (execIdx: 20, exitIdx: 35 < 70)
+    // Trade 2: boundary straddler (execIdx: 65 < 70, exitIdx: 78 >= 70) -> MUST BE PURGED
+    // Trade 3: strictly Out-of-Sample (execIdx: 75 >= 70, exitIdx: 85)
+    const mockTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', executionIdx: 20, exitIdx: 35 },
+      { dir: 'BUY', realizedR: 2.5, pnlPct: 10.0, outcome: 'win', executionIdx: 65, exitIdx: 78 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 75, exitIdx: 85 }
+    ];
+
+    const wf = calculateWalkForward(mockTrades, 0, 99, 0.70, 1);
+    assert.strictEqual(wf.inSample.signals, 1, 'Only Trade 1 must be counted in In-Sample');
+    assert.strictEqual(wf.inSample.expectancyR, 1.5, 'In-Sample expectancy must only reflect Trade 1 (1.5R)');
+    assert.strictEqual(wf.outOfSample.signals, 1, 'Only Trade 3 must be counted in Out-of-Sample');
+    assert.strictEqual(wf.outOfSample.expectancyR, 1.0, 'Out-of-Sample expectancy must only reflect Trade 3 (1.0R)');
+    assert.strictEqual(wf.purgedSignals, 1, 'Straddling Trade 2 must be purged');
+    assert.strictEqual(
+      wf.inSample.signals + wf.outOfSample.signals + (wf.purgedSignals ?? 0),
+      mockTrades.length,
+      'Conservation law: IS + OOS + Purged == Total trades'
+    );
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

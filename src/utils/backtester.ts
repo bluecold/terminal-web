@@ -125,6 +125,8 @@ export interface RecordedTrade {
   outcome: 'win' | 'loss' | 'neutral' | 'timeout';
   exitReason?: ExitReason;
   entryIdx?: number;
+  executionIdx?: number;
+  exitIdx?: number;
   durationCandles?: number;
 }
 
@@ -148,6 +150,7 @@ export interface WalkForwardResult {
   oosWindow: number;         // Out-of-Sample window candle count (30%)
   inSample: SplitStats;      // Performance in historical 70%
   outOfSample: SplitStats;   // Performance in validation 30%
+  purgedSignals?: number;    // Count of boundary-straddling trades purged from both partitions
   passed: boolean;           // True if OOS E[R] >= 0 or no trades
   status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES';
 }
@@ -266,8 +269,34 @@ export function calculateWalkForward(
   // and capping at the nominal minOosTrades target
   const effectiveMinOos = Math.min(minOosTrades, Math.max(2, Math.floor(oosCapacity * 0.6)));
 
-  const isTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx < splitIdx);
-  const oosTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx >= splitIdx);
+  // Purged Partitioning:
+  // - inSample: trades that execute and exit strictly before splitIdx
+  // - outOfSample: trades that execute at or after splitIdx
+  // - purged: trades that execute before splitIdx but close at or after splitIdx (straddling boundary)
+  const isTrades: RecordedTrade[] = [];
+  const oosTrades: RecordedTrade[] = [];
+  let purgedSignals = 0;
+
+  for (let i = 0; i < trades.length; i++) {
+    const t = trades[i];
+    const execIdx = t.executionIdx !== undefined
+      ? t.executionIdx
+      : (t.entryIdx !== undefined ? t.entryIdx : undefined);
+    const exitIdx = t.exitIdx !== undefined
+      ? t.exitIdx
+      : (t.entryIdx !== undefined ? t.entryIdx + (t.durationCandles ?? 1) : undefined);
+
+    if (execIdx === undefined) continue;
+
+    if (execIdx >= splitIdx) {
+      oosTrades.push(t);
+    } else if (exitIdx !== undefined && exitIdx < splitIdx) {
+      isTrades.push(t);
+    } else {
+      // Boundary straddler: entered before splitIdx but exits in OOS
+      purgedSignals++;
+    }
+  }
 
   const inSample = calculateSplitStats(isTrades, candleHours, cooldownCandles);
   const outOfSample = calculateSplitStats(oosTrades, candleHours, cooldownCandles);
@@ -301,6 +330,7 @@ export function calculateWalkForward(
     oosWindow,
     inSample,
     outOfSample,
+    purgedSignals,
     passed,
     status,
   };
@@ -678,6 +708,7 @@ interface TradeOutcome {
   pnlPct: number; // percentage P&L of this trade
   realizedR: number;
   durationCandles: number;
+  exitIdx: number;
   exitReason: ExitReason;
 }
 
@@ -706,6 +737,7 @@ function evaluateOutcome(
     pnlPct: sim.pnlPct,
     realizedR: sim.realizedR,
     durationCandles: Math.max(1, sim.exitIdx - entryIdx),
+    exitIdx: sim.exitIdx,
     exitReason: sim.exitReason
   };
 }
@@ -952,6 +984,8 @@ export function backtestMultitemporal(
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,
+      executionIdx: i + 1,
+      exitIdx: sim.exitIdx,
       durationCandles: tradeDuration,
     });
 
@@ -1138,6 +1172,8 @@ function runBacktestGenericOptimized(
       outcome: outcome.result,
       exitReason: outcome.exitReason,
       entryIdx: i,
+      executionIdx: i + 1,
+      exitIdx: outcome.exitIdx,
       durationCandles: outcome.durationCandles,
     });
 
@@ -1378,6 +1414,8 @@ export function backtestMultifractalMTF(
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,
+      executionIdx: i + 1,
+      exitIdx: sim.exitIdx,
       durationCandles: tradeDuration,
     });
 
