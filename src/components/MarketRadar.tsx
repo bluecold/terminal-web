@@ -279,8 +279,12 @@ export default function MarketRadar({
         const score1h = getSigScore(voting1h);
         const score1d = getSigScore(voting1d);
 
-        // Weighted Multi-Timeframe Score: 5m (50%), 1h (30%), 1d (20%)
-        const weightedScore = (score5m * 0.50) + (score1h * 0.30) + (score1d * 0.20);
+        // Weighted Multi-Timeframe Score adapted to Profile:
+        // - Day Trading: 5m (50%), 1h (30%), 1d (20%)
+        // - Swing Trading: 1h (50%), 1d (35%), 5m (15%)
+        const weightedScore = executionStyle === 'swing'
+          ? (score1h * 0.50) + (score1d * 0.35) + (score5m * 0.15)
+          : (score5m * 0.50) + (score1h * 0.30) + (score1d * 0.20);
         const confluenceScore = Number((Math.abs(weightedScore) * 100).toFixed(0));
 
         const buyCount = (isBuy5m ? 1 : 0) + (isBuy1h ? 1 : 0) + (isBuy1d ? 1 : 0);
@@ -314,14 +318,19 @@ export default function MarketRadar({
           scoringWeights,
         });
 
-        // ── 3. RVOL & Bollinger Volatility ──
-        const rvol = closed5m.length > 0 ? calculateTimeOfDayRVOL(closed5m, closed5m.length - 1, 10, 300) : 1.0;
+        // ── 3. Profile-Aware RVOL & Bollinger Volatility ──────────
+        const tacticalKlines = executionStyle === 'swing' ? closed1h : closed5m;
+        const stepSec = executionStyle === 'swing' ? 3600 : 300;
+        const rvol = tacticalKlines.length > 0
+          ? calculateTimeOfDayRVOL(tacticalKlines, tacticalKlines.length - 1, 10, stepSec)
+          : 1.0;
 
+        const volKlines = executionStyle === 'swing' ? closed1h : closed5m;
         let volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
         let bbWidthPercent = 0;
 
-        if (closed5m.length >= 20) {
-          const bbSeries = calculateBollingerBandsSeries(closed5m, 20, 2);
+        if (volKlines.length >= 20) {
+          const bbSeries = calculateBollingerBandsSeries(volKlines, 20, 2);
           if (bbSeries.length > 0) {
             const volStatus = calculateBollingerVolatilityStatus(bbSeries, 50);
             volatilityStatus = volStatus.status;
