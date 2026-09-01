@@ -3,6 +3,7 @@ import { simulateTrade, type TradeLevels, type ExitReason } from './tradeSimulat
 import {
   calculateATRSeries,
   calculateADXSeries,
+  calculateRegimeSeriesWithHysteresis,
   DEFAULT_WEIGHTS,
   type ScoringWeights,
   buildConfluenciaContext,
@@ -120,6 +121,7 @@ export interface RecordedTrade {
   realizedR: number;
   pnlPct: number;
   adxAtEntry?: number;
+  regimeAtEntry?: 'trending' | 'ranging';
   outcome: 'win' | 'loss' | 'neutral' | 'timeout';
   exitReason?: ExitReason;
   entryIdx?: number;
@@ -382,8 +384,9 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
       }
     }
 
-    const adx = trade.adxAtEntry;
-    const isTrending = (adx !== undefined && !isNaN(adx)) ? adx > 25 : false;
+    const isTrending = trade.regimeAtEntry !== undefined
+      ? trade.regimeAtEntry === 'trending'
+      : ((trade.adxAtEntry !== undefined && !isNaN(trade.adxAtEntry)) ? trade.adxAtEntry >= 26 : false);
     if (isTrending) {
       trendSignals++;
       trendTotalR += trade.realizedR;
@@ -870,6 +873,8 @@ export function backtestMultitemporal(
   const recordedTrades: RecordedTrade[] = [];
 
   const ctx = buildVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
+  const targetAdxArray = style === 'swing' ? ctx.adxSeries1h.adx : ctx.adxSeries5m.adx;
+  const regimeSeries = calculateRegimeSeriesWithHysteresis(targetAdxArray, 26.0, 22.0);
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
@@ -935,11 +940,15 @@ export function backtestMultitemporal(
       : ((ctx.adxSeries5m && i >= 0 && i < ctx.adxSeries5m.adx.length && !isNaN(ctx.adxSeries5m.adx[i]))
           ? ctx.adxSeries5m.adx[i]
           : (evalRes.adx1H > 0 ? evalRes.adx1H : undefined));
+    const regimeVal = style === 'swing'
+      ? (ctx.idx1hMap[i] >= 0 && ctx.idx1hMap[i] < regimeSeries.length ? regimeSeries[ctx.idx1hMap[i]] : undefined)
+      : ((i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined);
     recordedTrades.push({
       dir: evalRes.signal as 'BUY' | 'SELL',
       realizedR: sim.realizedR,
       pnlPct: sim.pnlPct,
       adxAtEntry: adxVal,
+      regimeAtEntry: regimeVal,
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,
@@ -1062,6 +1071,7 @@ function runBacktestGenericOptimized(
   const oldestEvalIdx = Math.max(0, latestEvalIdx - evalWindow + 1);
 
   const adxSeries  = calculateADXSeries(klines, 14);
+  const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);
   const recordedTrades: RecordedTrade[] = [];
 
   let totalSignals = 0;
@@ -1118,11 +1128,13 @@ function runBacktestGenericOptimized(
     totalCycleCandles += outcome.durationCandles + params.cooldownPeriod;
 
     const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
+    const regimeVal = (i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined;
     recordedTrades.push({
       dir: signal as 'BUY' | 'SELL',
       realizedR: outcome.realizedR,
       pnlPct: outcome.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      regimeAtEntry: regimeVal,
       outcome: outcome.result,
       exitReason: outcome.exitReason,
       entryIdx: i,
@@ -1298,6 +1310,7 @@ export function backtestMultifractalMTF(
   const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
 
   const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
+  const regimeSeries = calculateRegimeSeriesWithHysteresis(ctx.adxData5M.adx, 26.0, 22.0);
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
     if (i < nextAllowedIdx) {
@@ -1355,11 +1368,13 @@ export function backtestMultifractalMTF(
     totalCycleCandles += tradeDuration + cooldownPeriod;
 
     const adxVal = (i >= 0 && i < ctx.adxData5M.adx.length) ? ctx.adxData5M.adx[i] : undefined;
+    const regimeVal = (i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined;
     recordedTrades.push({
       dir: evalRes.signal as 'BUY' | 'SELL',
       realizedR: sim.realizedR,
       pnlPct: sim.pnlPct,
       adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      regimeAtEntry: regimeVal,
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,

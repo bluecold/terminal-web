@@ -33,6 +33,7 @@ import {
   isNyseTradingSessionActive,
   calculateBollingerVolatilityStatus,
   calculateVolumeSignalSeries,
+  calculateRegimeSeriesWithHysteresis,
   type BollingerBandsSeriesResult
 } from '../indicators';
 import {
@@ -3338,6 +3339,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const tourneyToxic = evaluateStrategyTournament([toxicSmallSampleCandidate], '5m', 'trending');
     assert.strictEqual(tourneyToxic.bestStrategy, 'NONE', 'Decisively toxic regime edge (-0.60R) must be hard-gated to FLAT/NONE');
     assert.strictEqual(tourneyToxic.confidence, 'NONE');
+  });
+
+  // Test 102: Regime Hysteresis Filter (Schmitt Trigger) prevents chattering around 25
+  test('calculateRegimeSeriesWithHysteresis eliminates regime chattering and enforces hysteresis band [22, 26]', () => {
+    const adxSequence = [20.0, 25.5, 26.5, 24.5, 23.0, 21.0, 24.0];
+    const regimes = calculateRegimeSeriesWithHysteresis(adxSequence, 26.0, 22.0, 'ranging');
+
+    assert.strictEqual(regimes[0], 'ranging', 'Initial 20 ADX must be ranging');
+    assert.strictEqual(regimes[1], 'ranging', '25.5 ADX without previous trend must stay ranging');
+    assert.strictEqual(regimes[2], 'trending', '26.5 ADX must trigger transition to trending');
+    assert.strictEqual(regimes[3], 'trending', '24.5 ADX must retain trending regime (deadband hysteresis)');
+    assert.strictEqual(regimes[4], 'trending', '23.0 ADX must retain trending regime');
+    assert.strictEqual(regimes[5], 'ranging', '21.0 ADX must trigger transition to ranging');
+    assert.strictEqual(regimes[6], 'ranging', '24.0 ADX without previous trend must retain ranging');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

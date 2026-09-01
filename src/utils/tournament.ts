@@ -11,7 +11,7 @@ import {
   backtestMultitemporal,
   backtestMultifractalMTF,
 } from './backtester';
-import { getConfirmedClosedKlines, calculateADXSeries, type ScoringWeights } from './indicators';
+import { getConfirmedClosedKlines, calculateADXSeries, calculateRegimeSeriesWithHysteresis, type ScoringWeights } from './indicators';
 
 export type ConfidenceLevel = 'HIGH' | 'LIMITED' | 'NONE';
 
@@ -506,13 +506,13 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
     },
   ];
 
-  // ── Detect current market regime on confirmed trigger candles ───────────
+  // ── Detect current market regime on confirmed trigger candles (with Hysteresis) ────
   let currentRegime: 'trending' | 'ranging' | undefined = undefined;
   if (triggerKlines && triggerKlines.length >= 28) {
     const adxSeries = calculateADXSeries(triggerKlines, 14);
-    const lastAdx = adxSeries.adx[adxSeries.adx.length - 1];
-    if (lastAdx !== undefined && !isNaN(lastAdx)) {
-      currentRegime = lastAdx > 25 ? 'trending' : 'ranging';
+    if (adxSeries.adx.length > 0) {
+      const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);
+      currentRegime = regimeSeries[regimeSeries.length - 1];
     }
   }
 

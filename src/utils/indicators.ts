@@ -1510,6 +1510,36 @@ export function calculateADXSeries(klines: Kline[], period: number = 14): ADXRes
   return { adx: adxSeries, plusDI: plusDISeries, minusDI: minusDISeries };
 }
 
+/**
+ * Regime Hysteresis Filter (Schmitt Trigger):
+ * - Upper threshold (default 26.0): Switches from 'ranging' to 'trending'.
+ * - Lower threshold (default 22.0): Switches from 'trending' to 'ranging'.
+ * - Deadband [22.0, 26.0]: Retains previous regime state, eradicating chattering around 25.
+ */
+export function calculateRegimeSeriesWithHysteresis(
+  adxValues: number[],
+  upperThreshold: number = 26.0,
+  lowerThreshold: number = 22.0,
+  initialRegime: 'trending' | 'ranging' = 'ranging'
+): ('trending' | 'ranging')[] {
+  const length = adxValues.length;
+  const regimes: ('trending' | 'ranging')[] = new Array(length);
+  let current: 'trending' | 'ranging' = initialRegime;
+
+  for (let i = 0; i < length; i++) {
+    const adx = adxValues[i];
+    if (adx !== undefined && !isNaN(adx)) {
+      if (current === 'ranging' && adx >= upperThreshold) {
+        current = 'trending';
+      } else if (current === 'trending' && adx <= lowerThreshold) {
+        current = 'ranging';
+      }
+    }
+    regimes[i] = current;
+  }
+  return regimes;
+}
+
 // ==========================================
 // CANDLE QUALITY HELPERS
 // Used by VCME Sniper to filter fakeout breakouts
