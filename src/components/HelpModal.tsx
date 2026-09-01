@@ -195,14 +195,14 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           <section>
             <SectionTitle>¿Qué es FinceptTerminal?</SectionTitle>
             <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: '1.7', marginBottom: '14px' }}>
-              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real enfocada en operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> — intradía y swing de hasta una semana. Analiza activos de alta volatilidad (criptomonedas y acciones de EEUU) mediante cinco motores de señales independientes con un simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional (MDD en R, Sortino en R, racha de pérdidas, desglose ADX), exposición efectiva de ciclo con cooldown (`tiempo de ciclo = trade + cooldown`), validación Walk-Forward (70/30) con paginación de 2000 velas y selección por ventaja estadística normalizada en R.
+              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real para operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> (Intradía 5m y Swing 1H). Analiza criptomonedas y acciones de Wall Street mediante cinco motores matemáticos independientes, simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional en R (Drawdown en R, Sortino, racha de pérdidas), factor de beneficio homogéneo (PF en R), scoring de contracción bayesiana (Bayesian Shrinkage), selección condicionada por régimen de volatilidad (ADX &gt; 25 vs &le; 25) y certificación ciega Walk-Forward (70/30).
             </p>
 
             {/* Key concepts grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
-                { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de la watchlist y presets con confluencias 3/3, compresión BB y RVOL.' },
-                { icon: '🏆', title: 'Torneo Walk-Forward', text: '5 motores compiten por E[R] neto, velocidad real R/h (ciclo + cooldown), Sortino y OOS ≥ 5 trades.' },
+                { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de la watchlist y presets con confluencias 3/3, compresión BB y RVOL estacional.' },
+                { icon: '🏆', title: 'Torneo Bayesiano & QVE', text: 'Ranking puro In-Sample con contracción empírica a E[R]=0, modulación por régimen ADX y certificación OOS.' },
                 { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit y fricción contable (0.08%).' },
                 { icon: '🎯', title: 'Audit Tracker & Chart', text: 'Seguimiento causal sin repintado en velas vivas, líneas visuales en TradingView y cero alertas fantasma.' },
               ].map((c, i) => (
@@ -220,12 +220,12 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <SectionTitle>Consideraciones Esenciales Antes de Operar</SectionTitle>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {[
-                { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado.' },
-                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 3.0R), ciclo de exposición efectivo (incluyendo cooldown) y validación Walk-Forward (70/30 con ≥ 5 trades OOS). Las estrategias con fallo reciente (OOS) se descalifican de confianza ALTA.' },
-                { icon: '📉', color: 'var(--accent-red)', text: 'El backtesting histórico NO garantiza rendimiento futuro. El sistema evalúa métricas de riesgo avanzadas (Max Drawdown en R, racha de pérdidas y Sortino) con fricción contable de 0.08% para mitigar el sesgo de supervivencia.' },
-                { icon: '⏱', color: 'var(--accent-green)', text: 'Las señales VCME v2.0 y Multifractal MTF son las más exigentes en confluencia. VCME v2.0 exige un Confidence Score ≥ 65% (0.65) con campana óptima a 0.5 ATR para disparar. Es normal que transcurran horas sin señal — esto es protección por diseño.' },
-                { icon: '📰', color: 'var(--accent-blue)', text: 'Revisá siempre el Calendario de Catalizadores antes de entrar. Una señal técnica perfecta puede fallar si hay un reporte de ganancias o decisión de la Fed en las próximas 48 horas.' },
-                { icon: '💰', color: 'var(--accent-yellow)', text: 'Usá la Calculadora de Position Sizing (VCME v2.0). El sistema calcula las unidades exactas sugiriendo un riesgo del 1% de capital y límite de concentración del 20%.' },
+                { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado temporal.' },
+                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 2.5R), al menos 3 trades para LIMITED, ranking libre de data leakage y certificación ciega Walk-Forward (OOS PASS). Las estrategias con WF FAIL quedan descartadas a FLAT (NONE).' },
+                { icon: '🌊', color: 'var(--accent-green)', text: 'Condicionamiento Dinámico por Régimen: En mercados de alta tendencia (ADX > 25) el torneo prioriza motores de ruptura y descarta reversiones tóxicas; en rango (ADX ≤ 25) prioriza osciladores y reversión a la media.' },
+                { icon: '📉', color: 'var(--accent-red)', text: 'El Profit Factor se calcula homogéneamente en múltiplos R (PF_R = Σ Gains_R / Σ |Losses_R|), garantizando perfecta comparabilidad entre scalps de 5m con stop estrecho y swings de 1H con stop amplio.' },
+                { icon: '⏱', color: 'var(--accent-yellow)', text: 'VCME Sniper exige un Confidence Score ≥ 65% con campana óptima a 0.5 ATR para disparar. Es normal que transcurran horas sin señal — esto es protección algorítmica por diseño.' },
+                { icon: '💰', color: 'var(--accent-blue)', text: 'Usá la Calculadora de Position Sizing (VCME v2.0). El sistema calcula las unidades exactas sugiriendo un riesgo del 1% de capital y límite de concentración del 20%.' },
               ].map((item, i) => (
                 <div key={i} style={{ display: 'flex', gap: '10px', padding: '10px 12px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', alignItems: 'flex-start' }}>
                   <span style={{ fontSize: '0.9rem', flexShrink: 0, marginTop: '1px' }}>{item.icon}</span>

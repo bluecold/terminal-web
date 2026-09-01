@@ -380,6 +380,27 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - En **Day Trading**: Ponderación táctica $5\text{m } (50\%) + 1\text{H } (30\%) + 1\text{D } (20\%)$, RVOL intradiario ($\text{step} = 300\text{s}$) y Squeeze sobre `closed5m`.
   - **Suite de Pruebas Ampliada**:
     - **88/88 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
+- **Actualización v2026.09.01.7 — Scoring Bayesiano, Invarianza de Profit Factor en R, Prevención de Data Leakage en Walk-Forward y Modulación por Régimen de Mercado**:
+  - **Selector de Perfil Operativo Global Sincronizado**:
+    - Header visual unificado en `SignalPanel.tsx` con tabs `⚡ INTRADÍA (5M)` y `🌊 SWING (1H)` que sincroniza instantáneamente el activo, horizonte de backtesting y las 5 tarjetas de estrategia directamente desde `qveResult`.
+  - **Asimetría Direccional en Volumen y Anatomía de Vela**:
+    - `calculateVolumeSignalSeries` en `indicators.ts` evalúa la anatomía de la vela: volumen $\ge 1.5\text{x}$ con cierre alcista y $cp \ge 0.55 \implies \text{BUY}$, con cierre bajista y $cp \le 0.45 \implies \text{SELL}$, y dojis/indecisión en $\text{NEUTRAL}$, eliminando el sesgo estructural alcista en velas rojas institucionales.
+  - **Simetría Direccional en Scoring Capa 4 (VWAP Overextension)**:
+    - Normalización por ATR en `evaluateScoringAt`: sobreextensión $> +2.0\text{ ATR}$ arriba resta para desalentar persecución alcista, sobreextensión $< -2.0\text{ ATR}$ abajo suma para evitar perseguir ventas en colapsos sobreextendidos.
+  - **Eliminación de Auto-Inclusión en SMA de Volumen de Confluencia**:
+    - En `buildConfluenciaContext`, la media móvil de volumen `volSMA[i]` se asigna usando estrictamente el promedio de las 20 velas anteriores antes de desplazar la ventana deslizante, eliminando la amortiguación de picos de volumen.
+  - **Ranking Puro In-Sample y Certificación Ciega Out-of-Sample (Eliminación de Data Leakage)**:
+    - `calcScore` en `tournament.ts` evalúa exclusivamente las métricas del tramo In-Sample (70%) sin contaminar el ranking con multiplicadores OOS. El tramo OOS (30%) opera como certificador ciego e independiente para otorgar confianza `HIGH`.
+  - **Umbral Mínimo de 3 Trades y Descalificación Estricta de WF FAIL**:
+    - Las estrategias con muestras $< 3$ trades quedan descartadas como no significativas; los candidatos cuyo Walk-Forward sea `FAIL` quedan totalmente descalificados tanto de `HIGH` como de `LIMITED`, devolviendo `NONE` (FLAT) para proteger el escáner de alertas.
+  - **Unificación del Profit Factor en Unidades de Riesgo ($\text{PF}_R$)**:
+    - $\text{profitFactor}$ se calcula homogéneamente a partir de múltiplos $R$ ($\frac{\sum R_i > 0}{\sum |R_j < 0|}$) en el backtester principal, particiones Walk-Forward y estadísticas direccionales, garantizando escala e invarianza de stop loss.
+  - **Scoring de Contracción Bayesiana (*Bayesian Shrinkage Score*)**:
+    - Sustitución de la suma lineal heurística de métricas colineales por un estimador bayesiano monótono ($E[R]_{\text{shrunk}} = \max(0, E[R]) \cdot \frac{N}{N + N_0}$) con escalado temporal sub-difusivo ($\text{factor}^{0.35}$).
+  - **Selección Dinámica Condicionada por Régimen de Mercado (`regimeStats`)**:
+    - Detección en tiempo real de $\text{ADX} > 25$ (Tendencia) vs $\text{ADX} \le 25$ (Rango). Las estrategias con expectativa negativa demostrada en el régimen activo ($E[R] < 0$ con $N \ge 3$) son automáticamente bloqueadas por compuerta dura.
+  - **Suite de Pruebas Ampliada**:
+    - **96/96 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
 
 ---
 
