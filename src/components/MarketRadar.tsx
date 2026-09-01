@@ -121,8 +121,9 @@ export default function MarketRadar({
   }, [activePreset, watchlistSymbols]);
 
   // Scan single symbol multitemporal data
-  const scanSymbol = async (symbol: string, forceFresh: boolean = false): Promise<RadarRowData> => {
+  const scanSymbol = async (symbol: string, forceFresh: boolean = false, targetGen?: number): Promise<RadarRowData> => {
     const isCrypto = symbol.endsWith('USDT') || symbol.endsWith('BTC');
+    const isCurrentGen = () => isMountedRef.current && (targetGen === undefined || scanGenerationRef.current === targetGen);
 
     // 1. Circuit breaker check
     const failInfo = failureMapRef.current.get(symbol);
@@ -159,9 +160,35 @@ export default function MarketRadar({
         fetchKlines(symbol, '1d'),
       ]);
 
+      if (!isCurrentGen()) {
+        return {
+          symbol,
+          name: symbol,
+          isCrypto,
+          price: 0,
+          changePercent: 0,
+          signal5m: '...',
+          signal1h: '...',
+          signal1d: '...',
+          overallSignal: '...',
+          isFullConfluence: false,
+          confluenceType: 'NEUTRAL',
+          confluenceScore: 0,
+          qveStrategy: '...',
+          qveProfitFactor: 0,
+          qveConfidence: 'NONE',
+          rvol: 1.0,
+          volatilityStatus: 'NORMAL',
+          bbWidthPercent: 0,
+          loading: false,
+        };
+      }
+
       if (k5m.length === 0 && k1h.length === 0 && k1d.length === 0) {
-        const prevCount = failureMapRef.current.get(symbol)?.count || 0;
-        failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
+        if (isCurrentGen()) {
+          const prevCount = failureMapRef.current.get(symbol)?.count || 0;
+          failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
+        }
 
         return {
           symbol,
@@ -188,8 +215,10 @@ export default function MarketRadar({
         };
       }
 
-      // Success: reset failure count
-      failureMapRef.current.delete(symbol);
+      // Success: reset failure count only if this generation is still active
+      if (isCurrentGen()) {
+        failureMapRef.current.delete(symbol);
+      }
 
       // Latest price & daily change
       let price = 0;
@@ -314,7 +343,9 @@ export default function MarketRadar({
           bbWidthPercent,
         };
 
-        calcCacheRef.current.set(symbol, analytics);
+        if (isCurrentGen()) {
+          calcCacheRef.current.set(symbol, analytics);
+        }
       }
 
       // ── Always Recalculate Live Execution Price & Final Signal with Real-time Quote ──
@@ -380,9 +411,11 @@ export default function MarketRadar({
 
       return rowResult;
     } catch (e) {
-      console.error(`Error scanning radar for ${symbol}`, e);
-      const prevCount = failureMapRef.current.get(symbol)?.count || 0;
-      failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
+      if (isCurrentGen()) {
+        console.error(`Error scanning radar for ${symbol}`, e);
+        const prevCount = failureMapRef.current.get(symbol)?.count || 0;
+        failureMapRef.current.set(symbol, { count: prevCount + 1, lastFailed: getNowTimestamp() });
+      }
 
       return {
         symbol,
@@ -456,7 +489,7 @@ export default function MarketRadar({
       for (let i = 0; i < symbolsToScan.length; i += batchSize) {
         if (!isMountedRef.current || scanGenerationRef.current !== currentGen) break;
         const batch = symbolsToScan.slice(i, i + batchSize);
-        const results = await Promise.all(batch.map(sym => scanSymbol(sym)));
+        const results = await Promise.all(batch.map(sym => scanSymbol(sym, false, currentGen)));
         if (isMountedRef.current && scanGenerationRef.current === currentGen) {
           setRadarData(prev => {
             const next = { ...prev };
@@ -490,7 +523,7 @@ export default function MarketRadar({
       ...prev,
       [sym]: { ...(prev[sym] || { symbol: sym }), loading: true } as RadarRowData
     }));
-    const res = await scanSymbol(sym, true);
+    const res = await scanSymbol(sym, true, scanGenerationRef.current);
     if (isMountedRef.current) {
       setRadarData(prev => ({ ...prev, [sym]: res }));
     }
