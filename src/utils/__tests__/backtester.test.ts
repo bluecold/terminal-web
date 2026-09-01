@@ -1487,16 +1487,16 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
   // Test 54: R-multiple and exposure velocity tournament evaluation with null PF handling
   test('evaluateStrategyTournament normalizes by R and exposure velocity and excludes null PF singularities', () => {
-    // Zero losses with single trade: PF must be null and treated as unproven
+    // Zero losses with sample >= minLimited (3 trades): PF must be null and treated as unproven
     const zeroLossCandidate: StrategyCandidate = {
       key: 'standard',
-      label: 'Zero Loss 1-Trade',
+      label: 'Zero Loss 3-Trades',
       profitFactor: null,
       expectancyR: 1.5,
       expectancyPerHour: 3.0,
       avgExposureHours: 0.5,
       winRate: 1.0,
-      resolved: 1,
+      resolved: 3,
       forwardWindow: 6
     };
 
@@ -1748,10 +1748,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourney.confidence, 'HIGH');
     assert.ok(tourney.reasoning.includes('WF OOS +0.55R'), 'Reasoning must display OOS performance');
 
-    // Also test what happens if ONLY the degraded candidate is evaluated
+    // Also test what happens if ONLY the degraded candidate is evaluated:
+    // With strict WF FAIL rejection, it must be completely disqualified and remain FLAT (NONE)
     const soloDegraded = evaluateStrategyTournament([candidateDegradedOOS], '5m');
-    assert.strictEqual(soloDegraded.confidence, 'LIMITED', 'Failed OOS candidate must NEVER be awarded HIGH confidence');
-    assert.ok(soloDegraded.reasoning.includes('WF OOS falló'));
+    assert.strictEqual(soloDegraded.confidence, 'NONE', 'Failed OOS candidate must be disqualified from generating actionable alerts');
+    assert.strictEqual(soloDegraded.bestStrategy, 'NONE');
   });
 
   // Test 61: VCME distScore Option A triangular bell curve validation
@@ -2896,6 +2897,65 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourneyA.confidence, 'HIGH');
     assert.strictEqual(tourneyB.confidence, 'HIGH');
     assert.strictEqual(tourneyA.compositeScore.toFixed(4), tourneyB.compositeScore.toFixed(4), 'In-Sample ranking score must be identical regardless of OOS magnitude');
+  });
+
+  // Test 93: Minimum sample of 3 trades and strict WF FAIL disqualification
+  test('evaluateStrategyTournament requires minimum 3 trades for LIMITED and rejects WF FAIL to FLAT/NONE', () => {
+    // 1. Single lucky trade candidate (resolved: 1) -> must return NONE (not actionable)
+    const singleTradeCandidate: StrategyCandidate = {
+      key: 'standard',
+      label: 'Single Trade',
+      profitFactor: null,
+      expectancyR: 2.0,
+      expectancyPerHour: 4.0,
+      avgExposureHours: 0.5,
+      winRate: 1.0,
+      resolved: 1,
+      forwardWindow: 6
+    };
+    const tourneySingle = evaluateStrategyTournament([singleTradeCandidate], '5m');
+    assert.strictEqual(tourneySingle.confidence, 'NONE', '1-trade sample must be rejected from actionable alerts');
+    assert.strictEqual(tourneySingle.bestStrategy, 'NONE');
+
+    // 2. Candidate with 3 trades (minLimitedResolved) -> qualifies as LIMITED
+    const threeTradesCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Three Trades',
+      profitFactor: 2.0,
+      expectancyR: 0.6,
+      expectancyPerHour: 1.2,
+      avgExposureHours: 0.5,
+      winRate: 0.67,
+      resolved: 3,
+      forwardWindow: 6
+    };
+    const tourneyThree = evaluateStrategyTournament([threeTradesCandidate], '5m');
+    assert.strictEqual(tourneyThree.confidence, 'LIMITED', '3-trade sample with positive edge qualifies as LIMITED');
+    assert.strictEqual(tourneyThree.bestStrategy, 'confluencia');
+
+    // 3. Candidate with WF status === 'FAIL' -> must be disqualified to NONE
+    const failedWfCandidate: StrategyCandidate = {
+      key: 'scoring',
+      label: 'Failed WF',
+      profitFactor: 2.0,
+      expectancyR: 0.5,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 15,
+      forwardWindow: 6,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 10, wins: 8, losses: 2, winRate: 0.80, expectancyR: 0.80, profitFactor: 3.0, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 5, wins: 0, losses: 5, winRate: 0.0, expectancyR: -1.0, profitFactor: 0.0, maxDrawdownR: 3.0 },
+        passed: false,
+        status: 'FAIL'
+      }
+    };
+    const tourneyFailedWf = evaluateStrategyTournament([failedWfCandidate], '5m');
+    assert.strictEqual(tourneyFailedWf.confidence, 'NONE', 'Candidate with failed OOS must remain FLAT (NONE)');
+    assert.strictEqual(tourneyFailedWf.bestStrategy, 'NONE');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

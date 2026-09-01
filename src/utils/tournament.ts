@@ -79,8 +79,9 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // Target minimum resolved trades for HIGH confidence
+  // Target minimum resolved trades for HIGH and LIMITED confidence
   const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
+  const minLimitedResolved = timeframe === '5m' ? 3 : timeframe === '1h' ? 3 : 2;
   const idealMin = Math.round(minHighResolved * 1.5);
 
   // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
@@ -215,16 +216,18 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (at least 1 resolved trade, strictly positive expectancy expR > 0 and PF >= 1.0)
+  // 2. Check for LIMITED confidence candidates (minimum sample minLimitedResolved, positive expectancy, and WF not FAIL)
   const limitedCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
-      if (c.resolved < 1) return false;
+      if (c.resolved < minLimitedResolved) return false;
       if (expR <= 0) return false;
+      // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
+      if (c.walkForward && c.walkForward.status === 'FAIL') return false;
       if (c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0) {
         return true;
       }
-      return c.profitFactor >= (c.resolved === 1 ? 1.15 : 1.0);
+      return c.profitFactor >= 1.0;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
@@ -235,9 +238,7 @@ export function evaluateStrategyTournament(
     const pfStr = winner.profitFactor !== null && Number.isFinite(winner.profitFactor) && winner.profitFactor < 99.0
       ? `PF ${winner.profitFactor.toFixed(2)}`
       : 'PF N/D';
-    const wfFailNote = winner.walkForward?.status === 'FAIL'
-      ? ' · WF OOS falló'
-      : winner.walkForward?.status === 'INSUFFICIENT_OOS' && winner.resolved >= minHighResolved
+    const wfOosNote = winner.walkForward?.status === 'INSUFFICIENT_OOS' && winner.resolved >= minHighResolved
       ? ` · Muestra OOS reducida (${winner.walkForward.outOfSample.signals} trades)`
       : winner.walkForward?.status === 'NO_OOS_TRADES' && winner.resolved >= minHighResolved
       ? ' · Sin trades en OOS'
@@ -256,7 +257,7 @@ export function evaluateStrategyTournament(
       walkForward: winner.walkForward,
       longStats: winner.longStats,
       shortStats: winner.shortStats,
-      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfFailNote})`,
+      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfOosNote})`,
     };
   }
 
@@ -272,7 +273,7 @@ export function evaluateStrategyTournament(
     maxDrawdownR: undefined,
     sortinoRatio: null,
     walkForward: undefined,
-    reasoning: 'Sin ventaja estadística demostrada — Permanecer FLAT (Sin trades)',
+    reasoning: 'Sin ventaja estadística demostrada o muestra insuficiente (<3 trades) — Permanecer FLAT (Sin trades)',
   };
 }
 
