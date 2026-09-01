@@ -82,7 +82,6 @@ export function evaluateStrategyTournament(
   // Target minimum resolved trades for HIGH and LIMITED confidence
   const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
   const minLimitedResolved = timeframe === '5m' ? 3 : timeframe === '1h' ? 3 : 2;
-  const idealMin = Math.round(minHighResolved * 1.5);
 
   // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
   const getMetrics = (c: StrategyCandidate, useInSample: boolean = false) => {
@@ -106,9 +105,8 @@ export function evaluateStrategyTournament(
       exposureHours = defaultCandles * candleHours;
     }
 
-    // Square-root time normalization: factor = sqrt(max(1.0, exposureHours / baseHours))
-    // Standard diffusion: returns scale with t, volatility/risk with sqrt(t)
-    const timeFactor = Math.sqrt(Math.max(1.0, exposureHours / baseHours));
+    // Sub-diffusive time scaling (power 0.35): balances trade payoff vs holding duration
+    const timeFactor = Math.pow(Math.max(1.0, exposureHours / baseHours), 0.35);
     const timeNormExpR = expR / timeFactor;
 
     const expPerHour = c.expectancyPerHour !== undefined
@@ -118,42 +116,27 @@ export function evaluateStrategyTournament(
     return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR };
   };
 
-  // Helper to calculate composite score normalized by R, square-root time, downside risk
+  // Helper to calculate Bayesian Shrunk Expectancy score normalized by time and downside risk
   // Evaluated strictly on In-Sample (or full sample if no split) without OOS contamination (purely blind OOS)
   const calcScore = (c: StrategyCandidate): number => {
-    const { expR, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR } = getMetrics(c, true);
+    const { expR, resolved, maxDrawdownR, timeFactor } = getMetrics(c, true);
 
-    // Sigmoid sample confidence based on evaluated trades
-    const sampleConfidence = 1 / (1 + Math.exp(-(resolved - idealMin) / 2.5));
+    if (resolved <= 0 || expR <= 0) return 0;
 
-    // Bayesian sample-aware PF ceiling
-    const maxAttainablePF = Math.min(5.0, 1.0 + Math.max(0, resolved) * 0.4);
+    // 1. Empirical Bayesian Shrinkage towards null prior (E[R] = 0):
+    // Prior uncertainty factor N0: skeptical market baseline requiring sample proof
+    // Shrunk E[R] scales monotonically and smoothly with sample size N without artificial step functions
+    const n0 = timeframe === '5m' ? 8 : timeframe === '1h' ? 5 : 3;
+    const shrinkage = resolved / (resolved + n0);
+    const shrunkExpR = Math.max(0, expR) * shrinkage;
 
-    // Handle zero-loss undefined PF (null / >= 99.0)
-    let rawPF: number;
-    if (profitFactor === null || !Number.isFinite(profitFactor) || profitFactor >= 99.0) {
-      if (resolved >= minHighResolved) {
-        // Robust sample without losses (Laplace regularization)
-        rawPF = Math.min(5.0, 1.0 + Math.max(0, expR) * 2.0);
-      } else {
-        // Small sample with 0 losses: treat as unproven / low prior
-        rawPF = Math.min(1.5, 1.0 + Math.max(0, expR) * 0.3);
-      }
-    } else {
-      rawPF = profitFactor;
-    }
-    const cappedPF = Math.min(Math.max(0, rawPF), maxAttainablePF);
+    // 2. Time normalization: scales trade edge by duration factor
+    const timeNormScore = shrunkExpR / timeFactor;
 
-    // Bounded score mappings with square-root time scaling
-    const expRScore = Math.max(0, Math.tanh(Math.max(0, expR) / 0.5)) * 3.0;
-    const timeNormScore = Math.max(0, Math.tanh(Math.max(0, timeNormExpR) / 0.35)) * 2.5;
-    const pfScore = Math.min(2.5, cappedPF * 0.5);
-    const wrScore = winRate * 2.0;
+    // 3. Risk penalty for severe drawdown (> 2.5R)
+    const ddPenalty = Math.exp(-Math.max(0, maxDrawdownR - 2.5) / 3.0);
 
-    // Risk penalty for severe drawdown (> 3.0R)
-    const ddPenalty = Math.exp(-Math.max(0, maxDrawdownR - 3.0) / 4.0);
-
-    // Sortino quality adjustment (bonus for consistent positive downside, penalty for negative)
+    // 4. Sortino quality adjustment (downside risk asymmetry)
     let sortinoMultiplier = 1.0;
     if (c.sortinoRatio !== null && c.sortinoRatio !== undefined && c.sortinoRatio > 0) {
       sortinoMultiplier = 1.0 + Math.min(0.20, c.sortinoRatio * 0.05);
@@ -161,10 +144,7 @@ export function evaluateStrategyTournament(
       sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
     }
 
-    // Notice: OOS is completely excluded from score calculation to avoid data leakage.
-    // OOS is used strictly downstream as a blind gatekeeper for HIGH confidence certification!
-    const baseScore = ((expRScore * 0.35) + (timeNormScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier;
-    return baseScore * sampleConfidence;
+    return timeNormScore * ddPenalty * sortinoMultiplier;
   };
 
   // 1. Check for HIGH confidence candidates:

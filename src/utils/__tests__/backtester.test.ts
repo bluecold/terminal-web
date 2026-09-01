@@ -2974,6 +2974,45 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(metrics.longStats.profitFactor, 2.0, 'Long PF must equal 2.0R / 1.0R = 2.00, not 1% / 4% = 0.25');
   });
 
+  // Test 95: Bayesian Shrinkage score monotonically regularizes small samples without collinear distortion
+  test('evaluateStrategyTournament uses Bayesian Shrinkage to favor robust sample sizes over lucky spikes', () => {
+    // Strategy A: 4 trades, E[R] = 1.0R (Small sample lucky spike)
+    // Shrinkage = 4 / (4 + 8) = 0.333 -> Shrunk E[R] = 0.333R
+    const smallSampleLucky: StrategyCandidate = {
+      key: 'standard',
+      label: 'Small Lucky Spike',
+      profitFactor: 3.0,
+      expectancyR: 1.0,
+      expectancyPerHour: 2.0,
+      avgExposureHours: 0.5,
+      winRate: 0.75,
+      resolved: 4,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5
+    };
+
+    // Strategy B: 24 trades, E[R] = 0.55R (Robust statistical sample)
+    // Shrinkage = 24 / (24 + 8) = 0.750 -> Shrunk E[R] = 0.4125R
+    const robustConsistent: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Robust Sample',
+      profitFactor: 1.9,
+      expectancyR: 0.55,
+      expectancyPerHour: 1.1,
+      avgExposureHours: 0.5,
+      winRate: 0.62,
+      resolved: 24,
+      forwardWindow: 6,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 1.5
+    };
+
+    const tourney = evaluateStrategyTournament([smallSampleLucky, robustConsistent], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'confluencia', 'Robust 24-trade candidate must beat 4-trade spike under Bayesian Shrinkage');
+    assert.strictEqual(tourney.confidence, 'HIGH');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
