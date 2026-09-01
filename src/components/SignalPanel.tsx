@@ -1,13 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
-import {
-  backtestStandard,
-  backtestConfluencia,
-  backtestScoring,
-  backtestMultitemporal,
-  backtestMultifractalMTF
-} from '../utils/backtester';
-import { runQVESelection } from '../utils/tournament';
+import { runQVESelection, sanitizeSignalWithDirectionalEdge } from '../utils/tournament';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
@@ -258,52 +251,6 @@ export default function SignalPanel({
   const closedKlines1h = useMemo(() => getConfirmedClosedKlines(klines1h, '1h', symbol), [klines1h, symbol]);
   const closedKlines1d = useMemo(() => getConfirmedClosedKlines(klines1d, '1d', symbol), [klines1d, symbol]);
 
-  // ── Unified Standard Voting (single source of truth) ────────────────────
-  const voting   = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
-  const indicators = voting.indicators;
-  const { rawSignal } = voting;
-
-  // ── Backtest results (heavy computation, memoized) ──────────────────────
-  const btStandard    = useMemo(() => closedKlines.length > 20 ? backtestStandard(closedKlines, interval, symbol)    : null, [closedKlines, interval, symbol]);
-  const btConfluencia = useMemo(() => closedKlines.length > 20 ? backtestConfluencia(closedKlines, interval, symbol) : null, [closedKlines, interval, symbol]);
-  const btScoring     = useMemo(() => closedKlines.length > 20 ? backtestScoring(closedKlines, interval, weights, symbol) : null, [closedKlines, interval, weights, symbol]);
-  const btMultitemporal = useMemo(() => {
-    const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
-    return triggerKlines.length >= 30 && closedKlines1h.length >= 60 && closedKlines1d.length >= 30
-      ? backtestMultitemporal(triggerKlines, closedKlines1h, closedKlines1d, '5m', symbol, executionStyle, triggerMode)
-      : null;
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol, executionStyle, triggerMode]);
-
-  const btMultifractal = useMemo(() => {
-    return closedKlines5m.length >= 30
-      ? backtestMultifractalMTF(closedKlines5m, closedKlines1h, closedKlines1d, '5m', symbol)
-      : null;
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, symbol]);
-
-  const exp        = useMemo(() => calculateExperimentalSignal(closedKlines, interval), [closedKlines, interval]);
-  const score      = useMemo(() => calculateScoringSignal(closedKlines, interval, weights), [closedKlines, interval, weights]);
-  const multi: VCMESniperResult = useMemo(() => {
-    const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
-    const liveKlines = executionStyle === 'swing' ? klines1h : klines5m;
-    const execPrice = getEffectiveExecutionPrice(liveKlines, triggerKlines);
-    return calculateVCMESniperSignal(
-      triggerKlines,
-      closedKlines1h,
-      closedKlines1d,
-      symbol,
-      btMultitemporal ? btMultitemporal.winRate : undefined,
-      btMultitemporal ? btMultitemporal.profitFactor : undefined,
-      executionStyle,
-      triggerMode,
-      execPrice
-    );
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, klines1h, symbol, btMultitemporal, executionStyle, triggerMode]);
-
-  const multifractal: MultifractalMTFSignalResult = useMemo(() => {
-    const execPrice = getEffectiveExecutionPrice(klines5m, closedKlines5m);
-    return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol, execPrice);
-  }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, symbol]);
-
   // ── Strategy Tournament (Sync overall signal with App.tsx and MarketRadar.tsx) ───────────────
   const qveResult = useMemo(() => {
     return runQVESelection({
@@ -321,6 +268,44 @@ export default function SignalPanel({
   const tournamentResult = qveResult.tournament;
   const bestStrategy = qveResult.bestStrategy;
 
+  // ── Unified Backtest Results (Sourced directly from QVE Tournament SSOT) ─────────────
+  const btStandard      = qveResult.btStd;
+  const btConfluencia   = qveResult.btConf;
+  const btScoring       = qveResult.btScore;
+  const btMultitemporal = qveResult.btMulti;
+  const btMultifractal  = qveResult.btMF;
+
+  // ── Visual Technical Indicators (For current chart timeframe view) ────────────────────
+  const votingVisual = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
+  const indicators   = votingVisual.indicators;
+
+  // ── Operational Strategy Signals (Evaluated on QVE trigger klines and target interval) ──
+  const votingStrategy = useMemo(() => calculateStandardVoting(qveResult.triggerKlines), [qveResult.triggerKlines]);
+  const rawSignal      = votingStrategy.rawSignal;
+  const exp            = useMemo(() => calculateExperimentalSignal(qveResult.triggerKlines, qveResult.targetInterval), [qveResult.triggerKlines, qveResult.targetInterval]);
+  const score          = useMemo(() => calculateScoringSignal(qveResult.triggerKlines, qveResult.targetInterval, weights), [qveResult.triggerKlines, qveResult.targetInterval, weights]);
+  
+  const multi: VCMESniperResult = useMemo(() => {
+    const liveKlines = executionStyle === 'swing' ? klines1h : klines5m;
+    const execPrice = getEffectiveExecutionPrice(liveKlines, qveResult.triggerKlines);
+    return calculateVCMESniperSignal(
+      qveResult.triggerKlines,
+      closedKlines1h,
+      closedKlines1d,
+      symbol,
+      btMultitemporal ? btMultitemporal.winRate : undefined,
+      btMultitemporal ? btMultitemporal.profitFactor : undefined,
+      executionStyle,
+      triggerMode,
+      execPrice
+    );
+  }, [klines5m, klines1h, qveResult.triggerKlines, closedKlines1h, closedKlines1d, symbol, btMultitemporal, executionStyle, triggerMode]);
+
+  const multifractal: MultifractalMTFSignalResult = useMemo(() => {
+    const execPrice = getEffectiveExecutionPrice(klines5m, closedKlines5m);
+    return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol, execPrice);
+  }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, symbol]);
+
   // Synchronize expanded strategy with the best strategy when it changes
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: expandedStrategy tracks the auto-selected best strategy */
   useEffect(() => {
@@ -330,21 +315,30 @@ export default function SignalPanel({
   }, [bestStrategy]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const overallSignal = useMemo(() => {
+  const rawOverallSignal = useMemo(() => {
     if (bestStrategy === 'NONE') return 'NEUTRAL';
     if (bestStrategy === 'confluencia') return exp.signal;
     if (bestStrategy === 'scoring') return score.signal;
     if (bestStrategy === 'multitemporal') return multi.signal;
     if (bestStrategy === 'multifractal') return multifractal.signal;
-    return voting.signal;
-  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, voting.signal]);
+    return votingStrategy.signal;
+  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, votingStrategy.signal]);
+
+  const overallSignal = useMemo(() => {
+    return sanitizeSignalWithDirectionalEdge(
+      rawOverallSignal,
+      tournamentResult.longStats,
+      tournamentResult.shortStats,
+      3
+    );
+  }, [rawOverallSignal, tournamentResult.longStats, tournamentResult.shortStats]);
 
   let overallColor = 'var(--text-primary)';
   if (overallSignal.includes('BUY')) {
     overallColor = 'var(--accent-green)';
   } else if (overallSignal.includes('SELL')) {
     overallColor = 'var(--accent-red)';
-  } else if (overallSignal === 'NEUTRAL' || overallSignal === 'HOLD') {
+  } else if (overallSignal === 'NEUTRAL') {
     overallColor = 'var(--text-secondary)';
   }
 
@@ -516,7 +510,7 @@ export default function SignalPanel({
             <span style={{ opacity: 0.85, fontWeight: '500' }}>· {tournamentResult.reasoning}</span>
           </div>
         )}
-        {bestStrategy === 'standard' && voting.rawSignal !== 'NEUTRAL' && voting.signal === 'NEUTRAL' && (
+        {bestStrategy === 'standard' && votingStrategy.rawSignal !== 'NEUTRAL' && votingStrategy.signal === 'NEUTRAL' && (
           <div style={{ 
             color: 'var(--accent-blue)', 
             fontSize: '0.75rem', 
@@ -529,9 +523,67 @@ export default function SignalPanel({
             justifyContent: 'center',
             gap: '6px'
           }}>
-            <span>⚠️</span> <span>Señal preliminar ({voting.rawSignal}) filtrada por confirmación interna (RVOL / EMA 200 / Anatomía)</span>
+            <span>⚠️</span> <span>Señal preliminar ({votingStrategy.rawSignal}) filtrada por confirmación interna (RVOL / EMA 200 / Anatomía)</span>
           </div>
         )}
+      </div>
+
+      {/* ── GLOBAL OPERATIONAL PROFILE SELECTOR ───────────── */}
+      <div style={{
+        backgroundColor: 'var(--bg-panel)',
+        border: '1px solid var(--border-color)',
+        padding: '10px 14px',
+        borderRadius: 'var(--border-radius-md)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        boxShadow: 'var(--shadow-sm)'
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          <span style={{ fontSize: '0.68rem', fontWeight: '800', color: 'var(--text-secondary)', letterSpacing: '0.5px' }}>
+            PERFIL OPERATIVO GLOBAL
+          </span>
+          <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
+            {executionStyle === 'dayTrading' ? 'Torneo y Alertas en 5m (Intradía)' : 'Torneo y Alertas en 1H (Swing)'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: '4px', background: 'rgba(0,0,0,0.3)', padding: '2px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+          <button
+            onClick={() => setExecutionStyle('dayTrading')}
+            style={{
+              backgroundColor: executionStyle === 'dayTrading' ? 'var(--accent-blue)' : 'transparent',
+              color: executionStyle === 'dayTrading' ? '#fff' : 'var(--text-secondary)',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '4px 10px',
+              cursor: 'pointer',
+              fontSize: '0.65rem',
+              fontWeight: '800',
+              transition: 'all 0.2s'
+            }}
+            title="Escanear y alertar en velas de 5m para operaciones intradía rápidas"
+          >
+            ⚡ INTRADÍA (5M)
+          </button>
+          <button
+            onClick={() => setExecutionStyle('swing')}
+            style={{
+              backgroundColor: executionStyle === 'swing' ? 'var(--accent-blue)' : 'transparent',
+              color: executionStyle === 'swing' ? '#fff' : 'var(--text-secondary)',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '4px 10px',
+              cursor: 'pointer',
+              fontSize: '0.65rem',
+              fontWeight: '800',
+              transition: 'all 0.2s'
+            }}
+            title="Escanear y alertar en velas de 1H para operaciones swing de días"
+          >
+            🌊 SWING (1H)
+          </button>
+        </div>
       </div>
 
       {/* ── CONFLUENCE MATRIX ─────────────────────────── */}
@@ -1163,85 +1215,53 @@ export default function SignalPanel({
                   <div className="sp-strategy-card-content">
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       
-                      {/* Selectores de Perfil y Gatillo */}
+                      {/* Selector de Modo de Gatillo VCME */}
                       <div style={{
                         backgroundColor: 'rgba(255, 255, 255, 0.02)',
                         border: '1px solid var(--border-color)',
                         borderRadius: 'var(--border-radius-sm)',
                         padding: '10px 12px',
                         display: 'flex',
-                        flexDirection: 'column',
-                        gap: '10px'
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
                       }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Perfil de Operación:</span>
-                          <div style={{ display: 'flex', gap: '4px' }}>
-                            <button
-                              onClick={() => setExecutionStyle('dayTrading')}
-                              style={{
-                                backgroundColor: executionStyle === 'dayTrading' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
-                                color: executionStyle === 'dayTrading' ? '#fff' : 'var(--text-secondary)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '4px',
-                                padding: '3px 8px',
-                                cursor: 'pointer',
-                                fontSize: '0.65rem',
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              Intradía (5m)
-                            </button>
-                            <button
-                              onClick={() => setExecutionStyle('swing')}
-                              style={{
-                                backgroundColor: executionStyle === 'swing' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
-                                color: executionStyle === 'swing' ? '#fff' : 'var(--text-secondary)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '4px',
-                                padding: '3px 8px',
-                                cursor: 'pointer',
-                                fontSize: '0.65rem',
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              Swing (1H)
-                            </button>
-                          </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Gatillo VCME:</span>
+                          <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
+                            {triggerMode === 'agresivo' ? 'Disparo en vela de ruptura' : 'Confirmación por retest'}
+                          </span>
                         </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Modo de Gatillo:</span>
-                          <div style={{ display: 'flex', gap: '4px' }}>
-                            <button
-                              onClick={() => setTriggerMode('agresivo')}
-                              style={{
-                                backgroundColor: triggerMode === 'agresivo' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
-                                color: triggerMode === 'agresivo' ? '#fff' : 'var(--text-secondary)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '4px',
-                                padding: '3px 8px',
-                                cursor: 'pointer',
-                                fontSize: '0.65rem',
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              Agresivo (Ruptura)
-                            </button>
-                            <button
-                              onClick={() => setTriggerMode('conservador')}
-                              style={{
-                                backgroundColor: triggerMode === 'conservador' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
-                                color: triggerMode === 'conservador' ? '#fff' : 'var(--text-secondary)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '4px',
-                                padding: '3px 8px',
-                                cursor: 'pointer',
-                                fontSize: '0.65rem',
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              Conservador (Retest)
-                            </button>
-                          </div>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button
+                            onClick={() => setTriggerMode('agresivo')}
+                            style={{
+                              backgroundColor: triggerMode === 'agresivo' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
+                              color: triggerMode === 'agresivo' ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '4px',
+                              padding: '3px 8px',
+                              cursor: 'pointer',
+                              fontSize: '0.65rem',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            Ruptura
+                          </button>
+                          <button
+                            onClick={() => setTriggerMode('conservador')}
+                            style={{
+                              backgroundColor: triggerMode === 'conservador' ? 'var(--accent-blue)' : 'rgba(0,0,0,0.3)',
+                              color: triggerMode === 'conservador' ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '4px',
+                              padding: '3px 8px',
+                              cursor: 'pointer',
+                              fontSize: '0.65rem',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            Retest
+                          </button>
                         </div>
                       </div>
 
