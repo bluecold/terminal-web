@@ -123,6 +123,7 @@ export interface RecordedTrade {
   outcome: 'win' | 'loss' | 'neutral' | 'timeout';
   exitReason?: ExitReason;
   entryIdx?: number;
+  durationCandles?: number;
 }
 
 export interface SplitStats {
@@ -133,6 +134,11 @@ export interface SplitStats {
   expectancyR: number;
   profitFactor: number | null;
   maxDrawdownR: number;
+  sortinoRatio?: number | null;
+  avgExposureHours?: number;
+  longStats?: DirectionalStats;
+  shortStats?: DirectionalStats;
+  regimeStats?: RegimeStats;
 }
 
 export interface WalkForwardResult {
@@ -156,7 +162,20 @@ export function createEmptyRegimeStats(): RegimeStats {
 }
 
 export function createEmptySplitStats(): SplitStats {
-  return { signals: 0, wins: 0, losses: 0, winRate: 0, expectancyR: 0, profitFactor: null, maxDrawdownR: 0 };
+  return {
+    signals: 0,
+    wins: 0,
+    losses: 0,
+    winRate: 0,
+    expectancyR: 0,
+    profitFactor: null,
+    maxDrawdownR: 0,
+    sortinoRatio: null,
+    avgExposureHours: 0,
+    longStats: createEmptyDirectionalStats(),
+    shortStats: createEmptyDirectionalStats(),
+    regimeStats: createEmptyRegimeStats(),
+  };
 }
 
 export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: number = 0): WalkForwardResult {
@@ -170,42 +189,42 @@ export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: nu
   };
 }
 
-function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
+function calculateSplitStats(
+  trades: RecordedTrade[],
+  candleHours: number = 5 / 60,
+  cooldownCandles: number = 12
+): SplitStats {
   if (trades.length === 0) return createEmptySplitStats();
+
+  const riskMetrics = calculateRiskMetrics(trades);
 
   let wins = 0;
   let losses = 0;
   let totalGainR = 0;
   let totalLossR = 0;
   let totalR = 0;
-  let cumR = 0;
-  let peakR = 0;
-  let maxDrawdownR = 0;
+  let totalCycleCandles = 0;
 
   for (const trade of trades) {
     totalR += trade.realizedR;
-    cumR += trade.realizedR;
-    if (cumR > peakR) peakR = cumR;
-    const dd = peakR - cumR;
-    if (dd > maxDrawdownR) maxDrawdownR = dd;
-
-    if (trade.outcome === 'win') {
-      wins++;
-    } else if (trade.outcome === 'loss') {
-      losses++;
-    }
-
     if (trade.realizedR > 0) {
+      wins++;
       totalGainR += trade.realizedR;
     } else if (trade.realizedR < 0) {
+      losses++;
       totalLossR += Math.abs(trade.realizedR);
     }
+
+    const dur = trade.durationCandles ?? 6;
+    totalCycleCandles += (dur + cooldownCandles);
   }
 
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(2)) : 0;
   const expectancyR = trades.length > 0 ? Number((totalR / trades.length).toFixed(3)) : 0;
   const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
+  const avgCycleCandles = trades.length > 0 ? totalCycleCandles / trades.length : 0;
+  const avgExposureHours = Number((avgCycleCandles * candleHours).toFixed(2));
 
   return {
     signals: trades.length,
@@ -214,7 +233,12 @@ function calculateSplitStats(trades: RecordedTrade[]): SplitStats {
     winRate,
     expectancyR,
     profitFactor,
-    maxDrawdownR: Number(maxDrawdownR.toFixed(2)),
+    maxDrawdownR: riskMetrics.maxDrawdownR,
+    sortinoRatio: riskMetrics.sortinoRatio,
+    avgExposureHours,
+    longStats: riskMetrics.longStats,
+    shortStats: riskMetrics.shortStats,
+    regimeStats: riskMetrics.regimeStats,
   };
 }
 
@@ -224,7 +248,9 @@ export function calculateWalkForward(
   latestIdx: number,
   splitRatio: number = 0.70,
   minOosTrades: number = 5,
-  avgCycleCandles?: number
+  avgCycleCandles?: number,
+  candleHours: number = 5 / 60,
+  cooldownCandles: number = 12
 ): WalkForwardResult {
   const totalCandles = Math.max(1, latestIdx - oldestIdx + 1);
   const isWindow = Math.round(totalCandles * splitRatio);
@@ -241,8 +267,8 @@ export function calculateWalkForward(
   const isTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx < splitIdx);
   const oosTrades = trades.filter(t => t.entryIdx !== undefined && t.entryIdx >= splitIdx);
 
-  const inSample = calculateSplitStats(isTrades);
-  const outOfSample = calculateSplitStats(oosTrades);
+  const inSample = calculateSplitStats(isTrades, candleHours, cooldownCandles);
+  const outOfSample = calculateSplitStats(oosTrades, candleHours, cooldownCandles);
 
   let passed = false;
   let status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES' = 'NO_OOS_TRADES';
@@ -893,6 +919,7 @@ export function backtestMultitemporal(
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,
+      durationCandles: tradeDuration,
     });
 
     if (sim.outcome === 'win') {
@@ -928,7 +955,7 @@ export function backtestMultitemporal(
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
   const minOosTrades = style === 'swing' ? 3 : 5;
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles, candleHours, cooldownPeriod);
 
   const res: BacktestResult = {
     totalSignals,
@@ -1069,6 +1096,7 @@ function runBacktestGenericOptimized(
       outcome: outcome.result,
       exitReason: outcome.exitReason,
       entryIdx: i,
+      durationCandles: outcome.durationCandles,
     });
 
     if (outcome.result === 'win') {
@@ -1111,7 +1139,7 @@ function runBacktestGenericOptimized(
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
   const minOosTrades = interval === '1h' ? 3 : interval === '1d' ? 2 : 5;
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles, candleHours, params.cooldownPeriod);
 
   return {
     totalSignals,
@@ -1303,6 +1331,7 @@ export function backtestMultifractalMTF(
       outcome: sim.outcome,
       exitReason: sim.exitReason,
       entryIdx: i,
+      durationCandles: tradeDuration,
     });
 
     if (sim.outcome === 'win') {
@@ -1333,7 +1362,7 @@ export function backtestMultifractalMTF(
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, 5, avgCycleCandles);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, 5, avgCycleCandles, 5 / 60, cooldownPeriod);
 
   const res: BacktestResult = {
     totalSignals,

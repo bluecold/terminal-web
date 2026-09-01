@@ -401,6 +401,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Detección en tiempo real de $\text{ADX} > 25$ (Tendencia) vs $\text{ADX} \le 25$ (Rango). Las estrategias con expectativa negativa demostrada en el régimen activo ($E[R] < 0$ con $N \ge 3$) son automáticamente bloqueadas por compuerta dura.
   - **Suite de Pruebas Ampliada**:
     - **96/96 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
+- **Actualización v2026.09.01.8 — Aislamiento Ciego Integral IS/OOS en Sortino, Exposición, Régimen y Estadísticas Direccionales**:
+  - **Ampliación de `SplitStats`**:
+    - Se agregaron campos independientes `sortinoRatio`, `avgExposureHours`, `longStats`, `shortStats` y `regimeStats` a `SplitStats` en `backtester.ts`.
+  - **Cálculo Aislado en `calculateSplitStats`**:
+    - Las métricas de riesgo (`calculateRiskMetrics`), ratios Sortino, estadísticas direccionales y rendimiento por régimen se calculan de forma 100% aislada sobre `isTrades` y `oosTrades`, eliminando cualquier fuga residual de datos (*data leakage*).
+  - **Consumo Puro In-Sample en Ranking y Filtro de Alertas**:
+    - `getMetrics(c, true)` y `calcScore(c)` en `tournament.ts` extraen la duración de ciclo, ratio Sortino y multiplicadores de régimen exclusivamente del tramo *In-Sample*.
+    - `TournamentResult` propaga `longStats` y `shortStats` del tramo *In-Sample* hacia `sanitizeSignalWithDirectionalEdge`, asegurando que el filtrado de señales en Radar y Scanner sea 100% inmune a sesgos o racha fortuita en el tramo de validación OOS.
+  - **Suite de Pruebas Ampliada**:
+    - **98/98 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts` (incluyendo validación de invariancia de score ante divergencias OOS y blindaje direccional IS).
 
 ---
 

@@ -89,17 +89,23 @@ export function evaluateStrategyTournament(
   // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
   const getMetrics = (c: StrategyCandidate, useInSample: boolean = false) => {
     const hasIS = useInSample && c.walkForward && c.walkForward.inSample && c.walkForward.inSample.signals > 0;
-    const expR = hasIS ? c.walkForward!.inSample.expectancyR : (c.expectancyR ?? 0);
-    const resolved = hasIS ? (c.walkForward!.inSample.wins + c.walkForward!.inSample.losses) : c.resolved;
-    const profitFactor = hasIS ? c.walkForward!.inSample.profitFactor : c.profitFactor;
-    const winRate = hasIS ? c.walkForward!.inSample.winRate : c.winRate;
-    const maxDrawdownR = hasIS ? c.walkForward!.inSample.maxDrawdownR : (c.maxDrawdownR ?? 0);
+    const is = hasIS ? c.walkForward!.inSample : undefined;
+
+    const expR = is ? is.expectancyR : (c.expectancyR ?? 0);
+    const resolved = is ? (is.wins + is.losses) : c.resolved;
+    const profitFactor = is ? is.profitFactor : c.profitFactor;
+    const winRate = is ? is.winRate : c.winRate;
+    const maxDrawdownR = is ? is.maxDrawdownR : (c.maxDrawdownR ?? 0);
+    const sortinoRatio = is && is.sortinoRatio !== undefined ? is.sortinoRatio : (c.sortinoRatio ?? null);
+    const regimeStats = is && is.regimeStats !== undefined ? is.regimeStats : c.regimeStats;
+    const longStats = is && is.longStats !== undefined ? is.longStats : c.longStats;
+    const shortStats = is && is.shortStats !== undefined ? is.shortStats : c.shortStats;
 
     const candleHours = timeframe === '5m' ? (5 / 60) : timeframe === '1h' ? 1.0 : 24.0;
     const baseCandles = 6;
     const baseHours = baseCandles * candleHours; // 0.5h on 5m, 6h on 1h, 6d on 1d
 
-    let exposureHours = c.avgExposureHours;
+    let exposureHours = is?.avgExposureHours ?? c.avgExposureHours;
     if (exposureHours === undefined || exposureHours <= 0) {
       const defaultCandles = c.forwardWindow && c.forwardWindow > 0 ? c.forwardWindow : (
         c.key === 'multitemporal' ? (timeframe === '1h' ? 48 : 72) :
@@ -116,13 +122,28 @@ export function evaluateStrategyTournament(
       ? c.expectancyPerHour
       : (exposureHours > 0 ? expR / exposureHours : expR);
 
-    return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR };
+    return {
+      expR,
+      exposureHours,
+      expPerHour,
+      timeFactor,
+      timeNormExpR,
+      resolved,
+      profitFactor,
+      winRate,
+      maxDrawdownR,
+      sortinoRatio,
+      regimeStats,
+      longStats,
+      shortStats,
+    };
   };
 
   // Helper to calculate Bayesian Shrunk Expectancy score normalized by time, downside risk and current regime
   // Evaluated strictly on In-Sample (or full sample if no split) without OOS contamination (purely blind OOS)
   const calcScore = (c: StrategyCandidate): number => {
-    const { expR, resolved, maxDrawdownR, timeFactor } = getMetrics(c, true);
+    const isMetrics = getMetrics(c, true);
+    const { expR, resolved, maxDrawdownR, timeFactor, sortinoRatio, regimeStats } = isMetrics;
 
     if (resolved <= 0 || expR <= 0) return 0;
 
@@ -133,24 +154,24 @@ export function evaluateStrategyTournament(
     const shrinkage = resolved / (resolved + n0);
     const shrunkExpR = Math.max(0, expR) * shrinkage;
 
-    // 2. Time normalization: scales trade edge by duration factor
+    // 2. Time normalization: scales trade edge by duration factor (purely In-Sample)
     const timeNormScore = shrunkExpR / timeFactor;
 
-    // 3. Risk penalty for severe drawdown (> 2.5R)
+    // 3. Risk penalty for severe drawdown (> 2.5R) (purely In-Sample)
     const ddPenalty = Math.exp(-Math.max(0, maxDrawdownR - 2.5) / 3.0);
 
-    // 4. Sortino quality adjustment (downside risk asymmetry)
+    // 4. Sortino quality adjustment (downside risk asymmetry, purely In-Sample)
     let sortinoMultiplier = 1.0;
-    if (c.sortinoRatio !== null && c.sortinoRatio !== undefined && c.sortinoRatio > 0) {
-      sortinoMultiplier = 1.0 + Math.min(0.20, c.sortinoRatio * 0.05);
-    } else if (c.sortinoRatio !== null && c.sortinoRatio !== undefined && c.sortinoRatio < 0) {
-      sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
+    if (sortinoRatio !== null && sortinoRatio !== undefined && sortinoRatio > 0) {
+      sortinoMultiplier = 1.0 + Math.min(0.20, sortinoRatio * 0.05);
+    } else if (sortinoRatio !== null && sortinoRatio !== undefined && sortinoRatio < 0) {
+      sortinoMultiplier = Math.max(0.70, 1.0 + sortinoRatio * 0.10);
     }
 
-    // 5. Regime-specific Bayesian modulation:
+    // 5. Regime-specific Bayesian modulation (purely In-Sample):
     let regimeMultiplier = 1.0;
-    if (currentRegime && c.regimeStats) {
-      const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+    if (currentRegime && regimeStats) {
+      const stats = currentRegime === 'trending' ? regimeStats.trending : regimeStats.ranging;
       if (stats && stats.signals > 0) {
         const regimeShrink = stats.signals / (stats.signals + 4);
         const shrunkRegimeExpR = stats.expectancyR * regimeShrink;
@@ -174,8 +195,8 @@ export function evaluateStrategyTournament(
       const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
 
       let regimeOk = true;
-      if (currentRegime && c.regimeStats) {
-        const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+      if (currentRegime && isMetrics.regimeStats) {
+        const stats = currentRegime === 'trending' ? isMetrics.regimeStats.trending : isMetrics.regimeStats.ranging;
         if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
           regimeOk = false;
         }
@@ -218,8 +239,8 @@ export function evaluateStrategyTournament(
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
       walkForward: winner.walkForward,
-      longStats: winner.longStats,
-      shortStats: winner.shortStats,
+      longStats: winner.walkForward?.inSample?.longStats ?? winner.longStats,
+      shortStats: winner.walkForward?.inSample?.shortStats ?? winner.shortStats,
       currentRegime,
       reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades${regimeInfo})`,
     };
@@ -236,9 +257,9 @@ export function evaluateStrategyTournament(
       // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
       if (c.walkForward && c.walkForward.status === 'FAIL') return false;
 
-      // Regime Hard Gate: Reject candidates with negative expectancy in active regime
-      if (currentRegime && c.regimeStats) {
-        const stats = currentRegime === 'trending' ? c.regimeStats.trending : c.regimeStats.ranging;
+      // Regime Hard Gate: Reject candidates with negative expectancy in active regime (IS-based)
+      if (currentRegime && isMetrics.regimeStats) {
+        const stats = currentRegime === 'trending' ? isMetrics.regimeStats.trending : isMetrics.regimeStats.ranging;
         if (stats && stats.signals >= 3 && stats.expectancyR < 0) {
           return false;
         }
@@ -279,8 +300,8 @@ export function evaluateStrategyTournament(
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
       walkForward: winner.walkForward,
-      longStats: winner.longStats,
-      shortStats: winner.shortStats,
+      longStats: winner.walkForward?.inSample?.longStats ?? winner.longStats,
+      shortStats: winner.walkForward?.inSample?.shortStats ?? winner.shortStats,
       currentRegime,
       reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfOosNote}${regimeInfo})`,
     };

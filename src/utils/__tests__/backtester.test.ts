@@ -2856,27 +2856,41 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
   // Test 92: Strategy Tournament calculates ranking purely on In-Sample without OOS data leakage
   test('evaluateStrategyTournament calculates ranking purely on In-Sample without OOS data leakage', () => {
-    // Two candidates with identical In-Sample performance (10 IS trades, E[R] = 0.50, PF = 2.0)
-    // Candidate A had an extraordinary OOS run (5 OOS trades, E[R] = 2.0, PF = 5.0)
-    // Candidate B had a solid positive OOS run (5 OOS trades, E[R] = 0.40, PF = 1.5)
-    // Because both pass OOS certification, their In-Sample ranking score is identical (no OOS double-counting)
+    // Two candidates with identical In-Sample performance (10 IS trades, E[R] = 0.50, PF = 2.0, Sortino = 1.5, Exposure = 0.5h, Trending E[R] = 0.60R)
+    // Candidate A had an extraordinary OOS run (5 OOS trades, E[R] = 2.0, PF = 5.0, OOS Sortino = 4.0, full sample Exposure = 2.0h, full Trending = 1.80R)
+    // Candidate B had a modest positive OOS run (5 OOS trades, E[R] = 0.40, PF = 1.5, OOS Sortino = 0.8, full sample Exposure = 0.2h, full Trending = 0.10R)
+    // Because both pass OOS certification, their In-Sample ranking score is 100% identical (no OOS leakage in Sortino, Regime or Exposure)
     const candidateA: StrategyCandidate = {
       key: 'standard',
       label: 'Candidate A',
       profitFactor: 2.8,
       expectancyR: 1.0,
-      expectancyPerHour: 2.0,
-      avgExposureHours: 0.5,
+      expectancyPerHour: 0.5,
+      avgExposureHours: 2.0,
       winRate: 0.70,
       resolved: 15,
       maxDrawdownR: 1.0,
-      sortinoRatio: 2.0,
+      sortinoRatio: 4.0,
+      regimeStats: {
+        trending: { signals: 10, wins: 9, losses: 1, winRate: 0.90, expectancyR: 1.80 },
+        ranging:  { signals: 5, wins: 3, losses: 2, winRate: 0.60, expectancyR: 0.40 }
+      },
       forwardWindow: 6,
       walkForward: {
         isWindow: 400,
         oosWindow: 176,
-        inSample: { signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0 },
-        outOfSample: { signals: 5, wins: 5, losses: 0, winRate: 1.0, expectancyR: 2.0, profitFactor: 5.0, maxDrawdownR: 0 },
+        inSample: {
+          signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0,
+          sortinoRatio: 1.5, avgExposureHours: 0.5,
+          regimeStats: {
+            trending: { signals: 6, wins: 5, losses: 1, winRate: 0.83, expectancyR: 0.60 },
+            ranging:  { signals: 4, wins: 2, losses: 2, winRate: 0.50, expectancyR: 0.40 }
+          }
+        },
+        outOfSample: {
+          signals: 5, wins: 5, losses: 0, winRate: 1.0, expectancyR: 2.0, profitFactor: 5.0, maxDrawdownR: 0,
+          sortinoRatio: 5.0, avgExposureHours: 2.5
+        },
         passed: true,
         status: 'PASS'
       }
@@ -2887,29 +2901,43 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       label: 'Candidate B',
       profitFactor: 1.8,
       expectancyR: 0.47,
-      expectancyPerHour: 0.94,
-      avgExposureHours: 0.5,
+      expectancyPerHour: 2.35,
+      avgExposureHours: 0.2,
       winRate: 0.65,
       resolved: 15,
       maxDrawdownR: 1.0,
-      sortinoRatio: 2.0,
+      sortinoRatio: 0.8,
+      regimeStats: {
+        trending: { signals: 10, wins: 6, losses: 4, winRate: 0.60, expectancyR: 0.10 },
+        ranging:  { signals: 5, wins: 3, losses: 2, winRate: 0.60, expectancyR: 0.40 }
+      },
       forwardWindow: 6,
       walkForward: {
         isWindow: 400,
         oosWindow: 176,
-        inSample: { signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0 },
-        outOfSample: { signals: 5, wins: 3, losses: 2, winRate: 0.60, expectancyR: 0.40, profitFactor: 1.5, maxDrawdownR: 1.0 },
+        inSample: {
+          signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0,
+          sortinoRatio: 1.5, avgExposureHours: 0.5,
+          regimeStats: {
+            trending: { signals: 6, wins: 5, losses: 1, winRate: 0.83, expectancyR: 0.60 },
+            ranging:  { signals: 4, wins: 2, losses: 2, winRate: 0.50, expectancyR: 0.40 }
+          }
+        },
+        outOfSample: {
+          signals: 5, wins: 3, losses: 2, winRate: 0.60, expectancyR: 0.40, profitFactor: 1.5, maxDrawdownR: 1.0,
+          sortinoRatio: 0.7, avgExposureHours: 0.1
+        },
         passed: true,
         status: 'PASS'
       }
     };
 
-    const tourneyA = evaluateStrategyTournament([candidateA], '5m');
-    const tourneyB = evaluateStrategyTournament([candidateB], '5m');
+    const tourneyA = evaluateStrategyTournament([candidateA], '5m', 'trending');
+    const tourneyB = evaluateStrategyTournament([candidateB], '5m', 'trending');
 
     assert.strictEqual(tourneyA.confidence, 'HIGH');
     assert.strictEqual(tourneyB.confidence, 'HIGH');
-    assert.strictEqual(tourneyA.compositeScore.toFixed(4), tourneyB.compositeScore.toFixed(4), 'In-Sample ranking score must be identical regardless of OOS magnitude');
+    assert.strictEqual(tourneyA.compositeScore.toFixed(4), tourneyB.compositeScore.toFixed(4), 'In-Sample ranking score must be strictly identical regardless of OOS Sortino, Exposure, and Regime divergences');
   });
 
   // Test 93: Minimum sample of 3 trades and strict WF FAIL disqualification
@@ -3109,6 +3137,52 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourney.confidence, 'NONE', 'Candidate with negative In-Sample expectancy must return NONE');
     assert.strictEqual(tourney.bestStrategy, 'NONE');
     assert.strictEqual(tourney.compositeScore, 0);
+  });
+
+  // Test 98: Directional statistics in Tournament Result originate strictly from In-Sample
+  test('evaluateStrategyTournament returns In-Sample directional stats for blind alert sanitization', () => {
+    // Strategy with strong In-Sample Longs (+0.80R) and toxic In-Sample Shorts (-0.40R)
+    // In OOS, shorts had 2 lucky trades (+1.0R), making full sample shorts look positive (+0.05R)
+    const directionalCandidate: StrategyCandidate = {
+      key: 'multitemporal',
+      label: 'Directional Strategy',
+      profitFactor: 2.0,
+      expectancyR: 0.50,
+      expectancyPerHour: 1.0,
+      avgExposureHours: 0.5,
+      winRate: 0.60,
+      resolved: 16,
+      forwardWindow: 6,
+      longStats: { signals: 8, wins: 6, losses: 2, winRate: 0.75, expectancyR: 0.80, profitFactor: 3.0 },
+      shortStats: { signals: 8, wins: 4, losses: 4, winRate: 0.50, expectancyR: 0.05, profitFactor: 1.1 },
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: {
+          signals: 11, wins: 7, losses: 4, winRate: 0.64, expectancyR: 0.45, profitFactor: 1.8, maxDrawdownR: 1.0,
+          longStats: { signals: 6, wins: 5, losses: 1, winRate: 0.83, expectancyR: 0.80, profitFactor: 4.0 },
+          shortStats: { signals: 5, wins: 2, losses: 3, winRate: 0.40, expectancyR: -0.40, profitFactor: 0.5 }
+        },
+        outOfSample: {
+          signals: 5, wins: 4, losses: 1, winRate: 0.80, expectancyR: 0.60, profitFactor: 3.0, maxDrawdownR: 0.5,
+          longStats: { signals: 2, wins: 2, losses: 0, winRate: 1.0, expectancyR: 0.80, profitFactor: null },
+          shortStats: { signals: 3, wins: 2, losses: 1, winRate: 0.67, expectancyR: 0.50, profitFactor: 2.0 }
+        },
+        passed: true,
+        status: 'PASS'
+      }
+    };
+
+    const tourney = evaluateStrategyTournament([directionalCandidate], '5m');
+    assert.strictEqual(tourney.confidence, 'HIGH');
+    // Ensure tournament returned the In-Sample shortStats with negative expectancy
+    assert.strictEqual(tourney.shortStats?.expectancyR, -0.40, 'Tournament must export In-Sample directional stats');
+    
+    // Test downstream alert sanitization: BUY is permitted, but SELL is neutralized because In-Sample shorts were negative
+    const buySanitized = sanitizeSignalWithDirectionalEdge('BUY', tourney.longStats, tourney.shortStats, 3);
+    const sellSanitized = sanitizeSignalWithDirectionalEdge('SELL', tourney.longStats, tourney.shortStats, 3);
+    assert.strictEqual(buySanitized, 'BUY', 'BUY with positive IS edge must be allowed');
+    assert.strictEqual(sellSanitized, 'NEUTRAL', 'SELL with negative IS edge must be blocked to NEUTRAL');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
