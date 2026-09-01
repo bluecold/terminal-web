@@ -1056,7 +1056,7 @@ function runBacktestGenericOptimized(
 
     totalRealizedR += outcome.realizedR;
     totalDurationCandles += outcome.durationCandles;
-    totalCycleCandles += Math.max(outcome.durationCandles, params.cooldownPeriod);
+    totalCycleCandles += outcome.durationCandles + params.cooldownPeriod;
 
     const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
     recordedTrades.push({
@@ -1081,7 +1081,8 @@ function runBacktestGenericOptimized(
       totalLossPct += Math.abs(outcome.pnlPct);
     }
 
-    nextAllowedIdx = i + Math.max(forwardWindow + 1, params.cooldownPeriod);
+    const exitIdx = i + outcome.durationCandles;
+    nextAllowedIdx = exitIdx + params.cooldownPeriod;
   }
 
   const exitBreakdown = calculateExitBreakdown(recordedTrades);
@@ -1223,7 +1224,7 @@ export function backtestMultifractalMTF(
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
   let totalCycleCandles = 0;
-  let lastSignalIdx = -cooldownPeriod - 1;
+  let nextAllowedIdx = 0;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
@@ -1231,7 +1232,7 @@ export function backtestMultifractalMTF(
   const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
 
   for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
-    if (i - lastSignalIdx < cooldownPeriod) {
+    if (i < nextAllowedIdx) {
       discards.cooldown++;
       neutrals++;
       continue;
@@ -1260,7 +1261,6 @@ export function backtestMultifractalMTF(
     }
 
     totalSignals++;
-    lastSignalIdx = i;
 
     const risk = Math.abs(entryPrice - evalRes.stopLoss);
     const takeProfitPrice = evalRes.signal === 'BUY'
@@ -1284,7 +1284,7 @@ export function backtestMultifractalMTF(
     totalRealizedR += sim.realizedR;
     const tradeDuration = Math.max(1, sim.exitIdx - i);
     totalDurationCandles += tradeDuration;
-    totalCycleCandles += Math.max(tradeDuration, cooldownPeriod);
+    totalCycleCandles += tradeDuration + cooldownPeriod;
 
     const adxVal = (i >= 0 && i < ctx.adxData5M.adx.length) ? ctx.adxData5M.adx[i] : undefined;
     recordedTrades.push({
@@ -1308,6 +1308,8 @@ export function backtestMultifractalMTF(
     } else if (sim.pnlPct < 0) {
       totalLossPct += Math.abs(sim.pnlPct);
     }
+
+    nextAllowedIdx = sim.exitIdx + cooldownPeriod;
   }
 
   const exitBreakdown = calculateExitBreakdown(recordedTrades);

@@ -2278,13 +2278,13 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const vcmeRes = backtestMultitemporal(klines5m, klines1h, klines1d, '5m', 'UNIFIED_CD', 'dayTrading');
     const mfRes = backtestMultifractalMTF(klines5m, klines1h, klines1d, '5m', 'UNIFIED_CD');
 
-    // All evaluated strategies on 5m with short holding times must resolve to EXACTLY 1.0h cycle baseline (12 candles * 5m = 1.0h)
+    // All evaluated strategies on 5m with short holding times must resolve to authentic cycle duration (duration + 12 candles * 5m)
     // and strictly reject the legacy 24-candle (2.0h) drift.
     for (const [name, res] of [['Standard', stdRes], ['Confluencia', confRes], ['Scoring', scoreRes], ['VCME', vcmeRes], ['Multifractal', mfRes]] as const) {
       if (res && res.totalSignals > 0) {
         assert.ok(
-          res.avgExposureHours >= 1.0 && res.avgExposureHours <= 1.25,
-          `Engine ${name} avgExposureHours (${res.avgExposureHours}h) must strictly match 1.0h unified baseline (got ${res.avgExposureHours}h)`
+          res.avgExposureHours >= 1.0 && res.avgExposureHours <= 1.65,
+          `Engine ${name} avgExposureHours (${res.avgExposureHours}h) must strictly match unified cycle duration (got ${res.avgExposureHours}h)`
         );
       }
     }
