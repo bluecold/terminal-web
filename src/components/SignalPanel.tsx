@@ -260,10 +260,9 @@ export default function SignalPanel({
       data1d: klines1d,
       executionStyle,
       triggerMode,
-      targetInterval: interval,
       scoringWeights: weights,
     });
-  }, [symbol, klines5m, klines1h, klines1d, executionStyle, triggerMode, interval, weights]);
+  }, [symbol, klines5m, klines1h, klines1d, executionStyle, triggerMode, weights]);
 
   const tournamentResult = qveResult.tournament;
   const bestStrategy = qveResult.bestStrategy;
