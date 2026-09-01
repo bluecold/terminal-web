@@ -56,8 +56,8 @@ export interface DirectionalStats {
 }
 
 export interface RegimeStats {
-  trending: { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX > 25
-  ranging:  { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX <= 25
+  trending: { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX >= 26 (Hysteresis)
+  ranging:  { signals: number; wins: number; losses: number; winRate: number; expectancyR: number }; // ADX <= 22 (Hysteresis)
 }
 
 export interface StructuralExitBreakdown {
@@ -551,7 +551,7 @@ export interface BacktestResult {
   sortinoRatio: number | null;  // downside risk-adjusted return (E[R] / downside_dev)
   longStats: DirectionalStats;  // statistics for BUY (Long) signals
   shortStats: DirectionalStats; // statistics for SELL (Short) signals
-  regimeStats: RegimeStats;     // statistics by regime (ADX > 25 vs ADX <= 25)
+  regimeStats: RegimeStats;     // statistics by regime (Trending ADX >= 26 vs Ranging ADX <= 22)
   walkForward?: WalkForwardResult; // In-Sample (70%) vs Out-of-Sample (30%) validation
   neutrals: number;             // skipped NEUTRAL candles (sum of all discards)
   discards: DiscardBreakdown;   // Granular discard breakdown for diagnostics

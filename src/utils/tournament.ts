@@ -59,7 +59,7 @@ export interface TournamentResult {
  * - Enforces Walk-Forward validation: requires In-Sample (70%) and Out-of-Sample (30%) consistency (WF != FAIL for HIGH confidence)
  * - Treats zero-loss samples (PF = null / undefined / 99.9) as undefined (PF N/D), preventing single-trade singularities
  * - Regularizes sample size via monotonic Bayesian Shrinkage
- * - Conditions strategy selection and scoring on current market regime (trending ADX > 25 vs ranging ADX <= 25)
+ * - Conditions strategy selection and scoring on current market regime with hysteresis (trending ADX >= 26 vs ranging ADX <= 22)
  */
 export function evaluateStrategyTournament(
   candidates: StrategyCandidate[],
@@ -229,7 +229,7 @@ export function evaluateStrategyTournament(
       ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R`
       : '';
     const regimeInfo = currentRegime
-      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX>25)' : '💤 Rango (ADX≤25)'}`
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX≥26)' : '💤 Rango (ADX≤22)'}`
       : '';
 
     return {
@@ -287,7 +287,7 @@ export function evaluateStrategyTournament(
       ? ' · Sin trades en OOS'
       : '';
     const regimeInfo = currentRegime
-      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX>25)' : '💤 Rango (ADX≤25)'}`
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX≥26)' : '💤 Rango (ADX≤22)'}`
       : '';
 
     return {

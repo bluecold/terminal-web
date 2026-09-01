@@ -226,8 +226,8 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
                     </span>
                   )}
                   {regimeStats && regimeStats.trending.signals > 0 && (
-                    <span title={`Régimen Tendencial (ADX > 25): ${regimeStats.trending.signals} trades · WR: ${Math.round(regimeStats.trending.winRate * 100)}% · E[R]: ${regimeStats.trending.expectancyR > 0 ? '+' : ''}${regimeStats.trending.expectancyR.toFixed(2)}R`}>
-                      ⚡ ADX&gt;25: <span style={{ color: regimeStats.trending.expectancyR > 0 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '600' }}>{regimeStats.trending.expectancyR > 0 ? '+' : ''}{regimeStats.trending.expectancyR.toFixed(2)}R</span>
+                    <span title={`Régimen Tendencial (ADX ≥ 26): ${regimeStats.trending.signals} trades · WR: ${Math.round(regimeStats.trending.winRate * 100)}% · E[R]: ${regimeStats.trending.expectancyR > 0 ? '+' : ''}${regimeStats.trending.expectancyR.toFixed(2)}R`}>
+                      ⚡ ADX≥26: <span style={{ color: regimeStats.trending.expectancyR > 0 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '600' }}>{regimeStats.trending.expectancyR > 0 ? '+' : ''}{regimeStats.trending.expectancyR.toFixed(2)}R</span>
                     </span>
                   )}
                 </div>
