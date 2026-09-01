@@ -1171,6 +1171,9 @@ export function evaluateVCMESniperAt(
   let mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
   let triggerDetail = 'Sin disparo de gatillo';
 
+  // 1D Macro Bias Gate:
+  // - Swing Trading (1H): Requires strictly aligned 1D macro trend (ALCISTA for BUY, BAJISTA for SELL).
+  // - Day Trading (5m): Requires non-adverse 1D bias (allows trading during NEUTRAL daily consolidation, blocks opposing trend).
   const isBiasCompatibleLong = ctx.style === 'swing'
     ? bias1D === 'ALCISTA'
     : bias1D !== 'BAJISTA';

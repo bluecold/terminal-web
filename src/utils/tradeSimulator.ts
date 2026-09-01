@@ -110,7 +110,7 @@ export function simulateTrade(
     }
 
     // Session boundary check (overnight gap exit)
-    if (policy.sessionGapCutoff && f > startIdx) {
+    if (policy.sessionGapCutoff && f > entryCandleIdx && f > 0) {
       const prevK = klines[f - 1];
       const gap = k.time - prevK.time;
       const expectedGapSec = policy.stepSec ?? 300;
