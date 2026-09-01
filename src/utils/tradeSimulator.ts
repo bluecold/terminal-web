@@ -189,6 +189,16 @@ export function simulateTrade(
           currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
+        } else if (k.close <= activeSL) {
+          // Conservative intra-candle re-check: candle hit TP1 but closed at or below Breakeven
+          exitIdx = f;
+          exitPrice = activeSL;
+          grossPnlPct = Number(tp1Gain.toFixed(2));
+          realizedR = Number((0.50 * r1).toFixed(2));
+          exitReason = 'TP1_BE';
+          currentStatus = 'TP1_BE_CLOSED';
+          isTerminated = true;
+          break;
         }
       }
 
@@ -203,6 +213,19 @@ export function simulateTrade(
         grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
         const runnerFloatingR = riskDist > 0 ? 0.25 * ((k.close - entryPrice) / riskDist) : 0.25 * r2;
         realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
+
+        if (k.close <= activeSL) {
+          // Conservative intra-candle re-check: candle hit TP2 but closed at or below TP1
+          const tp3Gain = ((activeSL - entryPrice) / entryPrice) * 25;
+          grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
+          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * ((activeSL - entryPrice) / riskDist)).toFixed(2));
+          exitIdx = f;
+          exitPrice = activeSL;
+          exitReason = 'TP2';
+          currentStatus = 'TP2_CLOSED';
+          isTerminated = true;
+          break;
+        }
       }
 
       // ── 4. Target 3 / Chandelier Trailing Exit (VCME Runner) ─────────────
@@ -345,6 +368,16 @@ export function simulateTrade(
           currentStatus = 'TP1_CLOSED';
           isTerminated = true;
           break;
+        } else if (k.close >= activeSL) {
+          // Conservative intra-candle re-check: candle hit TP1 but closed at or above Breakeven
+          exitIdx = f;
+          exitPrice = activeSL;
+          grossPnlPct = Number(tp1Gain.toFixed(2));
+          realizedR = Number((0.50 * r1).toFixed(2));
+          exitReason = 'TP1_BE';
+          currentStatus = 'TP1_BE_CLOSED';
+          isTerminated = true;
+          break;
         }
       }
 
@@ -359,6 +392,19 @@ export function simulateTrade(
         grossPnlPct = Number((tp1Gain + tp2Gain + runnerFloating).toFixed(2));
         const runnerFloatingR = riskDist > 0 ? 0.25 * ((entryPrice - k.close) / riskDist) : 0.25 * r2;
         realizedR = Number((0.50 * r1 + 0.25 * r2 + runnerFloatingR).toFixed(2));
+
+        if (k.close >= activeSL) {
+          // Conservative intra-candle re-check: candle hit TP2 but closed at or above TP1
+          const tp3Gain = ((entryPrice - activeSL) / entryPrice) * 25;
+          grossPnlPct = Number((tp1Gain + tp2Gain + tp3Gain).toFixed(2));
+          realizedR = Number((0.50 * r1 + 0.25 * r2 + 0.25 * ((entryPrice - activeSL) / riskDist)).toFixed(2));
+          exitIdx = f;
+          exitPrice = activeSL;
+          exitReason = 'TP2';
+          currentStatus = 'TP2_CLOSED';
+          isTerminated = true;
+          break;
+        }
       }
 
       // 4. Target 3 / Chandelier Trailing Exit (VCME Runner)

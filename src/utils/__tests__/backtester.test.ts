@@ -1336,10 +1336,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     });
 
     const evaluated = updateAlertsOutcome([alert], { 'BTCUSDT:5m': klines });
-    assert.strictEqual(evaluated[0].status, 'EXPIRED', 'Alert must exit via Emergency Exit as EXPIRED');
-    // Expected PnL with friction: +2.0% gross - 0.08% friction = +1.92% net
-    assert.strictEqual(evaluated[0].pnlPercent, 1.92, `PnL must be +1.92% with 50% partial taken (got ${evaluated[0].pnlPercent}%)`);
-    assert(evaluated[0].realizedR > 0, `Realized R must be positive (+0.5R) because TP1 was filled intra-candle (got ${evaluated[0].realizedR}R)`);
+    assert.strictEqual(evaluated[0].status, 'TP1_BE_CLOSED', 'Alert must exit via Breakeven Stop as TP1_BE_CLOSED');
+    // Expected PnL with friction: +3.0% gross (50% of +6%) - 0.08% friction = +2.92% net
+    assert.strictEqual(evaluated[0].pnlPercent, 2.92, `PnL must be +2.92% with 50% partial taken and BE stop (got ${evaluated[0].pnlPercent}%)`);
+    assert(evaluated[0].realizedR > 0, `Realized R must be positive (+0.75R) because TP1 was filled intra-candle (got ${evaluated[0].realizedR}R)`);
   });
 
   // Test 51: Win Rate strictly reflects proportion of trades with positive net R (pnlPct > 0)
