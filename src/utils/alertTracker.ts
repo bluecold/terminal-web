@@ -253,8 +253,13 @@ export function updateAlertsOutcome(
       takeProfit2: alert.takeProfit2
     };
 
+    const isCrypto = alert.symbol ? (alert.symbol.endsWith('USDT') || alert.symbol.endsWith('BTC')) : true;
+    const isSessionBased = !isCrypto;
+
     const intervalMs = durationSec * 1000;
-    const maxExpiryTimestampMs = alert.timestamp + maxExpiryCandles * intervalMs;
+    // For 24/7 continuous crypto markets, wall-clock time aligns 1:1 with candle duration.
+    // For session-based equities, leave undefined so weekends and overnight gaps do not falsely expire trades.
+    const maxExpiryTimestampMs = isCrypto ? alert.timestamp + maxExpiryCandles * intervalMs : undefined;
 
     const policy: ExitPolicy = {
       forwardWindow: maxExpiryCandles,
@@ -274,6 +279,8 @@ export function updateAlertsOutcome(
           ? (k.close < currentVwap && k.close < currentEma21)
           : (k.close > currentVwap && k.close > currentEma21);
       } : undefined,
+      sessionGapCutoff: isSessionBased && isDayTrading,
+      stepSec: durationSec,
       atrSeries: mappedAtrSeries,
       ema9Series: mappedEma9Series,
       frictionPct: 0.08,
