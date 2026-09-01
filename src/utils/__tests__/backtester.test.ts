@@ -32,6 +32,7 @@ import {
   isNyseHoliday,
   isNyseTradingSessionActive,
   calculateBollingerVolatilityStatus,
+  calculateVolumeSignalSeries,
   type BollingerBandsSeriesResult
 } from '../indicators';
 import {
@@ -2705,6 +2706,69 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // Assert missing/undefined volume defaulted to 0
     assert.strictEqual(clean[3].volume, 0, 'Missing volume must default to 0');
+  });
+
+  // Test 89: calculateVolumeSignalSeries votes directionally and requires decisive candle anatomy
+  test('calculateVolumeSignalSeries votes directionally based on candle anatomy without bullish bias', () => {
+    // Generate 20 baseline candles with volume 100
+    const klines: Kline[] = [];
+    for (let i = 0; i < 20; i++) {
+      klines.push({
+        time: 1700000000 + i * 300,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100.5,
+        volume: 100
+      });
+    }
+
+    // Candle 20: Bullish surge with high volume (250 >= 1.5x of 100) and close > open & cp >= 0.55
+    klines.push({
+      time: 1700000000 + 20 * 300,
+      open: 100,
+      high: 105,
+      low: 99.5,
+      close: 104.5, // cp = (104.5 - 99.5) / (105 - 99.5) = 5/5.5 = 0.909
+      volume: 250
+    });
+
+    // Candle 21: Bearish dump with high volume (300 >= 1.5x) and close < open & cp <= 0.45
+    klines.push({
+      time: 1700000000 + 21 * 300,
+      open: 104,
+      high: 104.5,
+      low: 98,
+      close: 98.5, // cp = (98.5 - 98) / (104.5 - 98) = 0.5/6.5 = 0.076
+      volume: 300
+    });
+
+    // Candle 22: Indecisive Doji with high volume (300 >= 1.5x) -> must be NEUTRAL
+    klines.push({
+      time: 1700000000 + 22 * 300,
+      open: 100,
+      high: 105,
+      low: 95,
+      close: 100, // cp = 5/10 = 0.50 (equal close & open)
+      volume: 300
+    });
+
+    // Candle 23: Low volume normal candle (volume 80 < 1.5x) -> must be NEUTRAL
+    klines.push({
+      time: 1700000000 + 23 * 300,
+      open: 100,
+      high: 102,
+      low: 99,
+      close: 101.5,
+      volume: 80
+    });
+
+    const result = calculateVolumeSignalSeries(klines);
+
+    assert.strictEqual(result.signals[20], 'BUY', 'High volume bullish expansion candle must vote BUY');
+    assert.strictEqual(result.signals[21], 'SELL', 'High volume bearish dump candle must vote SELL');
+    assert.strictEqual(result.signals[22], 'NEUTRAL', 'High volume indecisive candle must vote NEUTRAL');
+    assert.strictEqual(result.signals[23], 'NEUTRAL', 'Low volume candle must vote NEUTRAL');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

@@ -1252,15 +1252,25 @@ export function calculateVolumeSignalSeries(klines: Kline[]): { values: string[]
         : currentVol.toFixed(0);
 
     values[i] = `${formatted} (${ratio.toFixed(1)}×)`;
-    signals[i] = ratio >= 1.5 ? 'BUY' : 'NEUTRAL';
 
-    // Slide window for next iteration: subtract oldest volume (i-19) and add current volume (i)
-    // Actually, avgVol uses klines.slice(i-21, i-1) which means indices i-20 to i-1.
-    // So the window is length 20, ending at i-1.
-    // Let's verify sumVol tracking:
-    // When i = 20, sumVol is sum of index 0 to 19. That is correct!
-    // Next, for i = 21, the sumVol should be sum of index 1 to 20.
-    // So we subtract index i-20 (which is 20-20 = 0) and add index i-1 (which is 20).
+    const curr = klines[i];
+    const range = curr.high - curr.low;
+    const cp = range > 0 ? (curr.close - curr.low) / range : 0.5;
+
+    let volSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+    if (ratio >= 1.5) {
+      if (curr.close > curr.open && cp >= 0.55) {
+        volSig = 'BUY';
+      } else if (curr.close < curr.open && cp <= 0.45) {
+        volSig = 'SELL';
+      } else {
+        volSig = 'NEUTRAL';
+      }
+    }
+
+    signals[i] = volSig;
+
+    // Slide window for next iteration: subtract oldest volume (i-20) and add current volume (i)
     sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
   }
 
