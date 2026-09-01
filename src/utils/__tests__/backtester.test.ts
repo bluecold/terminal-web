@@ -50,6 +50,7 @@ import {
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
 import { evaluateStrategyTournament, runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate } from '../tournament';
 import { simulateTrade, type TradeLevels } from '../tradeSimulator';
+import { buildConfluenciaContext } from '../strategyEvaluators';
 import { sanitizeKlines, type Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -2809,6 +2810,34 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }];
     const scoreBear = calculateScoringSignal(klinesBearOverextended, '5m');
     assert.strictEqual(scoreBear.layers.volume.score, 1, 'Bearish overextension < -2 ATR must vote +1 (reversion pull) and not sell');
+  });
+
+  // Test 91: Confluencia buildConfluenciaContext volSMA strictly excludes current bar
+  test('Confluencia buildConfluenciaContext volSMA strictly excludes current bar avoiding self-inclusion damping', () => {
+    // 20 candles with volume 100, then candle 20 with volume 1000
+    const klines: Kline[] = [];
+    for (let i = 0; i < 20; i++) {
+      klines.push({
+        time: 1700000000 + i * 300,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100,
+        volume: 100
+      });
+    }
+    klines.push({
+      time: 1700000000 + 20 * 300,
+      open: 100,
+      high: 102,
+      low: 99.5,
+      close: 101.5,
+      volume: 1000
+    });
+
+    const ctx = buildConfluenciaContext(klines, '1h');
+    // For index 20, the average of the PREVIOUS 20 candles must be 100, NOT (19*100 + 1000)/20 = 145!
+    assert.strictEqual(ctx.volSMA[20], 100, 'volSMA[20] must equal the baseline of previous 20 candles (100) without self-inclusion');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

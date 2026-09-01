@@ -85,8 +85,8 @@ export function buildConfluenciaContext(klines: Kline[], interval: string = '1h'
   }
   if (length >= 20) volSMA[19] = sumVol / 20;
   for (let i = 20; i < length; i++) {
-    sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
     volSMA[i] = sumVol / 20;
+    sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
   }
 
   return { klines, interval, closes, ema9, ema20, vwap, atr, volSMA };
