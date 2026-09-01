@@ -83,9 +83,14 @@ export function evaluateStrategyTournament(
   const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
   const idealMin = Math.round(minHighResolved * 1.5);
 
-  // Helper to extract duration and normalized R metrics
-  const getMetrics = (c: StrategyCandidate) => {
-    const expR = c.expectancyR ?? 0;
+  // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
+  const getMetrics = (c: StrategyCandidate, useInSample: boolean = false) => {
+    const hasIS = useInSample && c.walkForward && c.walkForward.inSample && c.walkForward.inSample.signals > 0;
+    const expR = hasIS ? c.walkForward!.inSample.expectancyR : (c.expectancyR ?? 0);
+    const resolved = hasIS ? (c.walkForward!.inSample.wins + c.walkForward!.inSample.losses) : c.resolved;
+    const profitFactor = hasIS ? c.walkForward!.inSample.profitFactor : c.profitFactor;
+    const winRate = hasIS ? c.walkForward!.inSample.winRate : c.winRate;
+    const maxDrawdownR = hasIS ? c.walkForward!.inSample.maxDrawdownR : (c.maxDrawdownR ?? 0);
 
     const candleHours = timeframe === '5m' ? (5 / 60) : timeframe === '1h' ? 1.0 : 24.0;
     const baseCandles = 6;
@@ -109,23 +114,24 @@ export function evaluateStrategyTournament(
       ? c.expectancyPerHour
       : (exposureHours > 0 ? expR / exposureHours : expR);
 
-    return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR };
+    return { expR, exposureHours, expPerHour, timeFactor, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR };
   };
 
-  // Helper to calculate composite score normalized by R, square-root time, downside risk and Walk-Forward
+  // Helper to calculate composite score normalized by R, square-root time, downside risk
+  // Evaluated strictly on In-Sample (or full sample if no split) without OOS contamination (purely blind OOS)
   const calcScore = (c: StrategyCandidate): number => {
-    const { expR, timeNormExpR } = getMetrics(c);
+    const { expR, timeNormExpR, resolved, profitFactor, winRate, maxDrawdownR } = getMetrics(c, true);
 
-    // Sigmoid sample confidence based on total evaluated trades
-    const sampleConfidence = 1 / (1 + Math.exp(-(c.resolved - idealMin) / 2.5));
+    // Sigmoid sample confidence based on evaluated trades
+    const sampleConfidence = 1 / (1 + Math.exp(-(resolved - idealMin) / 2.5));
 
     // Bayesian sample-aware PF ceiling
-    const maxAttainablePF = Math.min(5.0, 1.0 + Math.max(0, c.resolved) * 0.4);
+    const maxAttainablePF = Math.min(5.0, 1.0 + Math.max(0, resolved) * 0.4);
 
     // Handle zero-loss undefined PF (null / >= 99.0)
     let rawPF: number;
-    if (c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0) {
-      if (c.resolved >= minHighResolved) {
+    if (profitFactor === null || !Number.isFinite(profitFactor) || profitFactor >= 99.0) {
+      if (resolved >= minHighResolved) {
         // Robust sample without losses (Laplace regularization)
         rawPF = Math.min(5.0, 1.0 + Math.max(0, expR) * 2.0);
       } else {
@@ -133,7 +139,7 @@ export function evaluateStrategyTournament(
         rawPF = Math.min(1.5, 1.0 + Math.max(0, expR) * 0.3);
       }
     } else {
-      rawPF = c.profitFactor;
+      rawPF = profitFactor;
     }
     const cappedPF = Math.min(Math.max(0, rawPF), maxAttainablePF);
 
@@ -141,11 +147,10 @@ export function evaluateStrategyTournament(
     const expRScore = Math.max(0, Math.tanh(Math.max(0, expR) / 0.5)) * 3.0;
     const timeNormScore = Math.max(0, Math.tanh(Math.max(0, timeNormExpR) / 0.35)) * 2.5;
     const pfScore = Math.min(2.5, cappedPF * 0.5);
-    const wrScore = c.winRate * 2.0;
+    const wrScore = winRate * 2.0;
 
     // Risk penalty for severe drawdown (> 3.0R)
-    const mdd = c.maxDrawdownR ?? 0;
-    const ddPenalty = Math.exp(-Math.max(0, mdd - 3.0) / 4.0);
+    const ddPenalty = Math.exp(-Math.max(0, maxDrawdownR - 3.0) / 4.0);
 
     // Sortino quality adjustment (bonus for consistent positive downside, penalty for negative)
     let sortinoMultiplier = 1.0;
@@ -155,34 +160,23 @@ export function evaluateStrategyTournament(
       sortinoMultiplier = Math.max(0.70, 1.0 + c.sortinoRatio * 0.10);
     }
 
-    // Walk-Forward Out-of-Sample adjustment
-    let wfMultiplier = 1.0;
-    if (c.walkForward) {
-      if (c.walkForward.status === 'PASS') {
-        const oosExpR = c.walkForward.outOfSample.expectancyR;
-        wfMultiplier = 1.0 + Math.min(0.15, Math.max(0, oosExpR) * 0.10);
-      } else if (c.walkForward.status === 'FAIL') {
-        wfMultiplier = 0.55; // Strict penalty for failing recent 30% validation
-      } else if (c.walkForward.status === 'INSUFFICIENT_OOS') {
-        wfMultiplier = 0.90; // Mild uncertainty: positive OOS trades exist but sample < minOosTrades
-      } else if (c.walkForward.status === 'NO_OOS_TRADES') {
-        wfMultiplier = 0.80;
-      }
-    }
-
-    const baseScore = ((expRScore * 0.35) + (timeNormScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier * wfMultiplier;
+    // Notice: OOS is completely excluded from score calculation to avoid data leakage.
+    // OOS is used strictly downstream as a blind gatekeeper for HIGH confidence certification!
+    const baseScore = ((expRScore * 0.35) + (timeNormScore * 0.25) + (pfScore * 0.25) + (wrScore * 0.15)) * ddPenalty * sortinoMultiplier;
     return baseScore * sampleConfidence;
   };
 
-  // 1. Check for HIGH confidence candidates (resolved >= minHighResolved, PF >= 1.25, expR > 0, and WF passed)
+  // 1. Check for HIGH confidence candidates:
+  // - In-Sample robust edge: resolved >= minHighResolved, PF >= 1.25, expR > 0
+  // - Blind Out-of-Sample Certification: c.walkForward.status === 'PASS' (OOS confirms positive edge in blind validation)
   const highCandidates = candidates
     .filter(c => {
-      const { expR } = getMetrics(c);
-      const pfOk = c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0
+      const isMetrics = getMetrics(c, true);
+      const pfOk = isMetrics.profitFactor === null || !Number.isFinite(isMetrics.profitFactor) || isMetrics.profitFactor >= 99.0
         ? true
-        : c.profitFactor >= 1.25;
+        : isMetrics.profitFactor >= 1.25;
       const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
-      return c.resolved >= minHighResolved && pfOk && expR > 0 && wfOk;
+      return c.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);

@@ -2840,6 +2840,64 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(ctx.volSMA[20], 100, 'volSMA[20] must equal the baseline of previous 20 candles (100) without self-inclusion');
   });
 
+  // Test 92: Strategy Tournament calculates ranking purely on In-Sample without OOS data leakage
+  test('evaluateStrategyTournament calculates ranking purely on In-Sample without OOS data leakage', () => {
+    // Two candidates with identical In-Sample performance (10 IS trades, E[R] = 0.50, PF = 2.0)
+    // Candidate A had an extraordinary OOS run (5 OOS trades, E[R] = 2.0, PF = 5.0)
+    // Candidate B had a solid positive OOS run (5 OOS trades, E[R] = 0.40, PF = 1.5)
+    // Because both pass OOS certification, their In-Sample ranking score is identical (no OOS double-counting)
+    const candidateA: StrategyCandidate = {
+      key: 'standard',
+      label: 'Candidate A',
+      profitFactor: 2.8,
+      expectancyR: 1.0,
+      expectancyPerHour: 2.0,
+      avgExposureHours: 0.5,
+      winRate: 0.70,
+      resolved: 15,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 2.0,
+      forwardWindow: 6,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 5, wins: 5, losses: 0, winRate: 1.0, expectancyR: 2.0, profitFactor: 5.0, maxDrawdownR: 0 },
+        passed: true,
+        status: 'PASS'
+      }
+    };
+
+    const candidateB: StrategyCandidate = {
+      key: 'scoring',
+      label: 'Candidate B',
+      profitFactor: 1.8,
+      expectancyR: 0.47,
+      expectancyPerHour: 0.94,
+      avgExposureHours: 0.5,
+      winRate: 0.65,
+      resolved: 15,
+      maxDrawdownR: 1.0,
+      sortinoRatio: 2.0,
+      forwardWindow: 6,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 10, wins: 7, losses: 3, winRate: 0.70, expectancyR: 0.50, profitFactor: 2.0, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 5, wins: 3, losses: 2, winRate: 0.60, expectancyR: 0.40, profitFactor: 1.5, maxDrawdownR: 1.0 },
+        passed: true,
+        status: 'PASS'
+      }
+    };
+
+    const tourneyA = evaluateStrategyTournament([candidateA], '5m');
+    const tourneyB = evaluateStrategyTournament([candidateB], '5m');
+
+    assert.strictEqual(tourneyA.confidence, 'HIGH');
+    assert.strictEqual(tourneyB.confidence, 'HIGH');
+    assert.strictEqual(tourneyA.compositeScore.toFixed(4), tourneyB.compositeScore.toFixed(4), 'In-Sample ranking score must be identical regardless of OOS magnitude');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
