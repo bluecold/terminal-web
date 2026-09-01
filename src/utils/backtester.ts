@@ -843,6 +843,8 @@ export function backtestMultitemporal(
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalGainR = 0;
+  let totalLossR = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
   let totalCycleCandles = 0;
@@ -928,6 +930,12 @@ export function backtestMultitemporal(
       losses++;
     }
 
+    if (sim.realizedR > 0) {
+      totalGainR += sim.realizedR;
+    } else if (sim.realizedR < 0) {
+      totalLossR += Math.abs(sim.realizedR);
+    }
+
     if (sim.pnlPct > 0) {
       totalGainPct += sim.pnlPct;
     } else if (sim.pnlPct < 0) {
@@ -942,7 +950,7 @@ export function backtestMultitemporal(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
+  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
@@ -1257,6 +1265,8 @@ export function backtestMultifractalMTF(
   const discards = createEmptyDiscards();
   let totalGainPct = 0;
   let totalLossPct = 0;
+  let totalGainR = 0;
+  let totalLossR = 0;
   let totalRealizedR = 0;
   let totalDurationCandles = 0;
   let totalCycleCandles = 0;
@@ -1340,6 +1350,12 @@ export function backtestMultifractalMTF(
       losses++;
     }
 
+    if (sim.realizedR > 0) {
+      totalGainR += sim.realizedR;
+    } else if (sim.realizedR < 0) {
+      totalLossR += Math.abs(sim.realizedR);
+    }
+
     if (sim.pnlPct > 0) {
       totalGainPct += sim.pnlPct;
     } else if (sim.pnlPct < 0) {
@@ -1354,7 +1370,7 @@ export function backtestMultifractalMTF(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossPct > 0 ? Number((totalGainPct / totalLossPct).toFixed(2)) : null;
+  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
   const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
