@@ -23,7 +23,16 @@ import {
   calculateRevolutionVolatilityBand,
   isNyseOpeningWindow,
   getOpeningRange,
-  getSessionId
+  getSessionId,
+  getConfirmedClosedKlines,
+  calculateTimeOfDayRVOL,
+  getEffectiveExecutionPrice,
+  isUsDaylightSavingTime,
+  getEasternTime,
+  isNyseHoliday,
+  isNyseTradingSessionActive,
+  calculateBollingerVolatilityStatus,
+  type BollingerBandsSeriesResult
 } from '../indicators';
 import {
   updateAlertsOutcome,
@@ -38,7 +47,7 @@ import {
   type AuditAlertItem
 } from '../alertTracker';
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
-import { evaluateStrategyTournament, type StrategyCandidate } from '../tournament';
+import { evaluateStrategyTournament, runQVESelection, type StrategyCandidate } from '../tournament';
 import { simulateTrade, type TradeLevels } from '../tradeSimulator';
 import type { Kline } from '../../services/api';
 
@@ -2266,6 +2275,330 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
         );
       }
     }
+  });
+
+  // Test 78: getConfirmedClosedKlines dynamically preserves closed candles across session boundaries
+  test('getConfirmedClosedKlines dynamically preserves closed candles across session boundaries and excludes live forming candles', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    // 1. Array with 1 or 0 candles
+    assert.strictEqual(getConfirmedClosedKlines([], '5m').length, 0, 'Empty array returns empty');
+    const singleCandle = [{ time: nowSec - 100, open: 10, high: 12, low: 9, close: 11, volume: 100 }];
+    assert.strictEqual(getConfirmedClosedKlines(singleCandle, '5m').length, 1, 'Single candle preserved');
+
+    // 2. Completed historical/past 5m candle (started 600s ago >= 300s duration)
+    const completed5m = [
+      { time: nowSec - 900, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+      { time: nowSec - 600, open: 11, high: 13, low: 10, close: 12, volume: 100 },
+    ];
+    assert.strictEqual(getConfirmedClosedKlines(completed5m, '5m', 'BTCUSDT').length, 2, 'Completed 5m candle must be preserved in full');
+
+    // 3. Real-time actively forming 5m candle in Crypto (started 60s ago < 300s duration)
+    const forming5mCrypto = [
+      { time: nowSec - 600, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+      { time: nowSec - 60, open: 11, high: 13, low: 10, close: 12, volume: 100 },
+    ];
+    assert.strictEqual(getConfirmedClosedKlines(forming5mCrypto, '5m', 'BTCUSDT').length, 1, 'Forming 5m candle in crypto must be dropped to prevent repainting');
+
+    // 4. Completed daily candle (started 100,000s ago >= 86,400s duration)
+    const completed1d = [
+      { time: nowSec - 200000, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+      { time: nowSec - 100000, open: 11, high: 13, low: 10, close: 12, volume: 100 },
+    ];
+    assert.strictEqual(getConfirmedClosedKlines(completed1d, '1d', 'AAPL').length, 2, 'Completed daily candle must be preserved in full');
+  });
+
+  // Test 79: calculateTimeOfDayRVOL evaluates authentic Time-of-Day slot volume baseline
+  test('calculateTimeOfDayRVOL evaluates authentic Time-of-Day slot volume baseline against historical sessions', () => {
+    // Construct 5 days of 5m data with distinct time-of-day volume signature:
+    // Slot 14:30 UTC (e.g. market open) normally has 10,000 volume.
+    // Midday slot 17:00 UTC normally has 1,000 volume.
+    const daySec = 86400;
+    const baseTime = 1700000000; // arbitrary timestamp aligned
+    const klines: Kline[] = [];
+
+    for (let day = 0; day < 5; day++) {
+      const dayStart = baseTime + (day * daySec);
+      // 09:30 slot (offset 0)
+      klines.push({ time: dayStart, open: 100, high: 101, low: 99, close: 100, volume: 10000 });
+      // 12:30 slot (offset 10800s)
+      klines.push({ time: dayStart + 10800, open: 100, high: 101, low: 99, close: 100, volume: 1000 });
+    }
+
+    // Day 6: Current day test cases
+    const day6Start = baseTime + (5 * daySec);
+
+    // Case 1: Normal 09:30 volume of 10,000 should yield ~1.0x RVOL ToD (not 10x relative to 12:30)
+    klines.push({ time: day6Start, open: 100, high: 101, low: 99, close: 100, volume: 10000 });
+    const rvolOpenNormal = calculateTimeOfDayRVOL(klines, klines.length - 1, 5, 300);
+    assert.strictEqual(rvolOpenNormal, 1.0, `Normal 09:30 volume must give 1.0x ToD RVOL (got ${rvolOpenNormal}x)`);
+
+    // Case 2: Spike in 12:30 volume of 3,000 should yield 3.0x RVOL ToD (vs normal 1,000)
+    klines.push({ time: day6Start + 10800, open: 100, high: 101, low: 99, close: 100, volume: 3000 });
+    const rvolMiddaySpike = calculateTimeOfDayRVOL(klines, klines.length - 1, 5, 300);
+    assert.strictEqual(rvolMiddaySpike, 3.0, `Spiked 12:30 volume must give 3.0x ToD RVOL (got ${rvolMiddaySpike}x)`);
+  });
+
+  // Test 80: runQVESelection evaluates unified tournament across dayTrading and swing profiles
+  test('runQVESelection evaluates unified tournament across dayTrading and swing profiles', () => {
+    const klines5m = generateSyntheticKlines(250, 300, 100);
+    const klines1h = generateSyntheticKlines(150, 3600, 100);
+    const klines1d = generateSyntheticKlines(100, 86400, 100);
+
+    // 1. DayTrading evaluation (derives targetInterval = '5m')
+    const qveDay = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+    });
+    assert.strictEqual(qveDay.targetInterval, '5m', 'DayTrading must target 5m interval');
+    assert.strictEqual(qveDay.triggerKlines.length, qveDay.closed5m.length, 'DayTrading triggerKlines must equal closed5m');
+    assert.strictEqual(qveDay.candidates.length, 5, 'Must evaluate 5 strategy candidates');
+
+    // 2. Swing evaluation (derives targetInterval = '1h')
+    const qveSwing = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'swing',
+    });
+    assert.strictEqual(qveSwing.targetInterval, '1h', 'Swing must target 1h interval');
+    assert.strictEqual(qveSwing.triggerKlines.length, qveSwing.closed1h.length, 'Swing triggerKlines must equal closed1h');
+
+    // 3. Forcing targetInterval (e.g. chart inspection on 1d)
+    const qveCustom = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      targetInterval: '1d',
+    });
+    assert.strictEqual(qveCustom.targetInterval, '1d', 'Explicit targetInterval 1d must override profile default and bind to 1d');
+    assert.strictEqual(qveCustom.triggerKlines.length, qveCustom.closed1d.length, 'triggerKlines must be closed1d');
+  });
+
+  // Test 81: getEffectiveExecutionPrice enforces strict temporal causality
+  test('getEffectiveExecutionPrice enforces strict temporal causality in live vs closed markets', () => {
+    const closedCandle1 = { time: 1700000000, open: 100, high: 105, low: 99, close: 104, volume: 1000 };
+    const closedCandle2 = { time: 1700000300, open: 104, high: 110, low: 103, close: 109, volume: 1500 };
+    const closedKlines = [closedCandle1, closedCandle2];
+
+    // Case 1: Closed market / weekend (rawKlines has same length as closedKlines)
+    // The price must be Close_i (109), NOT Open_i (104, which was the opening price 5 mins ago before the bar closed)
+    const rawClosedMarket = [closedCandle1, closedCandle2];
+    const priceClosedMarket = getEffectiveExecutionPrice(rawClosedMarket, closedKlines);
+    assert.strictEqual(priceClosedMarket, 109, `In closed market, execution price must equal trigger close (got ${priceClosedMarket})`);
+
+    // Case 2: Live session actively forming candle (rawKlines has extra candle i+1)
+    // The price must be Open_{i+1} (112, the opening price of the new live candle)
+    const liveCandleForming = { time: 1700000600, open: 112, high: 113, low: 111, close: 112.5, volume: 200 };
+    const rawLiveMarket = [closedCandle1, closedCandle2, liveCandleForming];
+    const priceLiveMarket = getEffectiveExecutionPrice(rawLiveMarket, closedKlines);
+    assert.strictEqual(priceLiveMarket, 112, `In live market with forming candle, execution price must equal Open_{i+1} (got ${priceLiveMarket})`);
+  });
+
+  // Test 82: runQVESelection propagates custom scoringWeights to backtestScoring
+  test('runQVESelection propagates custom scoringWeights to backtestScoring', () => {
+    const klines5m = generateSyntheticKlines(250, 300, 100);
+    const klines1h = generateSyntheticKlines(150, 3600, 100);
+    const klines1d = generateSyntheticKlines(100, 86400, 100);
+
+    const customWeights = { trend: 3.0, rsi: 0.1, bollinger: 0.1, volume: 3.0, candle: 0.1 };
+
+    const qveDefault = runQVESelection({
+      symbol: 'ETHUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+    });
+
+    const qveCustom = runQVESelection({
+      symbol: 'ETHUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      scoringWeights: customWeights,
+    });
+
+    assert.ok(qveDefault.btScore !== null, 'btScore must evaluate on default weights');
+    assert.ok(qveCustom.btScore !== null, 'btScore must evaluate on custom weights');
+    assert.strictEqual(qveCustom.candidates.length, 5, 'All 5 candidates must be present');
+  });
+
+  // Test 83: US Market Calendar & Session Engine accurately handles DST, Holidays, and Closing boundaries
+  test('US Market Calendar accurately identifies DST, Holidays, Half-days, and Closed vs Active Sessions', () => {
+    // 1. DST check: July 15 (EDT, UTC-4) vs Jan 15 (EST, UTC-5)
+    const summerEpoch = Date.UTC(2026, 6, 15, 14, 0, 0); // July 15, 2026
+    const winterEpoch = Date.UTC(2026, 0, 15, 14, 0, 0); // Jan 15, 2026
+    assert.strictEqual(isUsDaylightSavingTime(summerEpoch), true, 'July must be in Daylight Saving Time (EDT)');
+    assert.strictEqual(isUsDaylightSavingTime(winterEpoch), false, 'January must be in Standard Time (EST)');
+
+    // 2. Active Session: Wednesday July 15, 2026 at 10:30 AM ET (14:30 UTC)
+    const wednesdayMarketOpen = Date.UTC(2026, 6, 15, 14, 30, 0);
+    assert.strictEqual(isNyseTradingSessionActive(wednesdayMarketOpen), true, 'Wednesday 10:30 AM ET must be an active NYSE session');
+
+    // 3. Premarket / Closed: Wednesday July 15, 2026 at 08:30 AM ET (12:30 UTC)
+    const wednesdayPremarket = Date.UTC(2026, 6, 15, 12, 30, 0);
+    assert.strictEqual(isNyseTradingSessionActive(wednesdayPremarket), false, 'Wednesday 08:30 AM ET is premarket (session closed)');
+
+    // 4. After-hours / Closed: Wednesday July 15, 2026 at 16:30 ET (20:30 UTC)
+    const wednesdayAfterhours = Date.UTC(2026, 6, 15, 20, 30, 0);
+    assert.strictEqual(isNyseTradingSessionActive(wednesdayAfterhours), false, 'Wednesday 16:30 ET is after-hours (session closed)');
+
+    // 5. Weekend / Closed: Sunday July 19, 2026 at 12:00 ET
+    const sundayMidday = Date.UTC(2026, 6, 19, 16, 0, 0);
+    assert.strictEqual(isNyseTradingSessionActive(sundayMidday), false, 'Sunday must be inactive');
+
+    // 6. Holiday / Closed: Thanksgiving Thursday Nov 26, 2026 at 11:00 AM ET
+    const thanksgivingEpoch = Date.UTC(2026, 10, 26, 16, 0, 0);
+    const etThanksgiving = getEasternTime(thanksgivingEpoch);
+    assert.strictEqual(isNyseHoliday(etThanksgiving.year, etThanksgiving.month, etThanksgiving.day, etThanksgiving.dayOfWeek), true, 'Thanksgiving must be a market holiday');
+    assert.strictEqual(isNyseTradingSessionActive(thanksgivingEpoch), false, 'Thanksgiving session must be inactive');
+
+    // 7. Early close (Black Friday): Friday Nov 27, 2026 at 11:00 AM ET (Active) vs 13:30 ET (Closed)
+    const blackFridayMorning = Date.UTC(2026, 10, 27, 16, 0, 0); // 11:00 AM EST
+    const blackFridayAfternoon = Date.UTC(2026, 10, 27, 18, 30, 0); // 13:30 EST
+    assert.strictEqual(isNyseTradingSessionActive(blackFridayMorning), true, 'Black Friday 11:00 AM ET must be open');
+    assert.strictEqual(isNyseTradingSessionActive(blackFridayAfternoon), false, 'Black Friday 13:30 ET must be closed (13:00 early close)');
+  });
+
+  // Test 84: calculateBollingerVolatilityStatus uses strict historical baseline [0-100%]
+  test('calculateBollingerVolatilityStatus strictly excludes current bar avoiding self-inclusion bias', () => {
+    // Generate 50 historical BB elements with width 2.0 to 3.0
+    const series: BollingerBandsSeriesResult[] = [];
+    for (let i = 0; i < 50; i++) {
+      series.push({
+        time: 1700000000 + i * 300,
+        upper: 105,
+        middle: 100,
+        lower: 95,
+        widthPercent: 2.0 + (i / 50) * 1.0 // width from 2.0 to 2.98
+      });
+    }
+
+    // Case 1: Maximum width on current bar (3.5 > all past 50 bars)
+    // Must yield exactly 100.0% percentile (not 98.0%) and trigger EXPANSION
+    const expansionSeries = [
+      ...series,
+      { time: 1700000000 + 50 * 300, upper: 110, middle: 100, lower: 90, widthPercent: 3.5 }
+    ];
+    const resExp = calculateBollingerVolatilityStatus(expansionSeries, 50);
+    assert.strictEqual(resExp.percentile, 100.0, 'Max width must achieve 100.0% percentile');
+    assert.strictEqual(resExp.status, 'EXPANSION', 'Percentile 100.0% must classify as EXPANSION');
+
+    // Case 2: Minimum width on current bar (1.0 < all past 50 bars)
+    // Must yield exactly 0.0% percentile and trigger SQUEEZE
+    const squeezeSeries = [
+      ...series,
+      { time: 1700000000 + 50 * 300, upper: 101, middle: 100, lower: 99, widthPercent: 1.0 }
+    ];
+    const resSq = calculateBollingerVolatilityStatus(squeezeSeries, 50);
+    assert.strictEqual(resSq.percentile, 0.0, 'Min width must achieve 0.0% percentile');
+    assert.strictEqual(resSq.status, 'SQUEEZE', 'Percentile 0.0% must classify as SQUEEZE');
+
+    // Case 3: Median width on current bar (2.5)
+    // Must yield ~50.0% percentile and classify as NORMAL
+    const normalSeries = [
+      ...series,
+      { time: 1700000000 + 50 * 300, upper: 105, middle: 100, lower: 95, widthPercent: 2.5 }
+    ];
+    const resNorm = calculateBollingerVolatilityStatus(normalSeries, 50);
+    assert.strictEqual(resNorm.status, 'NORMAL', 'Median width must classify as NORMAL');
+    assert.ok(resNorm.percentile >= 48 && resNorm.percentile <= 52, `Percentile should be ~50% (got ${resNorm.percentile}%)`);
+  });
+
+  // Test 85: runQVESelection strictly matches trigger series and evalInterval for 1d, 1h, and 5m
+  test('runQVESelection strictly binds targetInterval 1d to closed1d and 1h to closed1h', () => {
+    const klines5m = generateSyntheticKlines(250, 300, 100);
+    const klines1h = generateSyntheticKlines(150, 3600, 100);
+    const klines1d = generateSyntheticKlines(100, 86400, 100);
+
+    // Case 1: Explicit 1d targetInterval
+    const qve1d = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      targetInterval: '1d'
+    });
+    assert.strictEqual(qve1d.targetInterval, '1d', 'targetInterval must be 1d');
+    assert.strictEqual(qve1d.triggerKlines.length, qve1d.closed1d.length, 'triggerKlines must be closed1d');
+    assert.strictEqual(qve1d.triggerKlines[0].time, qve1d.closed1d[0].time, 'triggerKlines must match closed1d timestamps');
+
+    // Case 2: Explicit 1h targetInterval
+    const qve1h = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      targetInterval: '1h'
+    });
+    assert.strictEqual(qve1h.targetInterval, '1h', 'targetInterval must be 1h');
+    assert.strictEqual(qve1h.triggerKlines.length, qve1h.closed1h.length, 'triggerKlines must be closed1h');
+
+    // Case 3: Default dayTrading profile (5m)
+    const qve5m = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading'
+    });
+    assert.strictEqual(qve5m.targetInterval, '5m', 'targetInterval must default to 5m');
+    assert.strictEqual(qve5m.triggerKlines.length, qve5m.closed5m.length, 'triggerKlines must be closed5m');
+  });
+
+  // Test 86: Multi-temporal engines enforce native timeframes (VCME excluded in 1D, MF in 1D/1H)
+  test('runQVESelection cleanly handles MTF engine applicability without corrupting 1D/1H', () => {
+    const klines5m = generateSyntheticKlines(300, 300, 100);
+    const klines1h = generateSyntheticKlines(200, 3600, 100);
+    const klines1d = generateSyntheticKlines(100, 86400, 100);
+
+    // 1. In 1D targetInterval: VCME and MF are cleanly disqualified
+    const qve1d = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      targetInterval: '1d'
+    });
+    assert.strictEqual(qve1d.btMulti.insufficient, true, 'VCME must be marked insufficient/N/A in 1D');
+    assert.strictEqual(qve1d.btMF.insufficient, true, 'Multifractal must be marked insufficient/N/A in 1D');
+    const multiCand = qve1d.candidates.find(c => c.key === 'multitemporal');
+    const mfCand = qve1d.candidates.find(c => c.key === 'multifractal');
+    assert.strictEqual(multiCand?.profitFactor, null, 'VCME candidate in 1D must have null PF');
+    assert.strictEqual(mfCand?.profitFactor, null, 'Multifractal candidate in 1D must have null PF');
+
+    // 2. In 1H targetInterval: VCME Swing evaluates on 1H, MF is disqualified
+    const qve1h = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'swing',
+      targetInterval: '1h'
+    });
+    assert.strictEqual(qve1h.btMF.insufficient, true, 'Multifractal must be marked insufficient in 1H');
+
+    // 3. In 5m targetInterval: All engines evaluate
+    const qve5m = runQVESelection({
+      symbol: 'BTCUSDT',
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle: 'dayTrading',
+      targetInterval: '5m'
+    });
+    assert.strictEqual(qve5m.candidates.length, 5, 'All 5 candidates must be present in 5m');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

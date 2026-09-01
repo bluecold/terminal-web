@@ -9,9 +9,9 @@ import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, type VCMESniperResult, type MultifractalMTFSignalResult } from './utils/indicators';
-import { backtestStandard, backtestConfluencia, backtestScoring, backtestMultitemporal, backtestMultifractalMTF, createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult } from './utils/backtester';
-import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
+import { createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult } from './utils/backtester';
+import { runQVESelection, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import { APP_VERSION } from './version';
 import {
   calculateAlertLevels,
@@ -111,6 +111,27 @@ function App() {
     localStorage.setItem('terminal_trigger_mode', triggerMode);
   }, [triggerMode]);
 
+  // Global custom scoring weights with persistent localStorage sync
+  const [scoringWeights, setScoringWeights] = useState<ScoringWeights>(() => {
+    try {
+      const saved = localStorage.getItem('terminal_scoring_weights');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore JSON parse error
+    }
+    return DEFAULT_WEIGHTS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('terminal_scoring_weights', JSON.stringify(scoringWeights));
+    } catch {
+      // ignore
+    }
+  }, [scoringWeights]);
+
   // Prune expired fired alerts registry entries on mount (older than 7 days)
   useEffect(() => {
     pruneFiredAlertsRegistry(7);
@@ -121,66 +142,49 @@ function App() {
   const [allKlines, setAllKlines] = useState<Record<string, Kline[]>>({ '5m': [], '1h': [], '1d': [] });
   const [earningsDate, setEarningsDate] = useState<number | null>(null);
 
-  const computeOverallSignal = (data: Kline[], tf: string, allData?: Record<string, Kline[]>) => {
+  const computeOverallSignal = (data: Kline[], tf: string, allData?: Record<string, Kline[]>): string => {
     if (data.length < 35) return 'WAITING...';
 
-    const btStd  = backtestStandard(data, tf);
-    const btConf = backtestConfluencia(data, tf);
-    const btScore = backtestScoring(data, tf);
+    const data5m = allData ? (allData['5m'] || []) : (tf === '5m' ? data : []);
+    const data1h = allData ? (allData['1h'] || []) : (tf === '1h' ? data : []);
+    const data1d = allData ? (allData['1d'] || []) : (tf === '1d' ? data : []);
 
-    let btMulti: BacktestResult = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
-    let btMF: BacktestResult    = createFallbackBacktestResult('datos insuficientes', '12 velas (1 hs max)');
+    const qve = runQVESelection({
+      symbol: currentAsset,
+      data5m,
+      data1h,
+      data1d,
+      executionStyle,
+      triggerMode,
+      targetInterval: tf,
+      scoringWeights,
+    });
 
-    if (allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
-      const kl1h = (allData['1h'] || []).slice(0, -1);
-      const kl1d = (allData['1d'] || []).slice(0, -1);
-      const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
-      if (triggerKlines.length >= 30 && kl1h.length >= 60 && kl1d.length >= 30) {
-        btMulti = backtestMultitemporal(triggerKlines, kl1h, kl1d, '5m', currentAsset, executionStyle, triggerMode);
-      }
-      if (kl5m.length >= 30) {
-        btMF = backtestMultifractalMTF(kl5m, kl1h, kl1d, '5m', currentAsset);
-      }
-    }
-
-    const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours, winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), maxDrawdownR: btStd.maxDrawdownR, sortinoRatio: btStd.sortinoRatio, maxLossStreak: btStd.maxLossStreak, longStats: btStd.longStats, shortStats: btStd.shortStats, regimeStats: btStd.regimeStats, walkForward: btStd.walkForward, forwardWindow: 6 },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), maxDrawdownR: btConf.maxDrawdownR, sortinoRatio: btConf.sortinoRatio, maxLossStreak: btConf.maxLossStreak, longStats: btConf.longStats, shortStats: btConf.shortStats, regimeStats: btConf.regimeStats, walkForward: btConf.walkForward, forwardWindow: 6 },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours, winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), maxDrawdownR: btScore.maxDrawdownR, sortinoRatio: btScore.sortinoRatio, maxLossStreak: btScore.maxLossStreak, longStats: btScore.longStats, shortStats: btScore.shortStats, regimeStats: btScore.regimeStats, walkForward: btScore.walkForward, forwardWindow: 6 },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours, winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), maxDrawdownR: btMulti?.maxDrawdownR, sortinoRatio: btMulti?.sortinoRatio, maxLossStreak: btMulti?.maxLossStreak, longStats: btMulti?.longStats, shortStats: btMulti?.shortStats, regimeStats: btMulti?.regimeStats, walkForward: btMulti?.walkForward, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours, winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), maxDrawdownR: btMF.maxDrawdownR, sortinoRatio: btMF.sortinoRatio, maxLossStreak: btMF.maxLossStreak, longStats: btMF.longStats, shortStats: btMF.shortStats, regimeStats: btMF.regimeStats, walkForward: btMF.walkForward, forwardWindow: 12 },
-    ];
-
-    const tournament = evaluateStrategyTournament(candidates, tf);
-    const bestStrategy = tournament.bestStrategy;
-
-    if (bestStrategy === 'NONE') {
+    if (qve.bestStrategy === 'NONE') {
       return 'NEUTRAL';
     }
 
     let signal: string;
-    if (bestStrategy === 'confluencia') {
-      const result = calculateExperimentalSignal(data, tf);
+    if (qve.bestStrategy === 'confluencia') {
+      const result = calculateExperimentalSignal(allData ? qve.triggerKlines : data, allData ? qve.targetInterval : tf);
       signal = result.signal;
-    } else if (bestStrategy === 'scoring') {
-      const result = calculateScoringSignal(data, tf);
+    } else if (qve.bestStrategy === 'scoring') {
+      const result = calculateScoringSignal(allData ? qve.triggerKlines : data, allData ? qve.targetInterval : tf, scoringWeights);
       signal = result.signal;
-    } else if (bestStrategy === 'multitemporal' && allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
-      const kl1h = (allData['1h'] || []).slice(0, -1);
-      const kl1d = (allData['1d'] || []).slice(0, -1);
-      const triggerKlines = executionStyle === 'swing' ? kl1h : kl5m;
-      const result = calculateVCMESniperSignal(triggerKlines, kl1h, kl1d, currentAsset, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode);
+    } else if (qve.bestStrategy === 'multitemporal' && allData) {
+      const triggerRaw = executionStyle === 'swing' ? (allData['1h'] || []) : (tf === '5m' ? data : (allData['5m'] || []));
+      const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, qve.triggerKlines);
+
+      const result = calculateVCMESniperSignal(qve.triggerKlines, qve.closed1h, qve.closed1d, currentAsset, qve.winRate, qve.profitFactor, executionStyle, triggerMode, triggerEntryPrice);
       signal = result.signal;
-    } else if (bestStrategy === 'multifractal' && allData) {
-      const kl5m = tf === '5m' ? data : (allData['5m'] || []).slice(0, -1);
-      const kl1h = (allData['1h'] || []).slice(0, -1);
-      const kl1d = (allData['1d'] || []).slice(0, -1);
-      const result = calculateMultifractalMTFSignal(kl5m, kl1h, kl1d, currentAsset);
+    } else if (qve.bestStrategy === 'multifractal' && allData) {
+      const raw5m = tf === '5m' ? data : (allData['5m'] || []);
+      const mfEntryPrice = getEffectiveExecutionPrice(raw5m, qve.closed5m);
+
+      const result = calculateMultifractalMTFSignal(qve.closed5m, qve.closed1h, qve.closed1d, currentAsset, mfEntryPrice);
       signal = result.signal;
     } else {
-      const voting = calculateStandardVoting(data);
+      const voting = calculateStandardVoting(allData ? qve.triggerKlines : data);
       signal = voting.signal;
     }
 
@@ -241,7 +245,7 @@ function App() {
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
         if (data.length >= 35) {
-          const closedData = data.slice(0, -1);
+          const closedData = getConfirmedClosedKlines(data, tf, currentAsset);
           const signal = computeOverallSignal(closedData, tf, fetchedKlines);
           setConfluenceSignals(prev => ({ ...prev, [tf]: signal }));
         } else {
@@ -282,7 +286,7 @@ function App() {
           setAllKlines(prev => {
             const updatedAllKlines = { ...prev, [interval]: data };
             if (data.length >= 35) {
-              const closedData = data.slice(0, -1);
+              const closedData = getConfirmedClosedKlines(data, interval, currentAsset);
               const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
               setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
             }
@@ -303,7 +307,7 @@ function App() {
 
   useEffect(() => {
     if (klines.length >= 35) {
-      const closedData = klines.slice(0, -1);
+      const closedData = getConfirmedClosedKlines(klines, interval, currentAsset);
       const signal = computeOverallSignal(closedData, interval, allKlines);
       /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional re-evaluation on mode toggle */
       setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
@@ -373,12 +377,6 @@ function App() {
   const scannerRunningRef = useRef(false);
   const maxConcurrentSymbolScans = 4;
 
-  // Reset signal and strategy caches on timeframe or mode change
-  useEffect(() => {
-    lastSignalsRef.current = {};
-    bestStrategyRef.current = {};
-  }, [interval, executionStyle, triggerMode]);
-
   useEffect(() => {
     let isMounted = true;
 
@@ -425,40 +423,30 @@ function App() {
           let btMulti: BacktestResult = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
 
           if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
-            const closedData = data.slice(0, -1);
-            const closed5m = data5m.slice(0, -1);
-            const closed1h = data1h.slice(0, -1);
-            const closed1d = data1d.slice(0, -1);
-            const btStd  = backtestStandard(closedData, interval, symbol);
-            const btConf = backtestConfluencia(closedData, interval, symbol);
-            const btScore = backtestScoring(closedData, interval, undefined, symbol);
+            const qve = runQVESelection({
+              symbol,
+              data5m,
+              data1h,
+              data1d,
+              executionStyle,
+              triggerMode,
+              scoringWeights,
+            });
 
-            btMulti = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
-            const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
-            if (triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
-              btMulti = backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode);
-            }
+            bestStrategy = qve.bestStrategy;
+            strategyLabel = qve.strategyLabel;
+            bestPF = qve.profitFactor;
+            bestConfidence = qve.confidence;
+            btMulti = qve.btMulti;
 
-            const btMF: BacktestResult = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : createFallbackBacktestResult('datos insuficientes', '12 velas (1 hs max)');
-
-            const candidates: StrategyCandidate[] = [
-              { key: 'standard',     label: 'Standard',        profitFactor: btStd.profitFactor,  expectancyR: btStd.expectancyR,  expectancyPerHour: btStd.expectancyPerHour,  avgExposureHours: btStd.avgExposureHours, winRate: btStd.winRate,  resolved: btStd.totalSignals > 0 ? btStd.totalSignals : (btStd.wins + btStd.losses), maxDrawdownR: btStd.maxDrawdownR, sortinoRatio: btStd.sortinoRatio, maxLossStreak: btStd.maxLossStreak, longStats: btStd.longStats, shortStats: btStd.shortStats, regimeStats: btStd.regimeStats, walkForward: btStd.walkForward, forwardWindow: 6 },
-              { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConf.profitFactor, expectancyR: btConf.expectancyR, expectancyPerHour: btConf.expectancyPerHour, avgExposureHours: btConf.avgExposureHours, winRate: btConf.winRate, resolved: btConf.totalSignals > 0 ? btConf.totalSignals : (btConf.wins + btConf.losses), maxDrawdownR: btConf.maxDrawdownR, sortinoRatio: btConf.sortinoRatio, maxLossStreak: btConf.maxLossStreak, longStats: btConf.longStats, shortStats: btConf.shortStats, regimeStats: btConf.regimeStats, walkForward: btConf.walkForward, forwardWindow: 6 },
-              { key: 'scoring',     label: 'Scoring',        profitFactor: btScore.profitFactor,expectancyR: btScore.expectancyR,expectancyPerHour: btScore.expectancyPerHour,avgExposureHours: btScore.avgExposureHours, winRate: btScore.winRate,resolved: btScore.totalSignals > 0 ? btScore.totalSignals : (btScore.wins + btScore.losses), maxDrawdownR: btScore.maxDrawdownR, sortinoRatio: btScore.sortinoRatio, maxLossStreak: btScore.maxLossStreak, longStats: btScore.longStats, shortStats: btScore.shortStats, regimeStats: btScore.regimeStats, walkForward: btScore.walkForward, forwardWindow: 6 },
-              { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMulti.profitFactor,expectancyR: btMulti.expectancyR,expectancyPerHour: btMulti.expectancyPerHour,avgExposureHours: btMulti.avgExposureHours, winRate: btMulti.winRate,resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : (btMulti.wins + btMulti.losses), maxDrawdownR: btMulti?.maxDrawdownR, sortinoRatio: btMulti?.sortinoRatio, maxLossStreak: btMulti?.maxLossStreak, longStats: btMulti?.longStats, shortStats: btMulti?.shortStats, regimeStats: btMulti?.regimeStats, walkForward: btMulti?.walkForward, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-              { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMF.profitFactor,   expectancyR: btMF.expectancyR,   expectancyPerHour: btMF.expectancyPerHour,   avgExposureHours: btMF.avgExposureHours, winRate: btMF.winRate,   resolved: btMF.totalSignals > 0 ? btMF.totalSignals : (btMF.wins + btMF.losses), maxDrawdownR: btMF.maxDrawdownR, sortinoRatio: btMF.sortinoRatio, maxLossStreak: btMF.maxLossStreak, longStats: btMF.longStats, shortStats: btMF.shortStats, regimeStats: btMF.regimeStats, walkForward: btMF.walkForward, forwardWindow: 12 },
-            ];
-
-            const tournament = evaluateStrategyTournament(candidates, interval);
-            bestStrategy = tournament.bestStrategy;
-            strategyLabel = tournament.strategyLabel;
-            bestPF = tournament.profitFactor;
-            bestConfidence = tournament.confidence;
-
-            const bestCandidate = candidates.find(c => c.key === bestStrategy);
-            const bestWinRate = bestCandidate ? bestCandidate.winRate : btMulti.winRate;
-
-            bestStrategyRef.current[symbol] = { strategy: bestStrategy, pf: bestPF, winRate: bestWinRate, confidence: bestConfidence, strategyLabel, timestamp: now };
+            bestStrategyRef.current[symbol] = {
+              strategy: bestStrategy,
+              pf: bestPF,
+              winRate: qve.winRate,
+              confidence: bestConfidence,
+              strategyLabel,
+              timestamp: now,
+            };
           } else {
             bestStrategy = cached.strategy as StrategyCandidate['key'] | 'NONE';
             bestPF = cached.pf;
@@ -474,30 +462,27 @@ function App() {
           // ── Calculate signal using the best strategy on CLOSED candles ──
           let overallSignal = 'NEUTRAL';
           let signalConfidence = '';
-          const closedData = data.slice(0, -1);
-          const closed5m = data5m.slice(0, -1);
-          const closed1h = data1h.slice(0, -1);
-          const closed1d = data1d.slice(0, -1);
+          const closedData = getConfirmedClosedKlines(data, interval, symbol);
+          const closed5m = getConfirmedClosedKlines(data5m, '5m', symbol);
+          const closed1h = getConfirmedClosedKlines(data1h, '1h', symbol);
+          const closed1d = getConfirmedClosedKlines(data1d, '1d', symbol);
+          const activeHorizon = executionStyle === 'swing' ? '1h' : '5m';
           const signalInterval = bestStrategy === 'multifractal'
             ? '5m'
-            : bestStrategy === 'multitemporal'
-              ? (executionStyle === 'swing' ? '1h' : '5m')
+            : (bestStrategy === 'multitemporal' || bestStrategy === 'standard' || bestStrategy === 'confluencia' || bestStrategy === 'scoring')
+              ? activeHorizon
               : interval;
 
-          const triggerKlines = (bestStrategy === 'multitemporal' && executionStyle === 'swing')
+          const triggerKlines = (signalInterval === '1h')
             ? closed1h
-            : (bestStrategy === 'multitemporal' || bestStrategy === 'multifractal')
+            : (signalInterval === '5m')
               ? closed5m
               : closedData;
           let signalKlines = triggerKlines;
 
-          // Extract the true execution open price of the newly opened candle (1:1 with backtester.ts entry)
+          // Extract the causal execution price (Open_{i+1} in live session, Close_i when closed)
           const targetKlines = dataByTimeframe[signalInterval] || data;
-          const liveCandle = targetKlines.length > 0 ? targetKlines[targetKlines.length - 1] : null;
-          const nextOpen = (liveCandle && liveCandle.open > 0)
-            ? liveCandle.open
-            : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
-          const entryPrice = nextOpen > 0 ? nextOpen : (signalKlines.length > 0 ? signalKlines[signalKlines.length - 1].close : 0);
+          const entryPrice = getEffectiveExecutionPrice(targetKlines, signalKlines);
 
           let vcmeResult: VCMESniperResult | null = null;
           let mfResult: MultifractalMTFSignalResult | null = null;
@@ -505,10 +490,10 @@ function App() {
           if (bestStrategy === 'NONE') {
             overallSignal = 'NEUTRAL';
           } else if (bestStrategy === 'confluencia') {
-            const result = calculateExperimentalSignal(closedData, interval);
+            const result = calculateExperimentalSignal(triggerKlines, signalInterval);
             overallSignal = result.signal;
           } else if (bestStrategy === 'scoring') {
-            const result = calculateScoringSignal(closedData, interval);
+            const result = calculateScoringSignal(triggerKlines, signalInterval, scoringWeights);
             overallSignal = result.signal;
           } else if (bestStrategy === 'multitemporal') {
             vcmeResult = calculateVCMESniperSignal(
@@ -536,7 +521,7 @@ function App() {
             overallSignal = mfResult.signal;
             signalKlines = closed5m;
           } else {
-            const voting = calculateStandardVoting(closedData);
+            const voting = calculateStandardVoting(triggerKlines);
             overallSignal = voting.signal;
           }
 
@@ -722,11 +707,13 @@ function App() {
 
     return () => {
       isMounted = false;
+      lastSignalsRef.current = {};
+      bestStrategyRef.current = {};
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-    // Fix 4: include executionStyle and triggerMode to avoid stale closures
-  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode]);
+    // Include executionStyle, triggerMode, and scoringWeights to avoid stale closures
+  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = useMemo(() => {
@@ -1276,6 +1263,7 @@ function App() {
                 activeSignals={activeSignals}
                 executionStyle={executionStyle}
                 triggerMode={triggerMode}
+                scoringWeights={scoringWeights}
               />
             )}
           </div>
@@ -1299,6 +1287,8 @@ function App() {
             setExecutionStyle={setExecutionStyle}
             triggerMode={triggerMode}
             setTriggerMode={setTriggerMode}
+            weights={scoringWeights}
+            setWeights={setScoringWeights}
           />
         </aside>
       </div>

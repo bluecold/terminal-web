@@ -328,6 +328,36 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Eliminación de la función huérfana `detectEmaCrossover`.
   - **Limpieza de Tipos en Confluencia (S1)**:
     - Eliminación del campo placeholder ficticio `rsi: 50` de `ConfluenciaEvaluationResult` y `calculateExperimentalSignal`.
+- **Actualización v2026.09.01.1 — Robustez Cuantitativa Institucional, Calendario NYSE/DST, Sincronización Global y Suite de Pruebas de 86 Tests**:
+  - **Selector de Torneo QVE Unificado (`runQVESelection`)**:
+    - Centralización total de la selección de estrategia líder entre `SignalPanel.tsx`, `MarketRadar.tsx` y el scanner de fondo en `App.tsx`.
+    - Resolución exacta de series temporales (`1d` $\to$ `closed1d`, `1h` $\to$ `closed1h`, `5m` $\to$ `closed5m`) eliminando mezclas de horizontes en backtests.
+    - Exclusión formal de motores MTF (VCME y Multifractal) en horizonte 1D, permitiendo competir limpiamente a las 3 estrategias válidas de temporalidad única (Estándar, Confluencia, Scoring).
+  - **Anclaje Causal de Precios de Entrada (`getEffectiveExecutionPrice`)**:
+    - En mercados activos con velas en formación, los niveles se anclan al $Open_{i+1}$ (primera transacción de la vela siguiente).
+    - En mercados cerrados / fin de semana (donde no existe vela viva adicional), los niveles se anclan al $Close_i$ real de la vela confirmada.
+  - **Pesos de Scoring Globales y Persistentes (`scoringWeights`)**:
+    - Levantamiento del estado de pesos a `App.tsx` sincronizado con `localStorage('terminal_scoring_weights')`.
+    - Propagación automática a `MarketRadar` y `SignalPanel`, con invalidación síncrona de caché de estrategias al modificar pesos.
+    - Inclusión de `scoringWeights` en las dependencias de los escáneres en segundo plano, evitando closures con configuraciones obsoletas.
+  - **Control de Concurrencia y Descarte Atómico en MarketRadar**:
+    - Mutex síncrono `isScanningRef` para evitar escaneos paralelos solapados.
+    - Contador generacional monotónico `scanGenerationRef` para descartar atómicamente respuestas de escaneos obsoletos al cambiar de filtros o presets rápidamente.
+  - **Motor de Calendario de Mercado NYSE / NASDAQ & DST (`indicators.ts`)**:
+    - Algoritmo aritmético de Horario de Verano (DST de EE.UU.: 2º domingo de marzo a 1º domingo de noviembre).
+    - Detección precisa de horas EST/EDT sin sobrecarga de `Intl`.
+    - Detección completa de festivos bursátiles (con Pascua de Gauss para Viernes Santo) y sesiones de cierre anticipado (13:00 ET).
+    - Control de sesión regular 09:30–16:00 ET en `isNyseTradingSessionActive` y preservación exacta de velas cerradas en `getConfirmedClosedKlines`.
+  - **Percentil de Volatilidad Bollinger Desesgado**:
+    - En `calculateBollingerVolatilityStatus`, la muestra de referencia histórica excluye estrictamente la barra actual (`slice(0, -1)`), eliminando el sesgo de auto-inclusión y restaurando el rango simétrico $[0.0\%, 100.0\%]$ para las clasificaciones Squeeze (P15) y Expansion (P85).
+  - **Alineación de Horizonte en Scanner**:
+    - `checkAllSignals` y `computeOverallSignal` calculan las 5 estrategias exclusivamente sobre `triggerKlines` y `signalInterval` del perfil activo (1H en Swing, 5m en DayTrading), completamente independientes del timeframe seleccionado en el gráfico visual.
+  - **Magnitud de Confluencia en Radar**:
+    - `confluenceScore` redefinido como magnitud absoluta $[0\%, 100\%]$ manteniendo la polaridad en `confluenceType`, permitiendo un ordenamiento óptimo de señales fuertes de compra y venta.
+  - **Auditoría de Calidad y Suite de 86 Tests**:
+    - 0 errores y 0 warnings en ESLint (`npx eslint .`).
+    - 0 errores de tipado en TypeScript (`tsc -b`).
+    - **86/86 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
 
 ---
 

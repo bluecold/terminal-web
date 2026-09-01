@@ -23,9 +23,10 @@
 * **Caché Multi-Timeframe con Fingerprint Atómico OHLCV:** Huella compuesta $O(1)$ que evalúa la firma completa `(time, open, high, low, close, volume)` de $5m, 1h, 1d$, invalidando la caché al instante ante revisiones o fluctuaciones de precio intrabarra.
 * **Múltiplos R Ponderados Dinámicos:** Cálculo matemático exacto de $R$ en base a distancias reales de niveles (+0.71R netos en TP1_BE, +1.71R / +1.875R en TP2, runner flotante) reflejado de manera sincronizada en el panel de auditoría y en los labels de TradingView.
 * **Arquitectura Single Source of Truth (SSOT):** Centralización de los 5 evaluadores puros en `src/utils/strategyEvaluators.ts`, garantizando equivalencia matemática 1:1 estricta entre Live y Backtest, y encapsulando los filtros de tendencia macro y volumen sin filtrado ad-hoc en componentes de React.
+* **Motor de Calendario Bursátil NYSE/NASDAQ & DST:** Detección de horario de verano en EE.UU. (EST/EDT), horario de sesión regular (09:30-16:00 ET), festivos de Wall Street y cierres tempranos para cálculo exacto de velas cerradas en acciones sin desfases.
 * **Cooldowns Canónicos & Simetría Temporal:** Estandarización de tiempos de ciclo y enfriamiento a través de helpers canónicos (`getStrategyCooldownCandles` / `getStrategyCooldownMs`) en 1 hora (12 velas 5m), 4 horas (4 velas 1H) y 48 horas (2 velas 1D), eliminando ventajas artificiales en la métrica $R/\text{hora}$ del torneo.
 * **Torneo QVE con Estado FLAT (`NONE`):** Detección de regímenes de mercado sin ventaja estadística; cuando ningún motor supera los umbrales de consistencia, el sistema declara `Sin Estrategia (Flat)` para proteger el capital.
-* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 77 tests unitarios de integración continua (`npm test`) que validan toda la cadena operativa, cálculo matemático, motores de señal, normalización temporal, unificación de Win Rate económico, paridad de cooldown y partición Walk-Forward de punta a punta.
+* **Suite de Pruebas Automatizadas con Fixtures de Oro:** 86 tests unitarios de integración continua (`npm test`) que validan toda la cadena operativa, cálculo matemático, motores de señal, normalización temporal, unificación de Win Rate económico, paridad de cooldown, calendario bursátil y partición Walk-Forward de punta a punta.
 
 ---
 

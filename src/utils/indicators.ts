@@ -287,20 +287,20 @@ export function calculateBollingerVolatilityStatus(
   bbSeries: BollingerBandsSeriesResult[],
   lookback: number = 50
 ): BollingerVolatilityStatusResult {
-  if (!bbSeries || bbSeries.length === 0) {
-    return { status: 'NORMAL', percentile: 50, widthPercent: 0 };
+  if (!bbSeries || bbSeries.length <= 1) {
+    return { status: 'NORMAL', percentile: 50, widthPercent: bbSeries?.[0]?.widthPercent || 0 };
   }
-  const lastBB = bbSeries[bbSeries.length - 1];
-  const currentWidth = lastBB.widthPercent;
+  const currentWidth = bbSeries[bbSeries.length - 1].widthPercent;
 
-  const windowSeries = bbSeries.slice(-lookback);
-  const sampleSize = windowSeries.length;
+  // 1. Strictly historical baseline excluding current bar to prevent self-inclusion damping
+  const historicalSeries = bbSeries.slice(0, -1).slice(-lookback);
+  const sampleSize = historicalSeries.length;
   if (sampleSize < 10) {
     return { status: 'NORMAL', percentile: 50, widthPercent: currentWidth };
   }
 
-  // Calculate percentile rank of current widthPercent within historical window
-  const lowerCount = windowSeries.filter(b => b.widthPercent < currentWidth).length;
+  // 2. Symmetric empirical percentile rank within historical window [0.0% - 100.0%]
+  const lowerCount = historicalSeries.filter(b => b.widthPercent < currentWidth).length;
   const percentile = Number(((lowerCount / sampleSize) * 100).toFixed(1));
 
   let status: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
@@ -1592,15 +1592,243 @@ export function calculateChandelierExit(klines1h: Kline[], period: number = 22, 
   return { long: longExit, short: shortExit };
 }
 
-/** Fast integer check for NYSE opening window (9:30 AM to 9:45 AM Eastern Time) without Intl or Date allocations.
- * Kline timestamps are Unix seconds. */
+/**
+ * Fast arithmetic check for US Daylight Saving Time (EDT vs EST).
+ * US DST begins the second Sunday in March (at 07:00 UTC / 02:00 EST)
+ * and ends the first Sunday in November (at 06:00 UTC / 02:00 EDT).
+ */
+export function isUsDaylightSavingTime(epochMs: number = Date.now()): boolean {
+  const date = new Date(epochMs);
+  const year = date.getUTCFullYear();
+
+  // Second Sunday in March
+  const marchFirst = new Date(Date.UTC(year, 2, 1));
+  const secondSunMarch = 1 + ((7 - marchFirst.getUTCDay()) % 7) + 7;
+  const dstStart = Date.UTC(year, 2, secondSunMarch, 7, 0, 0);
+
+  // First Sunday in November
+  const novFirst = new Date(Date.UTC(year, 10, 1));
+  const firstSunNov = 1 + ((7 - novFirst.getUTCDay()) % 7);
+  const dstEnd = Date.UTC(year, 10, firstSunNov, 6, 0, 0);
+
+  return epochMs >= dstStart && epochMs < dstEnd;
+}
+
+/**
+ * Returns exact US Eastern Time calendar components with zero Intl overhead.
+ */
+export function getEasternTime(epochMs: number = Date.now()): {
+  year: number;
+  month: number;
+  day: number;
+  dayOfWeek: number;
+  hour: number;
+  minute: number;
+  minuteOfDay: number;
+  isDst: boolean;
+} {
+  const isDst = isUsDaylightSavingTime(epochMs);
+  const offsetMs = (isDst ? -4 : -5) * 3600 * 1000;
+  const etDate = new Date(epochMs + offsetMs);
+
+  const year = etDate.getUTCFullYear();
+  const month = etDate.getUTCMonth() + 1;
+  const day = etDate.getUTCDate();
+  const dayOfWeek = etDate.getUTCDay();
+  const hour = etDate.getUTCHours();
+  const minute = etDate.getUTCMinutes();
+  const minuteOfDay = hour * 60 + minute;
+
+  return { year, month, day, dayOfWeek, hour, minute, minuteOfDay, isDst };
+}
+
+/**
+ * Calculates Good Friday date for any Gregorian year using Meeus/Jones/Butcher algorithm.
+ */
+function getGoodFriday(year: number): { month: number; day: number } {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+
+  const easter = new Date(Date.UTC(year, month - 1, day));
+  easter.setUTCDate(easter.getUTCDate() - 2);
+  return { month: easter.getUTCMonth() + 1, day: easter.getUTCDate() };
+}
+
+/**
+ * Checks if the given date is an official NYSE / NASDAQ market holiday.
+ */
+export function isNyseHoliday(year: number, month: number, day: number, dayOfWeek: number): boolean {
+  if (dayOfWeek === 0 || dayOfWeek === 6) return true;
+
+  // 1. New Year's Day (Jan 1) or observed
+  if (month === 1 && day === 1) return true;
+  if (month === 1 && day === 2 && dayOfWeek === 1) return true;
+  if (month === 12 && day === 31 && dayOfWeek === 5) return true;
+
+  // 2. Martin Luther King Jr. Day (3rd Monday of Jan: 15-21)
+  if (month === 1 && dayOfWeek === 1 && day >= 15 && day <= 21) return true;
+
+  // 3. Washington's Birthday / Presidents' Day (3rd Monday of Feb: 15-21)
+  if (month === 2 && dayOfWeek === 1 && day >= 15 && day <= 21) return true;
+
+  // 4. Good Friday
+  const gf = getGoodFriday(year);
+  if (month === gf.month && day === gf.day) return true;
+
+  // 5. Memorial Day (Last Monday of May: 25-31)
+  if (month === 5 && dayOfWeek === 1 && day >= 25 && day <= 31) return true;
+
+  // 6. Juneteenth National Independence Day (June 19, established 2021) or observed
+  if (year >= 2021) {
+    if (month === 6 && day === 19) return true;
+    if (month === 6 && day === 20 && dayOfWeek === 1) return true;
+    if (month === 6 && day === 18 && dayOfWeek === 5) return true;
+  }
+
+  // 7. Independence Day (July 4) or observed
+  if (month === 7 && day === 4) return true;
+  if (month === 7 && day === 5 && dayOfWeek === 1) return true;
+  if (month === 7 && day === 3 && dayOfWeek === 5) return true;
+
+  // 8. Labor Day (1st Monday of Sept: 1-7)
+  if (month === 9 && dayOfWeek === 1 && day >= 1 && day <= 7) return true;
+
+  // 9. Thanksgiving Day (4th Thursday of Nov: 22-28)
+  if (month === 11 && dayOfWeek === 4 && day >= 22 && day <= 28) return true;
+
+  // 10. Christmas Day (Dec 25) or observed
+  if (month === 12 && day === 25) return true;
+  if (month === 12 && day === 26 && dayOfWeek === 1) return true;
+  if (month === 12 && day === 24 && dayOfWeek === 5) return true;
+
+  return false;
+}
+
+/**
+ * Checks if the given date is a NYSE early close day (13:00 ET / 1:00 PM ET).
+ */
+export function isNyseEarlyCloseDay(_year: number, month: number, day: number, dayOfWeek: number): boolean {
+  // Day after Thanksgiving (Black Friday, 4th Friday of Nov: 23-29)
+  if (month === 11 && dayOfWeek === 5 && day >= 23 && day <= 29) return true;
+
+  // Christmas Eve (Dec 24, if a weekday and not a holiday)
+  if (month === 12 && day === 24 && dayOfWeek >= 1 && dayOfWeek <= 4) return true;
+
+  // July 3 (if weekday before July 4)
+  if (month === 7 && day === 3 && dayOfWeek >= 1 && dayOfWeek <= 4) return true;
+
+  return false;
+}
+
+/**
+ * Evaluates whether the NYSE / NASDAQ regular trading session is actively open.
+ * Regular hours: 09:30 to 16:00 ET (or 09:30 to 13:00 ET on early close days).
+ */
+export function isNyseTradingSessionActive(epochMs: number = Date.now()): boolean {
+  const et = getEasternTime(epochMs);
+
+  // Non-trading day (weekend or official market holiday)
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+
+  const openMinute = 570; // 09:30 AM ET
+  const closeMinute = isNyseEarlyCloseDay(et.year, et.month, et.day, et.dayOfWeek) ? 780 : 960; // 13:00 or 16:00 ET
+
+  return et.minuteOfDay >= openMinute && et.minuteOfDay < closeMinute;
+}
+
+/**
+ * Fast check for NYSE opening window (09:30 AM to 09:45 AM Eastern Time) with exact DST handling.
+ */
 export function isNyseOpeningWindow(timeSeconds: number, symbol?: string): boolean {
   const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
   if (isCrypto) return false;
 
-  const secOfDay = ((timeSeconds % 86400) + 86400) % 86400;
-  // EDT (13:30-13:45 UTC = 48600-49500) OR EST (14:30-14:45 UTC = 52200-53100)
-  return (secOfDay >= 48600 && secOfDay < 49500) || (secOfDay >= 52200 && secOfDay < 53100);
+  const et = getEasternTime(timeSeconds * 1000);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+
+  // 09:30 AM to 09:45 AM ET (minutes 570 to 585)
+  return et.minuteOfDay >= 570 && et.minuteOfDay < 585;
+}
+
+/**
+ * Returns only confirmed closed candles.
+ * If the candle period has already elapsed in time (e.g. historical data, weekend, completed bar),
+ * or for equities outside regular trading hours, the candle is closed and preserved.
+ * If the candle is actively forming in real-time (crypto 24/7 or live NYSE session),
+ * it is dropped via slice(0, -1) to prevent repainting.
+ */
+export function getConfirmedClosedKlines(
+  klines: Kline[],
+  interval: string,
+  symbol?: string
+): Kline[] {
+  if (!klines || klines.length <= 1) return klines || [];
+
+  const lastCandle = klines[klines.length - 1];
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  let durationSec = 300; // 5m default
+  if (interval === '15m') durationSec = 900;
+  else if (interval === '1h') durationSec = 3600;
+  else if (interval === '4h') durationSec = 14400;
+  else if (interval === '1d') durationSec = 86400;
+  else if (interval === '1wk') durationSec = 604800;
+
+  // 1. If candle duration has elapsed since candle start timestamp, it is fully closed
+  if ((nowSec - lastCandle.time) >= durationSec) {
+    return klines;
+  }
+
+  // 2. For non-crypto equities (NYSE / NASDAQ), if outside active market hours, last candle is finalized
+  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
+  if (!isCrypto) {
+    if (!isNyseTradingSessionActive(nowSec * 1000)) {
+      return klines;
+    }
+  }
+
+  // 3. Candle is actively forming in live session (crypto 24/7 or active NYSE session): drop unclosed candle
+  return klines.slice(0, -1);
+}
+
+/**
+ * Resolves the authentic, causal execution price for a quantitative signal setup:
+ * - If a new live forming candle exists (rawKlines.length > closedKlines.length):
+ *   returns rawKlines[last].open (the true Open_{i+1} of the newly opened candle).
+ * - If the market is closed or no new candle is forming (rawKlines.length <= closedKlines.length):
+ *   returns closedKlines[last].close (Close_i, preventing retrograde use of Open_i).
+ */
+export function getEffectiveExecutionPrice(
+  rawKlines: Kline[] | undefined,
+  closedKlines: Kline[]
+): number {
+  if (!closedKlines || closedKlines.length === 0) return 0;
+  const lastClosed = closedKlines[closedKlines.length - 1];
+
+  if (rawKlines && rawKlines.length > closedKlines.length) {
+    const liveCandle = rawKlines[rawKlines.length - 1];
+    if (liveCandle && liveCandle.open > 0) {
+      return liveCandle.open;
+    }
+  }
+
+  return lastClosed.close;
 }
 
 export function getSessionId(kline: Kline, interval: string, symbol?: string): string {
@@ -1714,6 +1942,52 @@ export function calculateRollingVolumeAvg(klines: Kline[], index: number, period
     count++;
   }
   return count > 0 ? sum / count : klines[index].volume;
+}
+
+/**
+ * Calculates authentic Relative Volume Time-of-Day (RVOL ToD).
+ * Compares current volume at time slot H:M against historical average volume for the same
+ * time-of-day slot across previous trading days (default: lookback 10 days).
+ * Automatically falls back to rolling 20-bar SMA if < 3 historical matching days are present.
+ */
+export function calculateTimeOfDayRVOL(
+  klines: Kline[],
+  index: number = klines.length - 1,
+  lookbackDays: number = 10,
+  intervalSec: number = 300
+): number {
+  if (!klines || index < 0 || index >= klines.length) return 1.0;
+  const targetCandle = klines[index];
+  const targetVol = targetCandle.volume;
+  if (targetVol <= 0) return 1.0;
+
+  const targetSecOfDay = ((targetCandle.time % 86400) + 86400) % 86400;
+  let sumVol = 0;
+  let matchedDays = 0;
+  const targetDay = Math.floor(targetCandle.time / 86400);
+
+  let lastMatchedDay = targetDay;
+  for (let i = index - 1; i >= 0 && matchedDays < lookbackDays; i--) {
+    const c = klines[i];
+    const cDay = Math.floor(c.time / 86400);
+    if (cDay === lastMatchedDay) continue; // 1 slot per historical day
+
+    const cSecOfDay = ((c.time % 86400) + 86400) % 86400;
+    if (Math.abs(cSecOfDay - targetSecOfDay) < (intervalSec / 2)) {
+      sumVol += c.volume;
+      matchedDays++;
+      lastMatchedDay = cDay;
+    }
+  }
+
+  if (matchedDays >= 3) {
+    const avgVol = sumVol / matchedDays;
+    return avgVol > 0 ? Number((targetVol / avgVol).toFixed(2)) : 1.0;
+  }
+
+  // Fallback to rolling 20-bar SMA if insufficient historical day slots
+  const rollingAvg = calculateRollingVolumeAvg(klines, index, 20);
+  return rollingAvg > 0 ? Number((targetVol / rollingAvg).toFixed(2)) : 1.0;
 }
 
 export function calculateVCMESniperSignal(

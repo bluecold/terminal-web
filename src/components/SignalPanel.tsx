@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, type VCMESniperResult, type MultifractalMTFSignalResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import {
   backtestStandard,
   backtestConfluencia,
@@ -7,7 +7,7 @@ import {
   backtestMultitemporal,
   backtestMultifractalMTF
 } from '../utils/backtester';
-import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
+import { runQVESelection } from '../utils/tournament';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
@@ -30,6 +30,8 @@ interface SignalPanelProps {
   setExecutionStyle: (s: 'dayTrading' | 'swing') => void;
   triggerMode: 'agresivo' | 'conservador';
   setTriggerMode: (m: 'agresivo' | 'conservador') => void;
+  weights: ScoringWeights;
+  setWeights: React.Dispatch<React.SetStateAction<ScoringWeights>>;
 }
 
 export default function SignalPanel({ 
@@ -45,13 +47,12 @@ export default function SignalPanel({
   executionStyle,
   setExecutionStyle,
   triggerMode,
-  setTriggerMode
+  setTriggerMode,
+  weights,
+  setWeights,
 }: SignalPanelProps) {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loadingNews, setLoadingNews] = useState(false);
-  
-  // Custom Scoring Weights state
-  const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
 
   // ── Extra Info States & Effect ──────────────────────────────────────────
@@ -243,19 +244,19 @@ export default function SignalPanel({
     loadNews();
   }, [symbol]);
   
-  // Closed candle confirmation: all indicators/signals should evaluate on closed candles (slice(0, -1))
+  // Closed candle confirmation: dynamically preserves confirmed closed candles without weekend/after-hours lag
   const closedKlines = useMemo(() => {
-    return klines.length > 1 ? klines.slice(0, -1) : klines;
-  }, [klines]);
+    return getConfirmedClosedKlines(klines, interval, symbol);
+  }, [klines, interval, symbol]);
 
   // Extract klines for the VCME Sniper 3-layer strategy
   const klines5m = useMemo(() => allKlines['5m'] || [], [allKlines]);
   const klines1h = useMemo(() => allKlines['1h'] || [], [allKlines]);
   const klines1d = useMemo(() => allKlines['1d'] || [], [allKlines]);
 
-  const closedKlines5m = useMemo(() => klines5m.length > 1 ? klines5m.slice(0, -1) : klines5m, [klines5m]);
-  const closedKlines1h = useMemo(() => klines1h.length > 1 ? klines1h.slice(0, -1) : klines1h, [klines1h]);
-  const closedKlines1d = useMemo(() => klines1d.length > 1 ? klines1d.slice(0, -1) : klines1d, [klines1d]);
+  const closedKlines5m = useMemo(() => getConfirmedClosedKlines(klines5m, '5m', symbol), [klines5m, symbol]);
+  const closedKlines1h = useMemo(() => getConfirmedClosedKlines(klines1h, '1h', symbol), [klines1h, symbol]);
+  const closedKlines1d = useMemo(() => getConfirmedClosedKlines(klines1d, '1d', symbol), [klines1d, symbol]);
 
   // ── Unified Standard Voting (single source of truth) ────────────────────
   const voting   = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
@@ -284,8 +285,7 @@ export default function SignalPanel({
   const multi: VCMESniperResult = useMemo(() => {
     const triggerKlines = executionStyle === 'swing' ? closedKlines1h : closedKlines5m;
     const liveKlines = executionStyle === 'swing' ? klines1h : klines5m;
-    const liveCandle = liveKlines.length > 0 ? liveKlines[liveKlines.length - 1] : null;
-    const execPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : undefined;
+    const execPrice = getEffectiveExecutionPrice(liveKlines, triggerKlines);
     return calculateVCMESniperSignal(
       triggerKlines,
       closedKlines1h,
@@ -300,27 +300,26 @@ export default function SignalPanel({
   }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, klines1h, symbol, btMultitemporal, executionStyle, triggerMode]);
 
   const multifractal: MultifractalMTFSignalResult = useMemo(() => {
-    const liveCandle = klines5m.length > 0 ? klines5m[klines5m.length - 1] : null;
-    const execPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : undefined;
+    const execPrice = getEffectiveExecutionPrice(klines5m, closedKlines5m);
     return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol, execPrice);
   }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, symbol]);
 
-  // ── Strategy Tournament (Sync overall signal with App.tsx) ───────────────
-  const tournamentResult = useMemo(() => {
-    if (!btStandard || !btConfluencia || !btScoring) {
-      return { bestStrategy: 'standard' as const, strategyLabel: 'Estándar', confidence: 'HIGH' as ConfidenceLevel, compositeScore: 0, profitFactor: null, expectancyR: 0, expectancyPerHour: 0, reasoning: '' };
-    }
-    const candidates: StrategyCandidate[] = [
-      { key: 'standard',     label: 'Estándar',        profitFactor: btStandard.profitFactor,  expectancyR: btStandard.expectancyR,  expectancyPerHour: btStandard.expectancyPerHour,  avgExposureHours: btStandard.avgExposureHours, winRate: btStandard.winRate,  resolved: btStandard.totalSignals > 0 ? btStandard.totalSignals : (btStandard.wins + btStandard.losses), maxDrawdownR: btStandard.maxDrawdownR, sortinoRatio: btStandard.sortinoRatio, maxLossStreak: btStandard.maxLossStreak, longStats: btStandard.longStats, shortStats: btStandard.shortStats, regimeStats: btStandard.regimeStats, walkForward: btStandard.walkForward, forwardWindow: 6 },
-      { key: 'confluencia',  label: 'Confluencia',     profitFactor: btConfluencia.profitFactor, expectancyR: btConfluencia.expectancyR, expectancyPerHour: btConfluencia.expectancyPerHour, avgExposureHours: btConfluencia.avgExposureHours, winRate: btConfluencia.winRate, resolved: btConfluencia.totalSignals > 0 ? btConfluencia.totalSignals : (btConfluencia.wins + btConfluencia.losses), maxDrawdownR: btConfluencia.maxDrawdownR, sortinoRatio: btConfluencia.sortinoRatio, maxLossStreak: btConfluencia.maxLossStreak, longStats: btConfluencia.longStats, shortStats: btConfluencia.shortStats, regimeStats: btConfluencia.regimeStats, walkForward: btConfluencia.walkForward, forwardWindow: 6 },
-      { key: 'scoring',     label: 'Scoring',        profitFactor: btScoring.profitFactor,expectancyR: btScoring.expectancyR,expectancyPerHour: btScoring.expectancyPerHour,avgExposureHours: btScoring.avgExposureHours, winRate: btScoring.winRate,resolved: btScoring.totalSignals > 0 ? btScoring.totalSignals : (btScoring.wins + btScoring.losses), maxDrawdownR: btScoring.maxDrawdownR, sortinoRatio: btScoring.sortinoRatio, maxLossStreak: btScoring.maxLossStreak, longStats: btScoring.longStats, shortStats: btScoring.shortStats, regimeStats: btScoring.regimeStats, walkForward: btScoring.walkForward, forwardWindow: 6 },
-      { key: 'multitemporal',label: 'VCME Sniper',    profitFactor: btMultitemporal ? btMultitemporal.profitFactor : null, expectancyR: btMultitemporal ? btMultitemporal.expectancyR : 0, expectancyPerHour: btMultitemporal ? btMultitemporal.expectancyPerHour : 0, avgExposureHours: btMultitemporal ? btMultitemporal.avgExposureHours : 0, winRate: btMultitemporal ? btMultitemporal.winRate : 0, resolved: btMultitemporal ? (btMultitemporal.totalSignals > 0 ? btMultitemporal.totalSignals : btMultitemporal.wins + btMultitemporal.losses) : 0, maxDrawdownR: btMultitemporal?.maxDrawdownR, sortinoRatio: btMultitemporal?.sortinoRatio, maxLossStreak: btMultitemporal?.maxLossStreak, longStats: btMultitemporal?.longStats, shortStats: btMultitemporal?.shortStats, regimeStats: btMultitemporal?.regimeStats, walkForward: btMultitemporal?.walkForward, forwardWindow: interval === '1h' ? 48 : 72 },
-      { key: 'multifractal', label: 'Multifractal MTF',profitFactor: btMultifractal ? btMultifractal.profitFactor : null,   expectancyR: btMultifractal ? btMultifractal.expectancyR : 0,   expectancyPerHour: btMultifractal ? btMultifractal.expectancyPerHour : 0,   avgExposureHours: btMultifractal ? btMultifractal.avgExposureHours : 0, winRate: btMultifractal ? btMultifractal.winRate : 0,   resolved: btMultifractal ? (btMultifractal.totalSignals > 0 ? btMultifractal.totalSignals : btMultifractal.wins + btMultifractal.losses) : 0, maxDrawdownR: btMultifractal?.maxDrawdownR, sortinoRatio: btMultifractal?.sortinoRatio, maxLossStreak: btMultifractal?.maxLossStreak, longStats: btMultifractal?.longStats, shortStats: btMultifractal?.shortStats, regimeStats: btMultifractal?.regimeStats, walkForward: btMultifractal?.walkForward, forwardWindow: 12 },
-    ];
-    return evaluateStrategyTournament(candidates, interval);
-  }, [btStandard, btConfluencia, btScoring, btMultitemporal, btMultifractal, interval]);
+  // ── Strategy Tournament (Sync overall signal with App.tsx and MarketRadar.tsx) ───────────────
+  const qveResult = useMemo(() => {
+    return runQVESelection({
+      symbol,
+      data5m: klines5m,
+      data1h: klines1h,
+      data1d: klines1d,
+      executionStyle,
+      triggerMode,
+      targetInterval: interval,
+      scoringWeights: weights,
+    });
+  }, [symbol, klines5m, klines1h, klines1d, executionStyle, triggerMode, interval, weights]);
 
-  const bestStrategy = tournamentResult.bestStrategy;
+  const tournamentResult = qveResult.tournament;
+  const bestStrategy = qveResult.bestStrategy;
 
   // Synchronize expanded strategy with the best strategy when it changes
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: expandedStrategy tracks the auto-selected best strategy */

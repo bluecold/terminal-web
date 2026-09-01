@@ -9,16 +9,13 @@ import {
   calculateMultifractalMTFSignal,
   calculateBollingerBandsSeries,
   calculateBollingerVolatilityStatus,
+  getConfirmedClosedKlines,
+  calculateTimeOfDayRVOL,
+  getEffectiveExecutionPrice,
+  type ScoringWeights,
 } from '../utils/indicators';
-import {
-  backtestStandard,
-  backtestConfluencia,
-  backtestScoring,
-  backtestMultitemporal,
-  backtestMultifractalMTF
-} from '../utils/backtester';
 import { formatSmartPrice } from '../utils/formatters';
-import { evaluateStrategyTournament, type StrategyCandidate, type ConfidenceLevel } from '../utils/tournament';
+import { runQVESelection, type ConfidenceLevel } from '../utils/tournament';
 
 // Clock helper to isolate Date.now() access from component render body
 function getNowTimestamp(): number {
@@ -36,7 +33,7 @@ export interface RadarRowData {
   signal1d: string;
   overallSignal: string;
   isFullConfluence: boolean;
-  confluenceType: 'BUY_3' | 'SELL_3' | 'PARTIAL' | 'NEUTRAL';
+  confluenceType: 'BUY_3' | 'SELL_3' | 'BUY_2' | 'SELL_2' | 'PARTIAL' | 'NEUTRAL';
   confluenceScore: number;
   qveStrategy: string;
   qveProfitFactor: number | null;
@@ -60,6 +57,7 @@ interface MarketRadarProps {
   activeSignals?: Record<string, string>;
   executionStyle?: 'dayTrading' | 'swing';
   triggerMode?: 'agresivo' | 'conservador';
+  scoringWeights?: ScoringWeights;
 }
 
 const PRESET_POOLS: Record<string, string[]> = {
@@ -77,6 +75,7 @@ export default function MarketRadar({
   activeSignals = {},
   executionStyle = 'dayTrading',
   triggerMode = 'agresivo',
+  scoringWeights,
 }: MarketRadarProps) {
   const [activePreset, setActivePreset] = useState<'watchlist' | 'crypto' | 'tech' | 'growth' | 'macro'>('watchlist');
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('all');
@@ -85,6 +84,8 @@ export default function MarketRadar({
   const [sortAsc, setSortAsc] = useState(false);
   const [radarData, setRadarData] = useState<Record<string, RadarRowData>>({});
   const [isScanning, setIsScanning] = useState(false);
+  const isScanningRef = useRef(false);
+  const scanGenerationRef = useRef(0);
   const isMountedRef = useRef(true);
 
   // Circuit breaker: track consecutive errors per symbol to avoid repeated failing requests (10 min backoff)
@@ -183,15 +184,16 @@ export default function MarketRadar({
         price = k5m[k5m.length - 1].close;
       }
 
-      const closed5m = k5m.length > 1 ? k5m.slice(0, -1) : k5m;
-      const closed1h = k1h.length > 1 ? k1h.slice(0, -1) : k1h;
-      const closed1d = k1d.length > 1 ? k1d.slice(0, -1) : k1d;
+      const closed5m = getConfirmedClosedKlines(k5m, '5m', symbol);
+      const closed1h = getConfirmedClosedKlines(k1h, '1h', symbol);
+      const closed1d = getConfirmedClosedKlines(k1d, '1d', symbol);
 
-      // Smart cache check by candle timestamps and user profile
+      // Smart cache check by candle timestamps, user profile, and scoring weights
       const last5mTime = closed5m.length > 0 ? closed5m[closed5m.length - 1].time : 0;
       const last1hTime = closed1h.length > 0 ? closed1h[closed1h.length - 1].time : 0;
       const last1dTime = closed1d.length > 0 ? closed1d[closed1d.length - 1].time : 0;
-      const cacheHash = `${symbol}_${last5mTime}_${last1hTime}_${last1dTime}_${executionStyle}_${triggerMode}`;
+      const wKey = scoringWeights ? `${scoringWeights.trend}_${scoringWeights.rsi}_${scoringWeights.bollinger}_${scoringWeights.volume}_${scoringWeights.candle}` : 'default';
+      const cacheHash = `${symbol}_${last5mTime}_${last1hTime}_${last1dTime}_${executionStyle}_${triggerMode}_${wKey}`;
 
       if (!forceFresh) {
         const cached = calcCacheRef.current.get(symbol);
@@ -235,67 +237,62 @@ export default function MarketRadar({
       const score1h = getSigScore(voting1h);
       const score1d = getSigScore(voting1d);
 
-      // Weighted multitemporal score (1D: 45%, 1H: 35%, 5m: 20%)
-      const weightedScore = (score1d * 0.45) + (score1h * 0.35) + (score5m * 0.20);
-      const confluenceScore = Math.round(Math.abs(weightedScore) * 100);
+      // Weighted Multi-Timeframe Score: 5m (50%), 1h (30%), 1d (20%)
+      const weightedScore = (score5m * 0.50) + (score1h * 0.30) + (score1d * 0.20);
+      const confluenceScore = Number((Math.abs(weightedScore) * 100).toFixed(0));
+
+      const buyCount = (isBuy5m ? 1 : 0) + (isBuy1h ? 1 : 0) + (isBuy1d ? 1 : 0);
+      const sellCount = (isSell5m ? 1 : 0) + (isSell1h ? 1 : 0) + (isSell1d ? 1 : 0);
 
       let isFullConfluence = false;
-      let confluenceType: 'BUY_3' | 'SELL_3' | 'PARTIAL' | 'NEUTRAL' = 'NEUTRAL';
+      let confluenceType: 'BUY_3' | 'SELL_3' | 'BUY_2' | 'SELL_2' | 'PARTIAL' | 'NEUTRAL' = 'NEUTRAL';
 
-      if ((isBuy5m && isBuy1h && isBuy1d) || weightedScore >= 0.70) {
+      if (buyCount === 3) {
         isFullConfluence = true;
         confluenceType = 'BUY_3';
-      } else if ((isSell5m && isSell1h && isSell1d) || weightedScore <= -0.70) {
+      } else if (sellCount === 3) {
         isFullConfluence = true;
         confluenceType = 'SELL_3';
-      } else if ((isBuy5m && isBuy1h) || (isSell5m && isSell1h) || Math.abs(weightedScore) >= 0.40) {
+      } else if (buyCount === 2) {
+        confluenceType = 'BUY_2';
+      } else if (sellCount === 2) {
+        confluenceType = 'SELL_2';
+      } else if (confluenceScore >= 40) {
         confluenceType = 'PARTIAL';
       }
 
-      // ── 2. QVE Tournament & Overall Signal (Synced with Profile) ──
-      const triggerKlines = executionStyle === 'swing' ? closed1h : closed5m;
+      // ── 2. QVE Tournament & Overall Signal (Synced with Profile & Weights) ──
+      const qve = runQVESelection({
+        symbol,
+        data5m: closed5m,
+        data1h: closed1h,
+        data1d: closed1d,
+        executionStyle,
+        triggerMode,
+        scoringWeights,
+      });
 
-      const btStd = closed5m.length > 20 ? backtestStandard(closed5m, '5m', symbol) : null;
-      const btConf = closed5m.length > 20 ? backtestConfluencia(closed5m, '5m', symbol) : null;
-      const btScore = closed5m.length > 20 ? backtestScoring(closed5m, '5m', undefined, symbol) : null;
-      const btMulti = triggerKlines.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30
-        ? backtestMultitemporal(triggerKlines, closed1h, closed1d, '5m', symbol, executionStyle, triggerMode)
-        : null;
-      const btMF = closed5m.length >= 30 ? backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol) : null;
+      const triggerRaw = executionStyle === 'swing' ? k1h : k5m;
+      const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, qve.triggerKlines);
+      const mfEntryPrice = getEffectiveExecutionPrice(k5m, closed5m);
 
-      const candidates: StrategyCandidate[] = [
-        { key: 'standard', label: 'Estándar', profitFactor: btStd ? btStd.profitFactor : null, expectancyR: btStd ? btStd.expectancyR : 0, expectancyPerHour: btStd ? btStd.expectancyPerHour : 0, avgExposureHours: btStd ? btStd.avgExposureHours : 0, winRate: btStd ? btStd.winRate : 0.5, resolved: btStd ? (btStd.totalSignals > 0 ? btStd.totalSignals : btStd.wins + btStd.losses) : 0, maxDrawdownR: btStd?.maxDrawdownR, sortinoRatio: btStd?.sortinoRatio, maxLossStreak: btStd?.maxLossStreak, longStats: btStd?.longStats, shortStats: btStd?.shortStats, regimeStats: btStd?.regimeStats, walkForward: btStd?.walkForward, forwardWindow: 6 },
-        { key: 'confluencia', label: 'Confluencia', profitFactor: btConf ? btConf.profitFactor : null, expectancyR: btConf ? btConf.expectancyR : 0, expectancyPerHour: btConf ? btConf.expectancyPerHour : 0, avgExposureHours: btConf ? btConf.avgExposureHours : 0, winRate: btConf ? btConf.winRate : 0.5, resolved: btConf ? (btConf.totalSignals > 0 ? btConf.totalSignals : btConf.wins + btConf.losses) : 0, maxDrawdownR: btConf?.maxDrawdownR, sortinoRatio: btConf?.sortinoRatio, maxLossStreak: btConf?.maxLossStreak, longStats: btConf?.longStats, shortStats: btConf?.shortStats, regimeStats: btConf?.regimeStats, walkForward: btConf?.walkForward, forwardWindow: 6 },
-        { key: 'scoring', label: 'Scoring', profitFactor: btScore ? btScore.profitFactor : null, expectancyR: btScore ? btScore.expectancyR : 0, expectancyPerHour: btScore ? btScore.expectancyPerHour : 0, avgExposureHours: btScore ? btScore.avgExposureHours : 0, winRate: btScore ? btScore.winRate : 0.5, resolved: btScore ? (btScore.totalSignals > 0 ? btScore.totalSignals : btScore.wins + btScore.losses) : 0, maxDrawdownR: btScore?.maxDrawdownR, sortinoRatio: btScore?.sortinoRatio, maxLossStreak: btScore?.maxLossStreak, longStats: btScore?.longStats, shortStats: btScore?.shortStats, regimeStats: btScore?.regimeStats, walkForward: btScore?.walkForward, forwardWindow: 6 },
-        { key: 'multitemporal', label: 'VCME Sniper', profitFactor: btMulti ? btMulti.profitFactor : null, expectancyR: btMulti ? btMulti.expectancyR : 0, expectancyPerHour: btMulti ? btMulti.expectancyPerHour : 0, avgExposureHours: btMulti ? btMulti.avgExposureHours : 0, winRate: btMulti ? btMulti.winRate : 0.5, resolved: btMulti ? (btMulti.totalSignals > 0 ? btMulti.totalSignals : btMulti.wins + btMulti.losses) : 0, maxDrawdownR: btMulti?.maxDrawdownR, sortinoRatio: btMulti?.sortinoRatio, maxLossStreak: btMulti?.maxLossStreak, longStats: btMulti?.longStats, shortStats: btMulti?.shortStats, regimeStats: btMulti?.regimeStats, walkForward: btMulti?.walkForward, forwardWindow: executionStyle === 'swing' ? 48 : 72 },
-        { key: 'multifractal', label: 'Multifractal MTF', profitFactor: btMF ? btMF.profitFactor : null, expectancyR: btMF ? btMF.expectancyR : 0, expectancyPerHour: btMF ? btMF.expectancyPerHour : 0, avgExposureHours: btMF ? btMF.avgExposureHours : 0, winRate: btMF ? btMF.winRate : 0.5, resolved: btMF ? (btMF.totalSignals > 0 ? btMF.totalSignals : btMF.wins + btMF.losses) : 0, maxDrawdownR: btMF?.maxDrawdownR, sortinoRatio: btMF?.sortinoRatio, maxLossStreak: btMF?.maxLossStreak, longStats: btMF?.longStats, shortStats: btMF?.shortStats, regimeStats: btMF?.regimeStats, walkForward: btMF?.walkForward, forwardWindow: 12 },
-      ];
-
-      const tourney = evaluateStrategyTournament(candidates, '5m');
       let overallSig = 'NEUTRAL';
-
-      if (tourney.bestStrategy === 'confluencia') {
-        overallSig = calculateExperimentalSignal(closed5m, '5m').signal;
-      } else if (tourney.bestStrategy === 'scoring') {
-        overallSig = calculateScoringSignal(closed5m, '5m').signal;
-      } else if (tourney.bestStrategy === 'multitemporal' && btMulti) {
-        overallSig = calculateVCMESniperSignal(triggerKlines, closed1h, closed1d, symbol, btMulti.winRate, btMulti.profitFactor, executionStyle, triggerMode).signal;
-      } else if (tourney.bestStrategy === 'multifractal') {
-        overallSig = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol).signal;
+      if (qve.bestStrategy === 'NONE') {
+        overallSig = 'NEUTRAL';
+      } else if (qve.bestStrategy === 'confluencia') {
+        overallSig = calculateExperimentalSignal(qve.triggerKlines, qve.targetInterval).signal;
+      } else if (qve.bestStrategy === 'scoring') {
+        overallSig = calculateScoringSignal(qve.triggerKlines, qve.targetInterval, scoringWeights).signal;
+      } else if (qve.bestStrategy === 'multitemporal') {
+        overallSig = calculateVCMESniperSignal(qve.triggerKlines, closed1h, closed1d, symbol, qve.winRate, qve.profitFactor, executionStyle, triggerMode, triggerEntryPrice).signal;
+      } else if (qve.bestStrategy === 'multifractal') {
+        overallSig = calculateMultifractalMTFSignal(closed5m, closed1h, closed1d, symbol, mfEntryPrice).signal;
       } else {
-        overallSig = sig5m;
+        overallSig = calculateStandardVoting(qve.triggerKlines).signal;
       }
 
-      // ── 3. RVOL (Rolling 20-bar Volume SMA excluding trigger candle) & Bollinger Volatility ──
-      let rvol = 1.0;
-      if (closed5m.length >= 21) {
-        const lastVol = closed5m[closed5m.length - 1].volume;
-        const vol20 = closed5m.slice(-21, -1).map(k => k.volume);
-        const volAvg = vol20.reduce((a, b) => a + b, 0) / 20;
-        if (volAvg > 0) {
-          rvol = Number((lastVol / volAvg).toFixed(2));
-        }
-      }
+      // ── 3. RVOL (Time-of-Day slot comparison with fallback to 20-bar SMA) & Bollinger Volatility ──
+      const rvol = closed5m.length > 0 ? calculateTimeOfDayRVOL(closed5m, closed5m.length - 1, 10, 300) : 1.0;
 
       let volatilityStatus: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' = 'NORMAL';
       let bbWidthPercent = 0;
@@ -322,9 +319,9 @@ export default function MarketRadar({
         isFullConfluence,
         confluenceType,
         confluenceScore,
-        qveStrategy: tourney.strategyLabel,
-        qveProfitFactor: tourney.profitFactor,
-        qveConfidence: tourney.confidence,
+        qveStrategy: qve.strategyLabel,
+        qveProfitFactor: qve.profitFactor,
+        qveConfidence: qve.confidence,
         rvol,
         volatilityStatus,
         bbWidthPercent,
@@ -365,66 +362,74 @@ export default function MarketRadar({
     }
   };
 
-  // Run batch scan with concurrency limit and micro-pauses
+  // Run batch scan with concurrency limit, generation guard, and micro-pauses
   const runFullScan = async () => {
-    if (isScanning) return;
+    if (isScanningRef.current) return;
+    isScanningRef.current = true;
     setIsScanning(true);
 
-    // Initial placeholder state for missing symbols
-    setRadarData(prev => {
-      const next = { ...prev };
-      symbolsToScan.forEach(sym => {
-        if (!next[sym]) {
-          next[sym] = {
-            symbol: sym,
-            name: sym,
-            isCrypto: sym.endsWith('USDT') || sym.endsWith('BTC'),
-            price: 0,
-            changePercent: 0,
-            signal5m: '...',
-            signal1h: '...',
-            signal1d: '...',
-            overallSignal: '...',
-            isFullConfluence: false,
-            confluenceType: 'NEUTRAL',
-            confluenceScore: 0,
-            qveStrategy: '...',
-            qveProfitFactor: 0,
-            qveConfidence: 'NONE',
-            rvol: 1.0,
-            volatilityStatus: 'NORMAL',
-            bbWidthPercent: 0,
-            loading: true,
-          };
-        } else {
-          next[sym] = { ...next[sym], loading: true };
-        }
-      });
-      return next;
-    });
+    const currentGen = ++scanGenerationRef.current;
 
-    const batchSize = 3;
-    for (let i = 0; i < symbolsToScan.length; i += batchSize) {
-      if (!isMountedRef.current) break;
-      const batch = symbolsToScan.slice(i, i + batchSize);
-      const results = await Promise.all(batch.map(sym => scanSymbol(sym)));
-      if (isMountedRef.current) {
-        setRadarData(prev => {
-          const next = { ...prev };
-          results.forEach(res => {
-            next[res.symbol] = res;
-          });
-          return next;
+    try {
+      // Initial placeholder state for missing symbols
+      setRadarData(prev => {
+        const next = { ...prev };
+        symbolsToScan.forEach(sym => {
+          if (!next[sym]) {
+            next[sym] = {
+              symbol: sym,
+              name: sym,
+              isCrypto: sym.endsWith('USDT') || sym.endsWith('BTC'),
+              price: 0,
+              changePercent: 0,
+              signal5m: '...',
+              signal1h: '...',
+              signal1d: '...',
+              overallSignal: '...',
+              isFullConfluence: false,
+              confluenceType: 'NEUTRAL',
+              confluenceScore: 0,
+              qveStrategy: '...',
+              qveProfitFactor: 0,
+              qveConfidence: 'NONE',
+              rvol: 1.0,
+              volatilityStatus: 'NORMAL',
+              bbWidthPercent: 0,
+              loading: true,
+            };
+          } else {
+            next[sym] = { ...next[sym], loading: true };
+          }
         });
-      }
-      // Micro-pause (yield to event loop) to ensure 60 FPS UI responsiveness
-      if (i + batchSize < symbolsToScan.length) {
-        await new Promise(resolve => setTimeout(resolve, 35));
-      }
-    }
+        return next;
+      });
 
-    if (isMountedRef.current) {
-      setIsScanning(false);
+      const batchSize = 3;
+      for (let i = 0; i < symbolsToScan.length; i += batchSize) {
+        if (!isMountedRef.current || scanGenerationRef.current !== currentGen) break;
+        const batch = symbolsToScan.slice(i, i + batchSize);
+        const results = await Promise.all(batch.map(sym => scanSymbol(sym)));
+        if (isMountedRef.current && scanGenerationRef.current === currentGen) {
+          setRadarData(prev => {
+            const next = { ...prev };
+            results.forEach(res => {
+              next[res.symbol] = res;
+            });
+            return next;
+          });
+        }
+        // Micro-pause (yield to event loop) to ensure 60 FPS UI responsiveness
+        if (i + batchSize < symbolsToScan.length) {
+          await new Promise(resolve => setTimeout(resolve, 35));
+        }
+      }
+    } finally {
+      if (scanGenerationRef.current === currentGen) {
+        isScanningRef.current = false;
+        if (isMountedRef.current) {
+          setIsScanning(false);
+        }
+      }
     }
   };
 
@@ -445,15 +450,19 @@ export default function MarketRadar({
 
   useEffect(() => {
     isMountedRef.current = true;
-    /* eslint-disable-next-line react-hooks/set-state-in-effect -- intentional data fetch on preset or profile change */
     runFullScan();
     const timer = setInterval(runFullScan, 60000);
+    const genRef = scanGenerationRef;
+    const scanRef = isScanningRef;
+    const mountedRef = isMountedRef;
     return () => {
-      isMountedRef.current = false;
+      mountedRef.current = false;
+      genRef.current++;
+      scanRef.current = false;
       clearInterval(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbolsToScan, executionStyle, triggerMode]);
+  }, [symbolsToScan, executionStyle, triggerMode, scoringWeights]);
 
   // Filter & Sort table items
   const processedRows = useMemo(() => {
@@ -494,7 +503,7 @@ export default function MarketRadar({
     } else if (activeFilter === 'rvol') {
       filtered = filtered.filter(r => r.rvol >= 1.5);
     } else if (activeFilter === 'active') {
-      filtered = filtered.filter(r => r.overallSignal.includes('BUY') || r.overallSignal.includes('SELL') || Boolean(activeSignals[r.symbol]));
+      filtered = filtered.filter(r => (r.qveConfidence !== 'NONE' && (r.overallSignal.includes('BUY') || r.overallSignal.includes('SELL'))) || Boolean(activeSignals[r.symbol]));
     }
 
     // 3. Sorting
@@ -875,17 +884,56 @@ export default function MarketRadar({
                               1d: {row.signal1d.includes('BUY') ? 'BUY' : row.signal1d.includes('SELL') ? 'SELL' : '—'}
                             </span>
 
-                            {row.isFullConfluence && (
+                            {row.confluenceType === 'BUY_3' && (
                               <span style={{
                                 fontSize: '0.58rem',
                                 fontWeight: '800',
                                 padding: '2px 6px',
                                 borderRadius: '4px',
-                                background: row.confluenceType === 'BUY_3' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(244, 63, 94, 0.25)',
-                                color: row.confluenceType === 'BUY_3' ? 'var(--accent-green)' : 'var(--accent-red)',
-                                border: `1px solid ${row.confluenceType === 'BUY_3' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'}`,
+                                background: 'rgba(16, 185, 129, 0.25)',
+                                color: 'var(--accent-green)',
+                                border: '1px solid rgba(16, 185, 129, 0.4)',
                               }}>
                                 🎯 3/3 ({row.confluenceScore}%)
+                              </span>
+                            )}
+                            {row.confluenceType === 'SELL_3' && (
+                              <span style={{
+                                fontSize: '0.58rem',
+                                fontWeight: '800',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(244, 63, 94, 0.25)',
+                                color: 'var(--accent-red)',
+                                border: '1px solid rgba(244, 63, 94, 0.4)',
+                              }}>
+                                🎯 3/3 ({row.confluenceScore}%)
+                              </span>
+                            )}
+                            {row.confluenceType === 'BUY_2' && (
+                              <span style={{
+                                fontSize: '0.58rem',
+                                fontWeight: '700',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(59, 130, 246, 0.15)',
+                                color: 'var(--accent-blue)',
+                                border: '1px solid rgba(59, 130, 246, 0.3)',
+                              }}>
+                                ⚡ 2/3 ({row.confluenceScore}%)
+                              </span>
+                            )}
+                            {row.confluenceType === 'SELL_2' && (
+                              <span style={{
+                                fontSize: '0.58rem',
+                                fontWeight: '700',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(234, 179, 8, 0.15)',
+                                color: '#eab308',
+                                border: '1px solid rgba(234, 179, 8, 0.3)',
+                              }}>
+                                ⚡ 2/3 ({row.confluenceScore}%)
                               </span>
                             )}
                           </div>

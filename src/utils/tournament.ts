@@ -1,4 +1,17 @@
-import type { DirectionalStats, RegimeStats, WalkForwardResult } from './backtester';
+import type { Kline } from '../services/api';
+import {
+  type DirectionalStats,
+  type RegimeStats,
+  type WalkForwardResult,
+  type BacktestResult,
+  createFallbackBacktestResult,
+  backtestStandard,
+  backtestConfluencia,
+  backtestScoring,
+  backtestMultitemporal,
+  backtestMultifractalMTF,
+} from './backtester';
+import { getConfirmedClosedKlines, type ScoringWeights } from './indicators';
 
 export type ConfidenceLevel = 'HIGH' | 'LIMITED' | 'NONE';
 
@@ -258,5 +271,214 @@ export function evaluateStrategyTournament(
     sortinoRatio: null,
     walkForward: undefined,
     reasoning: 'Sin ventaja estadística demostrada — Permanecer FLAT (Sin trades)',
+  };
+}
+
+export interface QVEAssetContext {
+  symbol: string;
+  data5m: Kline[];
+  data1h: Kline[];
+  data1d: Kline[];
+  executionStyle?: 'dayTrading' | 'swing';
+  triggerMode?: 'agresivo' | 'conservador';
+  targetInterval?: string;
+  scoringWeights?: ScoringWeights;
+}
+
+export interface QVESelectionResult {
+  bestStrategy: StrategyCandidate['key'] | 'NONE';
+  strategyLabel: string;
+  confidence: ConfidenceLevel;
+  profitFactor: number | null;
+  winRate: number;
+  expectancyR: number;
+  expectancyPerHour: number;
+  tournament: TournamentResult;
+  candidates: StrategyCandidate[];
+  targetInterval: string;
+  triggerKlines: Kline[];
+  closed5m: Kline[];
+  closed1h: Kline[];
+  closed1d: Kline[];
+  btMulti: BacktestResult;
+  btStd: BacktestResult | null;
+  btConf: BacktestResult | null;
+  btScore: BacktestResult | null;
+  btMF: BacktestResult | null;
+}
+
+/**
+ * Canonical unified strategy selector for an asset and trading profile.
+ * Homogeneously evaluates all 5 quantitative engines under target execution horizon.
+ */
+export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
+  const { symbol, data5m, data1h, data1d, executionStyle = 'dayTrading', triggerMode = 'agresivo', scoringWeights } = ctx;
+
+  const rawTargetInterval = ctx.targetInterval || (executionStyle === 'swing' ? '1h' : '5m');
+
+  const closed5m = getConfirmedClosedKlines(data5m || [], '5m', symbol);
+  const closed1h = getConfirmedClosedKlines(data1h || [], '1h', symbol);
+  const closed1d = getConfirmedClosedKlines(data1d || [], '1d', symbol);
+
+  // Exact resolution of trigger series matching the targetInterval
+  let triggerKlines: Kline[];
+  let evalInterval: string;
+
+  if (rawTargetInterval === '1d') {
+    triggerKlines = closed1d;
+    evalInterval = '1d';
+  } else if (rawTargetInterval === '1h' || executionStyle === 'swing') {
+    triggerKlines = closed1h;
+    evalInterval = '1h';
+  } else {
+    triggerKlines = closed5m;
+    evalInterval = '5m';
+  }
+
+  const btStd = triggerKlines.length > 20 ? backtestStandard(triggerKlines, evalInterval, symbol) : null;
+  const btConf = triggerKlines.length > 20 ? backtestConfluencia(triggerKlines, evalInterval, symbol) : null;
+  const btScore = triggerKlines.length > 20 ? backtestScoring(triggerKlines, evalInterval, scoringWeights, symbol) : null;
+
+  // Multi-temporal engines (VCME Sniper & Multifractal MTF) always evaluate on their native MTF trigger series:
+  const vcmeTrigger = executionStyle === 'swing' ? closed1h : closed5m;
+  const vcmeInterval = executionStyle === 'swing' ? '1h' : '5m';
+
+  let btMulti: BacktestResult;
+  if (evalInterval === '1d') {
+    btMulti = createFallbackBacktestResult('no aplicable en 1D', 'N/A');
+  } else if (vcmeTrigger.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
+    btMulti = backtestMultitemporal(vcmeTrigger, closed1h, closed1d, vcmeInterval, symbol, executionStyle, triggerMode);
+  } else {
+    btMulti = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
+  }
+
+  let btMF: BacktestResult;
+  if (evalInterval === '1d' || evalInterval === '1h') {
+    btMF = createFallbackBacktestResult('no aplicable fuera de 5m', 'N/A');
+  } else if (closed5m.length >= 30 && closed1h.length >= 60 && closed1d.length >= 30) {
+    btMF = backtestMultifractalMTF(closed5m, closed1h, closed1d, '5m', symbol);
+  } else {
+    btMF = createFallbackBacktestResult('datos insuficientes', '12 velas (1 hs max)');
+  }
+
+  const candidates: StrategyCandidate[] = [
+    {
+      key: 'standard',
+      label: 'Estándar',
+      profitFactor: btStd ? btStd.profitFactor : null,
+      expectancyR: btStd ? btStd.expectancyR : 0,
+      expectancyPerHour: btStd ? btStd.expectancyPerHour : 0,
+      avgExposureHours: btStd ? btStd.avgExposureHours : 0,
+      winRate: btStd ? btStd.winRate : 0.5,
+      resolved: btStd ? (btStd.totalSignals > 0 ? btStd.totalSignals : btStd.wins + btStd.losses) : 0,
+      maxDrawdownR: btStd?.maxDrawdownR,
+      sortinoRatio: btStd?.sortinoRatio,
+      maxLossStreak: btStd?.maxLossStreak,
+      longStats: btStd?.longStats,
+      shortStats: btStd?.shortStats,
+      regimeStats: btStd?.regimeStats,
+      walkForward: btStd?.walkForward,
+      forwardWindow: 6,
+    },
+    {
+      key: 'confluencia',
+      label: 'Confluencia',
+      profitFactor: btConf ? btConf.profitFactor : null,
+      expectancyR: btConf ? btConf.expectancyR : 0,
+      expectancyPerHour: btConf ? btConf.expectancyPerHour : 0,
+      avgExposureHours: btConf ? btConf.avgExposureHours : 0,
+      winRate: btConf ? btConf.winRate : 0.5,
+      resolved: btConf ? (btConf.totalSignals > 0 ? btConf.totalSignals : btConf.wins + btConf.losses) : 0,
+      maxDrawdownR: btConf?.maxDrawdownR,
+      sortinoRatio: btConf?.sortinoRatio,
+      maxLossStreak: btConf?.maxLossStreak,
+      longStats: btConf?.longStats,
+      shortStats: btConf?.shortStats,
+      regimeStats: btConf?.regimeStats,
+      walkForward: btConf?.walkForward,
+      forwardWindow: 6,
+    },
+    {
+      key: 'scoring',
+      label: 'Scoring',
+      profitFactor: btScore ? btScore.profitFactor : null,
+      expectancyR: btScore ? btScore.expectancyR : 0,
+      expectancyPerHour: btScore ? btScore.expectancyPerHour : 0,
+      avgExposureHours: btScore ? btScore.avgExposureHours : 0,
+      winRate: btScore ? btScore.winRate : 0.5,
+      resolved: btScore ? (btScore.totalSignals > 0 ? btScore.totalSignals : btScore.wins + btScore.losses) : 0,
+      maxDrawdownR: btScore?.maxDrawdownR,
+      sortinoRatio: btScore?.sortinoRatio,
+      maxLossStreak: btScore?.maxLossStreak,
+      longStats: btScore?.longStats,
+      shortStats: btScore?.shortStats,
+      regimeStats: btScore?.regimeStats,
+      walkForward: btScore?.walkForward,
+      forwardWindow: 6,
+    },
+    {
+      key: 'multitemporal',
+      label: 'VCME Sniper',
+      profitFactor: btMulti.profitFactor,
+      expectancyR: btMulti.expectancyR,
+      expectancyPerHour: btMulti.expectancyPerHour,
+      avgExposureHours: btMulti.avgExposureHours,
+      winRate: btMulti.winRate,
+      resolved: btMulti.totalSignals > 0 ? btMulti.totalSignals : btMulti.wins + btMulti.losses,
+      maxDrawdownR: btMulti?.maxDrawdownR,
+      sortinoRatio: btMulti?.sortinoRatio,
+      maxLossStreak: btMulti?.maxLossStreak,
+      longStats: btMulti?.longStats,
+      shortStats: btMulti?.shortStats,
+      regimeStats: btMulti?.regimeStats,
+      walkForward: btMulti?.walkForward,
+      forwardWindow: executionStyle === 'swing' ? 48 : 72,
+    },
+    {
+      key: 'multifractal',
+      label: 'Multifractal MTF',
+      profitFactor: btMF.profitFactor,
+      expectancyR: btMF.expectancyR,
+      expectancyPerHour: btMF.expectancyPerHour,
+      avgExposureHours: btMF.avgExposureHours,
+      winRate: btMF.winRate,
+      resolved: btMF.totalSignals > 0 ? btMF.totalSignals : btMF.wins + btMF.losses,
+      maxDrawdownR: btMF?.maxDrawdownR,
+      sortinoRatio: btMF?.sortinoRatio,
+      maxLossStreak: btMF?.maxLossStreak,
+      longStats: btMF?.longStats,
+      shortStats: btMF?.shortStats,
+      regimeStats: btMF?.regimeStats,
+      walkForward: btMF?.walkForward,
+      forwardWindow: 12,
+    },
+  ];
+
+  const tournament = evaluateStrategyTournament(candidates, evalInterval);
+  const bestStrategy = tournament.bestStrategy;
+  const strategyLabel = tournament.strategyLabel;
+  const bestCandidate = candidates.find(c => c.key === bestStrategy);
+  const bestWinRate = bestCandidate ? bestCandidate.winRate : btMulti.winRate;
+
+  return {
+    bestStrategy,
+    strategyLabel,
+    confidence: tournament.confidence,
+    profitFactor: tournament.profitFactor,
+    winRate: bestWinRate,
+    expectancyR: tournament.expectancyR,
+    expectancyPerHour: tournament.expectancyPerHour,
+    tournament,
+    candidates,
+    targetInterval: evalInterval,
+    triggerKlines,
+    closed5m,
+    closed1h,
+    closed1d,
+    btMulti,
+    btStd,
+    btConf,
+    btScore,
+    btMF,
   };
 }

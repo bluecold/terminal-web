@@ -889,7 +889,7 @@ export function evaluateVCMESniperAt(
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedLong(hIdx)) continue;
+    if (isInvalidatedLong(hIdx)) break;
     if (isSetupLongCandle(hIdx)) {
       setupArmedLong = true;
       break;
@@ -900,7 +900,7 @@ export function evaluateVCMESniperAt(
   for (let offset = 0; offset < 3; offset++) {
     const hIdx = idx1h - offset;
     if (hIdx < 1) break;
-    if (isInvalidatedShort(hIdx)) continue;
+    if (isInvalidatedShort(hIdx)) break;
     if (isSetupShortCandle(hIdx)) {
       setupArmedShort = true;
       break;
@@ -1131,7 +1131,13 @@ export function evaluateVCMESniperAt(
     const distRatio = Math.abs(curr5m.close - ema21Val) / (atr5m || 1);
     const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
     const vwapScore = 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0));
-    return Number((volScore + macroScore + macdScore + distScore + vwapScore).toFixed(2));
+    const totalScore = volScore + macroScore + macdScore + distScore + vwapScore;
+
+    // Directional veto penalty: direct conflict with 1D bias cuts confidence in half
+    if ((isLong && bias1D === 'BAJISTA') || (!isLong && bias1D === 'ALCISTA')) {
+      return Number((totalScore * 0.5).toFixed(2));
+    }
+    return Number(totalScore.toFixed(2));
   };
 
   const confidenceScoreLong = getContinuousConfidence('LONG');
@@ -1162,8 +1168,16 @@ export function evaluateVCMESniperAt(
   let mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
   let triggerDetail = 'Sin disparo de gatillo';
 
-  const triggerLong = (setupArmedLong && (condPullbackLong || condBreakoutLong)) && qualityLong;
-  const triggerShort = (setupArmedShort && (condPullbackShort || condBreakoutShort)) && qualityShort;
+  const isBiasCompatibleLong = ctx.style === 'swing'
+    ? bias1D === 'ALCISTA'
+    : bias1D !== 'BAJISTA';
+
+  const isBiasCompatibleShort = ctx.style === 'swing'
+    ? bias1D === 'BAJISTA'
+    : bias1D !== 'ALCISTA';
+
+  const triggerLong = isBiasCompatibleLong && (setupArmedLong && (condPullbackLong || condBreakoutLong)) && qualityLong;
+  const triggerShort = isBiasCompatibleShort && (setupArmedShort && (condPullbackShort || condBreakoutShort)) && qualityShort;
   const triggerMRLong = condMRLong && qualityLong;
   const triggerMRShort = condMRShort && qualityShort;
 
@@ -1197,7 +1211,9 @@ export function evaluateVCMESniperAt(
 
   if (signal === 'NEUTRAL') {
     const isCrypto = ctx.symbol ? (ctx.symbol.endsWith('USDT') || ctx.symbol.endsWith('BTC')) : true;
-    if (!setupArmedLong && !setupArmedShort) {
+    if ((setupArmedLong && !isBiasCompatibleLong) || (setupArmedShort && !isBiasCompatibleShort)) {
+      discardReason = 'regimeFilter';
+    } else if (!setupArmedLong && !setupArmedShort) {
       discardReason = 'regimeFilter';
     } else if (rvol < (isCrypto ? 1.5 : 1.2)) {
       discardReason = 'volumeFilter';
@@ -1208,13 +1224,7 @@ export function evaluateVCMESniperAt(
     }
   }
 
-  let tradeType: 'DAY' | 'SWING' = 'DAY';
-  if (lastAdx1d > 30) {
-    if ((signal === 'BUY' && macdHist1h > macdHistPrev1h) ||
-        (signal === 'SELL' && macdHist1h < macdHistPrev1h)) {
-      tradeType = 'SWING';
-    }
-  }
+  const tradeType: 'DAY' | 'SWING' = ctx.style === 'swing' ? 'SWING' : 'DAY';
 
   let confidence: 'ALTA' | 'MODERADA' | 'DESCARTAR' = 'DESCARTAR';
   if (signal !== 'NEUTRAL') {
