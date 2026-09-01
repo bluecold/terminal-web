@@ -10,7 +10,7 @@ import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
-import { createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult } from './utils/backtester';
+import { createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult, type DirectionalStats } from './utils/backtester';
 import { runQVESelection, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
 import { APP_VERSION } from './version';
 import {
@@ -364,7 +364,16 @@ function App() {
   const lastSignalsRef = useRef<Record<string, string>>({});
 
   // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, { strategy: string; pf: number | null; winRate?: number; confidence?: ConfidenceLevel; strategyLabel?: string; timestamp: number }>>({});
+  const bestStrategyRef = useRef<Record<string, {
+    strategy: string;
+    pf: number | null;
+    winRate?: number;
+    confidence?: ConfidenceLevel;
+    strategyLabel?: string;
+    longStats?: DirectionalStats;
+    shortStats?: DirectionalStats;
+    timestamp: number;
+  }>>({});
 
   // 2h Cooldown for notifications/logging per symbol and timeframe
   const alertCooldownsRef = useRef<Record<string, number>>({});
@@ -445,6 +454,8 @@ function App() {
               winRate: qve.winRate,
               confidence: bestConfidence,
               strategyLabel,
+              longStats: qve.tournament.longStats,
+              shortStats: qve.tournament.shortStats,
               timestamp: now,
             };
           } else {
@@ -526,6 +537,16 @@ function App() {
           }
 
           // ── Check signal validity & handle Cooldown ──────────────────────
+          const isBuySig = overallSignal.includes('BUY');
+          const isSellSig = overallSignal.includes('SELL');
+          const currentCached = bestStrategyRef.current[symbol];
+          const dirStats = isBuySig ? currentCached?.longStats : (isSellSig ? currentCached?.shortStats : undefined);
+          const isDirectionalEdgeNegative = dirStats !== undefined && dirStats.signals >= 2 && dirStats.expectancyR < 0;
+
+          if (isDirectionalEdgeNegative) {
+            overallSignal = 'NEUTRAL';
+          }
+
           const signalKey = `${symbol}-${signalInterval}`;
           const prevSignal = lastSignalsRef.current[signalKey];
           const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');

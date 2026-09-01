@@ -46,6 +46,8 @@ export interface TournamentResult {
   maxDrawdownR?: number;
   sortinoRatio?: number | null;
   walkForward?: WalkForwardResult;
+  longStats?: DirectionalStats;
+  shortStats?: DirectionalStats;
   reasoning: string;
 }
 
@@ -164,7 +166,7 @@ export function evaluateStrategyTournament(
       } else if (c.walkForward.status === 'INSUFFICIENT_OOS') {
         wfMultiplier = 0.90; // Mild uncertainty: positive OOS trades exist but sample < minOosTrades
       } else if (c.walkForward.status === 'NO_OOS_TRADES') {
-        wfMultiplier = 0.80; // Absence of activity in recent 30% of timeline
+        wfMultiplier = 0.80;
       }
     }
 
@@ -172,11 +174,13 @@ export function evaluateStrategyTournament(
     return baseScore * sampleConfidence;
   };
 
-  // 1. Check for HIGH confidence candidates (meets minHighResolved, E[R] > 0, PF >= 1.15 or null with large N, AND WF === PASS)
+  // 1. Check for HIGH confidence candidates (resolved >= minHighResolved, PF >= 1.25, expR > 0, and WF passed)
   const highCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
-      const pfOk = c.profitFactor === null ? c.resolved >= minHighResolved : c.profitFactor >= 1.15;
+      const pfOk = c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0
+        ? true
+        : c.profitFactor >= 1.25;
       const wfOk = !c.walkForward || c.walkForward.status === 'PASS';
       return c.resolved >= minHighResolved && pfOk && expR > 0 && wfOk;
     })
@@ -211,19 +215,22 @@ export function evaluateStrategyTournament(
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
       walkForward: winner.walkForward,
+      longStats: winner.longStats,
+      shortStats: winner.shortStats,
       reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades)`,
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (at least 1 resolved trade, expR > 0 or PF >= 0.95)
+  // 2. Check for LIMITED confidence candidates (at least 1 resolved trade, strictly positive expectancy expR > 0 and PF >= 1.0)
   const limitedCandidates = candidates
     .filter(c => {
       const { expR } = getMetrics(c);
       if (c.resolved < 1) return false;
+      if (expR <= 0) return false;
       if (c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0) {
-        return expR > 0;
+        return true;
       }
-      return c.profitFactor >= (c.resolved === 1 ? 1.15 : 0.95) || expR > 0;
+      return c.profitFactor >= (c.resolved === 1 ? 1.15 : 1.0);
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
     .sort((a, b) => b.score - a.score);
@@ -253,12 +260,13 @@ export function evaluateStrategyTournament(
       maxDrawdownR: winner.maxDrawdownR,
       sortinoRatio: winner.sortinoRatio,
       walkForward: winner.walkForward,
+      longStats: winner.longStats,
+      shortStats: winner.shortStats,
       reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfFailNote})`,
     };
   }
 
   // 3. Fallback: No candidate qualifies with positive edge or reliable sample
-  // In institutional quant execution, when no strategy demonstrates positive statistical edge, stay FLAT (NONE)
   return {
     bestStrategy: 'NONE',
     strategyLabel: 'Sin Estrategia (Flat)',
