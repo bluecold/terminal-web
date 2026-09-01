@@ -198,6 +198,21 @@ export function updateAlertsOutcome(
         : (k.time + durationSec) * 1000 > alert.timestamp;
 
       return isAfterAlert;
+    }).map(k => {
+      const candleStartMs = k.time * 1000;
+      // If the alert was fired inside this candle (entry occurred mid-candle):
+      // The position cannot retroactively trigger on pre-alert extremes that happened before alert.timestamp.
+      // We bound the candle extremes to only what the market has reached since entry (from alert.entryPrice to k.close).
+      if (candleStartMs <= alert.timestamp) {
+        return {
+          ...k,
+          open: alert.entryPrice,
+          high: Math.max(alert.entryPrice, k.close),
+          low: Math.min(alert.entryPrice, k.close),
+        };
+      }
+      // Candles fully after the entry candle preserve authentic OHLC
+      return k;
     });
 
     const isMultifractal = alert.strategy?.includes('Multifractal');

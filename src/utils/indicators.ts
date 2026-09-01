@@ -1831,8 +1831,8 @@ export function getEffectiveExecutionPrice(
 
   if (rawKlines && rawKlines.length > closedKlines.length) {
     const liveCandle = rawKlines[rawKlines.length - 1];
-    if (liveCandle && liveCandle.open > 0) {
-      return liveCandle.open;
+    if (liveCandle && liveCandle.close > 0) {
+      return liveCandle.close;
     }
   }
 

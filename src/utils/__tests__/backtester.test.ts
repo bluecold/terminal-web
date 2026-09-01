@@ -435,13 +435,13 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(pass3[0].status, 'TP1_BE_CLOSED', 'Alert should transition to TP1_BE_CLOSED only when post-TP1 candle hits entry price');
   });
 
-  // Test 18: Live forming candle intra-bar TP/SL execution vs close-based exits
-  test('updateAlertsOutcome executes intra-candle TP/SL immediately on forming candle but guards close-based exits', () => {
+  // Test 18: Pre-alert extreme immunity on mid-candle entry and live execution
+  test('updateAlertsOutcome prevents retroactive TP/SL on pre-alert extremes when scanner enters mid-candle', () => {
     const nowSec = Math.floor(Date.now() / 1000);
-    const alertTime = Date.now() - 60000; // fired 1 minute ago
+    const alertTime = Date.now() - 60000; // fired 1 minute ago (at price 100)
 
     const alert: AuditAlertItem = {
-      id: 'repainting-test-1',
+      id: 'delayed-entry-test-1',
       symbol: 'BTCUSDT',
       interval: '1h',
       signal: 'BUY',
@@ -458,22 +458,34 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       timestamp: alertTime
     };
 
-    // The live 1H candle started 10 minutes ago and is currently in formation (ends in 50 minutes)
-    // It has a spike to 125 (hits TP1 110 and TP2 120 intra-candle!), while currently trading at 105
+    // The live 1H candle started 10 minutes ago.
+    // Before the alert fired (at minute 2), price dipped to 85 and spiked to 125, but at alert time price is 105.
     const liveCandleTime = nowSec - 600;
     const klinesMap = {
       'BTCUSDT:1h': [
-        // Previous closed candle from yesterday
+        // Previous closed candle
         { time: liveCandleTime - 3600, open: 98, high: 101, low: 97, close: 100, volume: 100 },
-        // Current forming 1H candle (open now)
-        { time: liveCandleTime, open: 100, high: 125, low: 99, close: 105, volume: 100 }
+        // Current forming 1H candle where alert was fired mid-candle
+        { time: liveCandleTime, open: 100, high: 125, low: 85, close: 105, volume: 100 }
       ]
     };
 
     const updated = updateAlertsOutcome([alert], klinesMap);
-    // In live execution, hitting TP2 (125 >= 120) fills the TP limit orders immediately on the exchange
-    assert.strictEqual(updated[0].status, 'TP2_HIT', 'Alert must progress to TP2_HIT because TP limit was filled intra-candle');
-    assert(updated[0].pnlPercent > 0, 'PnL should reflect locked TP1 + TP2 partials + floating runner');
+    // Alert should NOT falsely trigger SL_HIT (low 85) or TP2_HIT (high 125) from pre-alert extremes!
+    assert.strictEqual(updated[0].status, 'OPEN', 'Alert must stay OPEN and not execute retroactive pre-alert extremes');
+    assert.strictEqual(updated[0].pnlPercent, 4.92, 'Floating PnL reflects net move from 100 to 105');
+
+    // On the subsequent candle, price reaches TP1 (115) and executes immediately
+    const nextCandleTime = liveCandleTime + 3600;
+    const klinesMapPass2 = {
+      'BTCUSDT:1h': [
+        { time: liveCandleTime - 3600, open: 98, high: 101, low: 97, close: 100, volume: 100 },
+        { time: liveCandleTime, open: 100, high: 105, low: 99, close: 105, volume: 100 },
+        { time: nextCandleTime, open: 105, high: 115, low: 104, close: 112, volume: 100 }
+      ]
+    };
+    const updatedPass2 = updateAlertsOutcome([alert], klinesMapPass2);
+    assert.strictEqual(updatedPass2[0].status, 'TP1_HIT', 'Subsequent candle touching 115 triggers TP1_HIT');
   });
 
   // Test 19: Multi-Timeframe Cache Invalidation via Auxiliary Timeframe Fingerprint
@@ -2395,11 +2407,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(priceClosedMarket, 109, `In closed market, execution price must equal trigger close (got ${priceClosedMarket})`);
 
     // Case 2: Live session actively forming candle (rawKlines has extra candle i+1)
-    // The price must be Open_{i+1} (112, the opening price of the new live candle)
+    // The price must be Close_{live} (112.5, the real-time quote/provisional close of the forming candle)
     const liveCandleForming = { time: 1700000600, open: 112, high: 113, low: 111, close: 112.5, volume: 200 };
     const rawLiveMarket = [closedCandle1, closedCandle2, liveCandleForming];
     const priceLiveMarket = getEffectiveExecutionPrice(rawLiveMarket, closedKlines);
-    assert.strictEqual(priceLiveMarket, 112, `In live market with forming candle, execution price must equal Open_{i+1} (got ${priceLiveMarket})`);
+    assert.strictEqual(priceLiveMarket, 112.5, `In live market with forming candle, execution price must equal live quote (got ${priceLiveMarket})`);
   });
 
   // Test 82: runQVESelection propagates custom scoringWeights to backtestScoring
