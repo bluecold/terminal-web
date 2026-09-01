@@ -82,8 +82,8 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // Target minimum resolved trades for HIGH and LIMITED confidence
-  const minHighResolved = timeframe === '5m' ? 12 : timeframe === '1h' ? 6 : 4;
+  // Target minimum In-Sample resolved trades for HIGH and LIMITED confidence
+  const minHighResolved = timeframe === '5m' ? 8 : timeframe === '1h' ? 5 : 3;
   const minLimitedResolved = timeframe === '5m' ? 3 : timeframe === '1h' ? 3 : 2;
 
   // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
@@ -162,7 +162,7 @@ export function evaluateStrategyTournament(
   };
 
   // 1. Check for HIGH confidence candidates:
-  // - In-Sample robust edge: resolved >= minHighResolved, PF >= 1.25, expR > 0
+  // - In-Sample robust edge: isMetrics.resolved >= minHighResolved, isMetrics.profitFactor >= 1.25, isMetrics.expR > 0
   // - Blind Out-of-Sample Certification: c.walkForward.status === 'PASS' (OOS confirms positive edge in blind validation)
   // - Regime Hard Gate: Strategy must NOT possess negative expectancy in the active market regime
   const highCandidates = candidates
@@ -181,9 +181,10 @@ export function evaluateStrategyTournament(
         }
       }
 
-      return c.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk && regimeOk;
+      return isMetrics.resolved >= minHighResolved && pfOk && isMetrics.expR > 0 && wfOk && regimeOk;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
+    .filter(item => item.score > 0)
     .sort((a, b) => b.score - a.score);
 
   if (highCandidates.length > 0) {
@@ -224,12 +225,14 @@ export function evaluateStrategyTournament(
     };
   }
 
-  // 2. Check for LIMITED confidence candidates (minimum sample minLimitedResolved, positive expectancy, WF not FAIL, and regime not toxic)
+  // 2. Check for LIMITED confidence candidates:
+  // - In-Sample minimum sample (isMetrics.resolved >= minLimitedResolved), positive In-Sample edge (isMetrics.expR > 0, score > 0)
+  // - Strict WF gating (status !== 'FAIL') and non-toxic active regime
   const limitedCandidates = candidates
     .filter(c => {
-      const { expR } = getMetrics(c);
-      if (c.resolved < minLimitedResolved) return false;
-      if (expR <= 0) return false;
+      const isMetrics = getMetrics(c, true);
+      if (isMetrics.resolved < minLimitedResolved) return false;
+      if (isMetrics.expR <= 0) return false;
       // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
       if (c.walkForward && c.walkForward.status === 'FAIL') return false;
 
@@ -241,12 +244,13 @@ export function evaluateStrategyTournament(
         }
       }
 
-      if (c.profitFactor === null || !Number.isFinite(c.profitFactor) || c.profitFactor >= 99.0) {
+      if (isMetrics.profitFactor === null || !Number.isFinite(isMetrics.profitFactor) || isMetrics.profitFactor >= 99.0) {
         return true;
       }
-      return c.profitFactor >= 1.0;
+      return isMetrics.profitFactor >= 1.0;
     })
     .map(c => ({ candidate: c, score: calcScore(c) }))
+    .filter(item => item.score > 0)
     .sort((a, b) => b.score - a.score);
 
   if (limitedCandidates.length > 0) {

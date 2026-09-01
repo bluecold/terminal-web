@@ -1882,7 +1882,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     // 1. Single trade in OOS with +0.01R must result in INSUFFICIENT_OOS and passed = false
     const tradesSingleLucky: RecordedTrade[] = [
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10 },
-      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 20 },
+      { dir: 'BUY', realizedR: 0.8, pnlPct: 3.2, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 0.5, pnlPct: 2.0, outcome: 'win', entryIdx: 40 },
+      { dir: 'BUY', realizedR: 0.7, pnlPct: 2.8, outcome: 'win', entryIdx: 50 },
+      { dir: 'BUY', realizedR: 0.6, pnlPct: 2.4, outcome: 'win', entryIdx: 60 },
       { dir: 'BUY', realizedR: 0.01, pnlPct: 0.04, outcome: 'win', entryIdx: 85 } // 1 trade in OOS
     ];
     const wfSingle = calculateWalkForward(tradesSingleLucky, 0, 99, 0.70, 5);
@@ -1911,7 +1915,13 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     // 3. Robust candidate with 5 OOS trades with E[R] > 0 unlocks HIGH confidence
     const tradesRobustOOS: RecordedTrade[] = [
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10 },
-      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 18 },
+      { dir: 'BUY', realizedR: 0.8, pnlPct: 3.2, outcome: 'win', entryIdx: 24 },
+      { dir: 'BUY', realizedR: 0.5, pnlPct: 2.0, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 0.7, pnlPct: 2.8, outcome: 'win', entryIdx: 36 },
+      { dir: 'BUY', realizedR: 0.6, pnlPct: 2.4, outcome: 'win', entryIdx: 42 },
+      { dir: 'BUY', realizedR: 0.9, pnlPct: 3.6, outcome: 'win', entryIdx: 48 },
+      { dir: 'BUY', realizedR: 0.5, pnlPct: 2.0, outcome: 'win', entryIdx: 54 },
       { dir: 'BUY', realizedR: 0.5, pnlPct: 2.0, outcome: 'win', entryIdx: 72 },
       { dir: 'BUY', realizedR: 0.6, pnlPct: 2.4, outcome: 'win', entryIdx: 78 },
       { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', entryIdx: 82 },
@@ -2169,8 +2179,11 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // 2. Walk-Forward adaptive capacity on a 50-candle OOS window with 25-candle cycle
     const mockTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 10 },
       { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 20 },
-      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 50 },
+      { dir: 'BUY', realizedR: 1.2, pnlPct: 4.8, outcome: 'win', entryIdx: 30 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 40 },
+      { dir: 'BUY', realizedR: 1.4, pnlPct: 5.6, outcome: 'win', entryIdx: 50 },
       // 2 OOS trades in a 50-candle window (capacity = 2)
       { dir: 'BUY', realizedR: 1.2, pnlPct: 4.8, outcome: 'win', entryIdx: 75 },
       { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 90 }
@@ -3064,6 +3077,38 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(tourneyRanging.bestStrategy, 'confluencia', 'Range strategy must win in ranging regime');
     assert.strictEqual(tourneyRanging.confidence, 'HIGH');
     assert.ok(tourneyRanging.reasoning.includes('💤 Rango (ADX≤25)'));
+  });
+
+  // Test 97: Rejection of negative In-Sample candidates from LIMITED confidence (zero score / no edge)
+  test('evaluateStrategyTournament strictly rejects candidates with negative In-Sample expectancy from LIMITED', () => {
+    // Candidate with negative In-Sample (-0.20R) but positive OOS (+0.60R) making full sample positive (+0.10R)
+    // Because ranking and edge determination must be based strictly on In-Sample, this candidate has NO valid edge
+    const negativeISCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Negative IS Edge',
+      profitFactor: 1.2,
+      expectancyR: 0.10,
+      expectancyPerHour: 0.20,
+      avgExposureHours: 0.5,
+      winRate: 0.55,
+      resolved: 14,
+      forwardWindow: 6,
+      maxDrawdownR: 2.0,
+      sortinoRatio: 0.5,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 10, wins: 3, losses: 7, winRate: 0.30, expectancyR: -0.20, profitFactor: 0.5, maxDrawdownR: 2.0 },
+        outOfSample: { signals: 4, wins: 3, losses: 1, winRate: 0.75, expectancyR: 0.60, profitFactor: 2.5, maxDrawdownR: 0.5 },
+        passed: false,
+        status: 'INSUFFICIENT_OOS' // OOS is not enough to PASS anyway, but total sample looks positive
+      }
+    };
+
+    const tourney = evaluateStrategyTournament([negativeISCandidate], '5m');
+    assert.strictEqual(tourney.confidence, 'NONE', 'Candidate with negative In-Sample expectancy must return NONE');
+    assert.strictEqual(tourney.bestStrategy, 'NONE');
+    assert.strictEqual(tourney.compositeScore, 0);
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
