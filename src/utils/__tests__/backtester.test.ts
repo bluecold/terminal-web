@@ -1112,14 +1112,35 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(mfCustom.triggerPrice, customExecPrice, 'Multifractal triggerPrice must strictly equal customExecPrice');
   });
 
-  // Test 38: VCME Swing Mode Window Reachability for Stocks (evalWindow = 168)
+  // Test 38: VCME Swing Mode Window Reachability for Stocks (evalWindow = 168) with authentic NYSE Session Gaps
   test('VCME Swing mode evaluates on stock datasets with ~300-440 1H candles (evalWindow = 168)', () => {
-    // 350 hourly candles (typical 2-month stock data or 440 3-month data)
-    const klines1h = generateSyntheticKlines(350, 3600, 150);
+    // 350 hourly candles across authentic trading sessions (7 1H candles per day with overnight gaps)
+    const stockKlines1h: Kline[] = [];
+    let t = 1700000000;
+    let price = 150;
+    for (let day = 0; day < 50; day++) {
+      // 7 1H candles per NYSE trading day (09:30 - 16:30)
+      for (let h = 0; h < 7; h++) {
+        price += (Math.sin(day * 0.2 + h * 0.1) * 0.5) + (Math.random() - 0.48) * 1.5;
+        stockKlines1h.push({
+          time: t,
+          open: price,
+          high: price + 1.5,
+          low: price - 1.5,
+          close: price + (Math.random() - 0.5),
+          volume: 10000 + Math.random() * 5000,
+        });
+        t += 3600;
+      }
+      // Overnight gap of 17 hours (or weekend gap every 5 days)
+      t += (day % 5 === 4 ? 65 : 17) * 3600;
+    }
+
     const klines1d = generateSyntheticKlines(60, 86400, 150);
 
-    const result = backtestMultitemporal(klines1h, klines1h, klines1d, '1h', 'AAPL', 'swing', 'agresivo');
+    const result = backtestMultitemporal(stockKlines1h, stockKlines1h, klines1d, '1h', 'AAPL', 'swing', 'agresivo');
     assert.strictEqual(result.insufficient, false, 'VCME Swing must evaluate successfully with 350 1H candles');
+    assert.strictEqual(result.discards.sessionGap, 0, 'VCME Swing must NOT discard signals due to session boundaries');
     assert.strictEqual(result.forwardLabel, '48 hs max (Swing)');
     assert(result.label.includes('1h'), 'Label must indicate 1h candles');
   });

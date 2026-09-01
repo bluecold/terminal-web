@@ -832,7 +832,7 @@ export function backtestMultitemporal(
       continue;
     }
 
-    if (isSessionBased && isNearSessionEnd(klines5m, i, tf, 6)) {
+    if (isSessionBased && style === 'dayTrading' && isNearSessionEnd(klines5m, i, tf, 6)) {
       discards.sessionGap++;
       neutrals++;
       continue;
