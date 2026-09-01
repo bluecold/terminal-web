@@ -88,7 +88,7 @@ export function evaluateStrategyTournament(
 
   // Helper to extract duration and normalized R metrics for ranking (using In-Sample if available)
   const getMetrics = (c: StrategyCandidate, useInSample: boolean = false) => {
-    const hasIS = useInSample && c.walkForward && c.walkForward.inSample && c.walkForward.inSample.signals > 0;
+    const hasIS = useInSample && Boolean(c.walkForward && c.walkForward.inSample);
     const is = hasIS ? c.walkForward!.inSample : undefined;
 
     const expR = is ? is.expectancyR : (c.expectancyR ?? 0);

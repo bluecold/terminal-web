@@ -3355,6 +3355,51 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(regimes[6], 'ranging', '24.0 ADX without previous trend must retain ranging');
   });
 
+  // Test 103: Candidate with 0 In-Sample trades must be rejected to FLAT/NONE even if OOS has positive trades
+  test('evaluateStrategyTournament rejects candidate with 0 In-Sample trades without falling back to full sample', () => {
+    const zeroISCandidate: StrategyCandidate = {
+      key: 'confluencia',
+      label: 'Zero IS Strategy',
+      profitFactor: 3.0,
+      expectancyR: 0.80,
+      expectancyPerHour: 1.6,
+      avgExposureHours: 0.5,
+      winRate: 0.75,
+      resolved: 8,
+      forwardWindow: 6,
+      maxDrawdownR: 0.5,
+      sortinoRatio: 2.0,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: {
+          signals: 0,
+          wins: 0,
+          losses: 0,
+          winRate: 0,
+          expectancyR: 0,
+          profitFactor: null,
+          maxDrawdownR: 0
+        },
+        outOfSample: {
+          signals: 8,
+          wins: 6,
+          losses: 2,
+          winRate: 0.75,
+          expectancyR: 0.80,
+          profitFactor: 3.0,
+          maxDrawdownR: 0.5
+        },
+        passed: true,
+        status: 'PASS'
+      }
+    };
+
+    const tourney = evaluateStrategyTournament([zeroISCandidate], '5m');
+    assert.strictEqual(tourney.bestStrategy, 'NONE', 'Candidate with 0 IS trades must be rejected to FLAT/NONE');
+    assert.strictEqual(tourney.confidence, 'NONE');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
