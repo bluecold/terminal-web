@@ -375,8 +375,25 @@ function App() {
     timestamp: number;
   }>>({});
 
-  // 2h Cooldown for notifications/logging per symbol and timeframe
-  const alertCooldownsRef = useRef<Record<string, number>>({});
+  // Cooldown for notifications/logging per symbol and timeframe (persisted in localStorage)
+  const alertCooldownsRef = useRef<Record<string, number>>((() => {
+    try {
+      const saved = localStorage.getItem('terminal_alert_cooldowns');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error parsing alert cooldowns from local storage', e);
+    }
+    return {};
+  })());
+
+  const setAlertCooldown = (key: string, timestamp: number) => {
+    alertCooldownsRef.current[key] = timestamp;
+    try {
+      localStorage.setItem('terminal_alert_cooldowns', JSON.stringify(alertCooldownsRef.current));
+    } catch (e) {
+      console.error('Error saving alert cooldowns to local storage', e);
+    }
+  };
 
   // Timestamp of the last completed scanner run (task #4)
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
@@ -586,8 +603,8 @@ function App() {
           // 2. This closed candle has not already fired (atomic candle deduplication)
           // 3. Direction has changed (instant reversal), cooldown has elapsed (continuation setup), or it's cold start
           if (isActionableSignal && !alreadyFiredForCandle && (isDirectionChange || isCooldownElapsed || isFirstScan)) {
-            // Set alert cooldown timestamp
-            alertCooldownsRef.current[`${symbol}-${signalInterval}`] = now;
+            // Set alert cooldown timestamp with persistence
+            setAlertCooldown(`${symbol}-${signalInterval}`, now);
 
             const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
             const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
@@ -709,6 +726,16 @@ function App() {
         setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
         setAlertsLog(prev => {
           const updated = updateAlertsOutcome(prev, scannedKlinesMap);
+          // Sync post-exit cooldown when active trades reach terminal status
+          const exitNow = Date.now();
+          prev.forEach(prevAlert => {
+            if (prevAlert.status === 'OPEN' || prevAlert.status === 'TP1_HIT' || prevAlert.status === 'TP2_HIT') {
+              const closed = updated.find(u => u.id === prevAlert.id);
+              if (closed && closed.status !== 'OPEN' && closed.status !== 'TP1_HIT' && closed.status !== 'TP2_HIT') {
+                setAlertCooldown(`${closed.symbol}-${closed.interval}`, exitNow);
+              }
+            }
+          });
           localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
           return updated;
         });

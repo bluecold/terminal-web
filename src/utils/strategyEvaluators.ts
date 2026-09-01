@@ -24,6 +24,7 @@ import {
   upperWickRatio,
   lowerWickRatio,
   isHammer,
+  isShootingStar,
   isEngulfing,
   detectEmaCrossoverFromSeries,
   getOpeningRange,
@@ -107,6 +108,7 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
   const prev = ctx.klines[i - 1];
 
   const hammer = isHammer(curr);
+  const shootingStar = isShootingStar(curr);
   const engulf = isEngulfing(curr, prev);
   const bRatio = candleBodyRatio(curr);
 
@@ -121,13 +123,14 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
   const isNotOverextended = distVwapAtr <= 2.2;
 
   const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > e9;
+  const strongBearish = curr.close < curr.open && bRatio >= 0.4 && curr.close < e9;
   const bullish_candle = hammer || engulf === 1 || strongBullish;
-  const bearish_candle = engulf === -1;
+  const bearish_candle = shootingStar || engulf === -1 || strongBearish;
 
   const is_buy = curr.close > vw && e9 > e20 && curr.volume >= vAvg * 0.8
                   && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
   const is_sell = curr.close < vw && e9 < e20 && curr.volume >= vAvg * 0.8
-                  && (bearish_candle || curr.close < e20) && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
+                  && bearish_candle && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   if (is_buy) signal = 'BUY';

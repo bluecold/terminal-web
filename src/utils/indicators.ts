@@ -348,6 +348,14 @@ export function isHammer(kline: Kline): boolean {
   return lowerWick > bodySize * 2 && upperWick < bodySize * 0.2;
 }
 
+export function isShootingStar(kline: Kline): boolean {
+  const bodySize = Math.abs(kline.close - kline.open);
+  const upperWick = kline.high - Math.max(kline.close, kline.open);
+  const lowerWick = Math.min(kline.close, kline.open) - kline.low;
+  
+  return upperWick > bodySize * 2 && lowerWick < bodySize * 0.2;
+}
+
 export function isEngulfing(curr: Kline, prev: Kline): number {
   const prevIsBullish = prev.close > prev.open;
   const currIsBullish = curr.close > curr.open;
