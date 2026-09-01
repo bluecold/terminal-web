@@ -394,7 +394,10 @@ function App() {
 
       scannerRunningRef.current = true;
       try {
-      const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset]));
+      const activeAlertSymbols = alertsLogRef.current
+        .filter(a => a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT')
+        .map(a => a.symbol);
+      const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset, ...activeAlertSymbols]));
       const scannedKlinesMap: Record<string, Kline[]> = {};
 
       for (let batchStart = 0; batchStart < symbolsToScan.length; batchStart += maxConcurrentSymbolScans) {
