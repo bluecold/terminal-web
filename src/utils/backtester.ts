@@ -872,7 +872,7 @@ export function backtestMultitemporal(
           ? (k.close < ctx.vwapSeries5m[idx] && k.close < ctx.ema21_5m[idx])
           : (k.close > ctx.vwapSeries5m[idx] && k.close > ctx.ema21_5m[idx]);
       },
-      sessionGapCutoff: isSessionBased,
+      sessionGapCutoff: isSessionBased && style === 'dayTrading',
       stepSec,
       atrSeries: ctx.atrSeries5m,
       ema9Series: ctx.ema9_5m,
@@ -1027,7 +1027,7 @@ function runBacktestGenericOptimized(
       continue;
     }
 
-    if (isSessionBased && (interval === '5m' || interval === '1h')) {
+    if (isSessionBased && interval === '5m') {
       if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
         discards.sessionGap++;
         neutrals++;
