@@ -49,7 +49,7 @@ import {
 import { formatSmartPrice, formatSmartNumber, getOptimalDecimals } from '../formatters';
 import { evaluateStrategyTournament, runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate } from '../tournament';
 import { simulateTrade, type TradeLevels } from '../tradeSimulator';
-import type { Kline } from '../../services/api';
+import { sanitizeKlines, type Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
   const klines: Kline[] = [];
@@ -2671,6 +2671,40 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       'SELL',
       'SELL signal with positive E[R] must be preserved'
     );
+  });
+
+  // Test 88: sanitizeKlines filters null/NaN, repairs geometric violations, deduplicates timestamps and sorts
+  test('sanitizeKlines filters null/NaN, repairs geometric violations, deduplicates timestamps and sorts', () => {
+    const corruptedKlines: any[] = [
+      { time: 1700000300, open: 100, high: 95, low: 105, close: 102, volume: 500 }, // Corrupted high/low (high < close, low > open)
+      { time: 1700000100, open: 98, high: 101, low: 97, close: 99, volume: 300 }, // Out of chronological order
+      { time: 1700000200, open: null, high: 102, low: 98, close: 100, volume: 400 }, // Null open
+      { time: 1700000200, open: 99, high: NaN, low: 98, close: 100, volume: 400 }, // NaN high
+      { time: 1700000100, open: 98, high: 101, low: 97, close: 99, volume: 300 }, // Duplicate timestamp
+      { time: 1700000400, open: 102, high: 106, low: 101, close: 105, volume: -50 }, // Negative volume
+      { time: 1700000500, open: 105, high: 108, low: 104, close: 107, volume: undefined }, // Missing volume
+    ];
+
+    const clean = sanitizeKlines(corruptedKlines);
+
+    // Assert only valid candles survived
+    assert.strictEqual(clean.length, 4, 'Only valid non-null, non-duplicate candles must survive');
+
+    // Assert strictly ascending chronological order
+    assert.strictEqual(clean[0].time, 1700000100);
+    assert.strictEqual(clean[1].time, 1700000300);
+    assert.strictEqual(clean[2].time, 1700000400);
+    assert.strictEqual(clean[3].time, 1700000500);
+
+    // Assert geometric repair on candle 1 (was high: 95, low: 105, open: 100, close: 102)
+    assert.strictEqual(clean[1].high, 102, 'High must be at least max(open, close)');
+    assert.strictEqual(clean[1].low, 100, 'Low must be at most min(open, close)');
+
+    // Assert negative volume was clamped to 0
+    assert.strictEqual(clean[2].volume, 0, 'Negative volume must be clamped to 0');
+
+    // Assert missing/undefined volume defaulted to 0
+    assert.strictEqual(clean[3].volume, 0, 'Missing volume must default to 0');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

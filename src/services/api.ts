@@ -52,6 +52,59 @@ async function fetchWithDeduplication<T>(
   return promise;
 }
 
+/**
+ * Rigorously validates, sanitizes, geometrizes, deduplicates, and sorts OHLCV candles:
+ * - All OHLC and time values must be finite and strictly positive (> 0).
+ * - Enforces geometric bounds: high >= max(open, close), low <= min(open, close).
+ * - Volume must be finite and non-negative (defaults to 0 if missing/invalid).
+ * - Deduplicates timestamps and enforces strictly ascending chronological order.
+ */
+export function sanitizeKlines(rawKlines: Kline[]): Kline[] {
+  if (!Array.isArray(rawKlines) || rawKlines.length === 0) return [];
+
+  const seenTimes = new Set<number>();
+  const valid: Kline[] = [];
+
+  for (let i = 0; i < rawKlines.length; i++) {
+    const k = rawKlines[i];
+    if (!k) continue;
+
+    const t = typeof k.time === 'number' ? k.time : Number(k.time);
+    const o = typeof k.open === 'number' ? k.open : Number(k.open);
+    const h = typeof k.high === 'number' ? k.high : Number(k.high);
+    const l = typeof k.low === 'number' ? k.low : Number(k.low);
+    const c = typeof k.close === 'number' ? k.close : Number(k.close);
+    const v = typeof k.volume === 'number' ? k.volume : Number(k.volume);
+
+    if (
+      Number.isFinite(t) && t > 0 &&
+      Number.isFinite(o) && o > 0 &&
+      Number.isFinite(h) && h > 0 &&
+      Number.isFinite(l) && l > 0 &&
+      Number.isFinite(c) && c > 0
+    ) {
+      if (!seenTimes.has(t)) {
+        seenTimes.add(t);
+        const trueHigh = Math.max(h, o, c);
+        const trueLow = Math.min(l, o, c);
+        const trueVol = Number.isFinite(v) && v >= 0 ? v : 0;
+
+        valid.push({
+          time: t,
+          open: o,
+          high: trueHigh,
+          low: trueLow,
+          close: c,
+          volume: trueVol,
+        });
+      }
+    }
+  }
+
+  valid.sort((a, b) => a.time - b.time);
+  return valid;
+}
+
 export async function fetchBinanceKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   const cacheKey = `binance_klines_${symbol}_${interval}`;
   return fetchWithDeduplication(cacheKey, KLINE_TTL_MS, async () => {
@@ -88,26 +141,16 @@ export async function fetchBinanceKlines(symbol: string, interval: string = '1h'
         }
       }
 
-      // Deduplicate by timestamp and sort chronologically
-      const seenTimes = new Set<number>();
-      const klines: Kline[] = [];
-      for (const item of combinedRaw) {
-        const t = (item[0] as number) / 1000;
-        if (!seenTimes.has(t)) {
-          seenTimes.add(t);
-          klines.push({
-            time: t, // lightweight-charts expects seconds
-            open: parseFloat(item[1] as string),
-            high: parseFloat(item[2] as string),
-            low: parseFloat(item[3] as string),
-            close: parseFloat(item[4] as string),
-            volume: parseFloat(item[5] as string)
-          });
-        }
-      }
+      const rawKlines: Kline[] = combinedRaw.map(item => ({
+        time: (item[0] as number) / 1000,
+        open: parseFloat(item[1] as string),
+        high: parseFloat(item[2] as string),
+        low: parseFloat(item[3] as string),
+        close: parseFloat(item[4] as string),
+        volume: parseFloat(item[5] as string)
+      }));
 
-      klines.sort((a, b) => a.time - b.time);
-      return klines;
+      return sanitizeKlines(rawKlines);
     } catch (error) {
       console.error("Error fetching data from Binance", error);
       return [];
@@ -136,23 +179,23 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
       if (!result) return [];
       
       const timestamps = result.timestamp;
-      const quote = result.indicators.quote[0];
+      const quote = result.indicators.quote?.[0];
       
       if (!timestamps || !quote) return [];
       
-      const klines: Kline[] = [];
+      const rawKlines: Kline[] = [];
       for (let i = 0; i < timestamps.length; i++) {
-        if (quote.open[i] !== null && quote.open[i] !== undefined) {
-          klines.push({
-            time: timestamps[i],
-            open: quote.open[i],
-            high: quote.high[i],
-            low: quote.low[i],
-            close: quote.close[i],
-            volume: quote.volume[i] || 0
-          });
-        }
+        rawKlines.push({
+          time: timestamps[i],
+          open: quote.open ? quote.open[i] : NaN,
+          high: quote.high ? quote.high[i] : NaN,
+          low: quote.low ? quote.low[i] : NaN,
+          close: quote.close ? quote.close[i] : NaN,
+          volume: quote.volume ? quote.volume[i] : 0
+        });
       }
+
+      const klines = sanitizeKlines(rawKlines);
 
       // Pre-populate ticker summary cache if fetching daily klines
       if (interval === '1d' && klines.length >= 1) {
