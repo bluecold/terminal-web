@@ -1817,10 +1817,10 @@ export function getConfirmedClosedKlines(
 
 /**
  * Resolves the authentic, causal execution price for a quantitative signal setup:
- * - If a new live forming candle exists (rawKlines.length > closedKlines.length):
- *   returns rawKlines[last].open (the true Open_{i+1} of the newly opened candle).
+ * - If a live forming candle exists in an active session (rawKlines.length > closedKlines.length):
+ *   returns rawKlines[last].close (the real-time market quote / provisional close at alert time).
  * - If the market is closed or no new candle is forming (rawKlines.length <= closedKlines.length):
- *   returns closedKlines[last].close (Close_i, preventing retrograde use of Open_i).
+ *   returns closedKlines[last].close (Close_i, the finalized close of the trigger candle).
  */
 export function getEffectiveExecutionPrice(
   rawKlines: Kline[] | undefined,

@@ -511,7 +511,7 @@ function App() {
               : closedData;
           let signalKlines = triggerKlines;
 
-          // Extract the causal execution price (Open_{i+1} in live session, Close_i when closed)
+          // Extract the causal execution price (live market quote in active session, Close_i when closed)
           const targetKlines = dataByTimeframe[signalInterval] || data;
           const entryPrice = getEffectiveExecutionPrice(targetKlines, signalKlines);
 
