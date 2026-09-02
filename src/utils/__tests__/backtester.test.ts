@@ -10,6 +10,7 @@ import {
   computeScoringSignalsSeries,
   calculateRiskMetrics,
   calculateWalkForward,
+  createEmptyWalkForwardResult,
   getStrategyCooldownCandles,
   getStrategyCooldownMs,
   type RecordedTrade
@@ -3423,6 +3424,20 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       mockTrades.length,
       'Conservation law: IS + OOS + Purged == Total trades'
     );
+  });
+
+  // Test 105: Consistent empty state returns (passed: false on empty WF, bestStrategy: 'NONE' on empty tournament)
+  test('empty states return consistent non-contradictory results across backtester and tournament', () => {
+    // 1. Empty Walk-Forward Result must be passed: false
+    const emptyWF = createEmptyWalkForwardResult(0, 0);
+    assert.strictEqual(emptyWF.status, 'NO_OOS_TRADES');
+    assert.strictEqual(emptyWF.passed, false, 'Empty Walk-Forward must have passed: false');
+
+    // 2. Empty Tournament candidates array must return NONE
+    const emptyTourney = evaluateStrategyTournament([], '5m');
+    assert.strictEqual(emptyTourney.bestStrategy, 'NONE', 'Empty candidates must return NONE');
+    assert.strictEqual(emptyTourney.strategyLabel, 'Sin Estrategia (Flat)');
+    assert.strictEqual(emptyTourney.confidence, 'NONE');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

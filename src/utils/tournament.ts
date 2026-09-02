@@ -68,8 +68,8 @@ export function evaluateStrategyTournament(
 ): TournamentResult {
   if (candidates.length === 0) {
     return {
-      bestStrategy: 'standard',
-      strategyLabel: 'Standard',
+      bestStrategy: 'NONE',
+      strategyLabel: 'Sin Estrategia (Flat)',
       confidence: 'NONE',
       compositeScore: 0,
       profitFactor: null,

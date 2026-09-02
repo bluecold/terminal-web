@@ -189,7 +189,7 @@ export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: nu
     oosWindow,
     inSample: createEmptySplitStats(),
     outOfSample: createEmptySplitStats(),
-    passed: true,
+    passed: false,
     status: 'NO_OOS_TRADES',
   };
 }
