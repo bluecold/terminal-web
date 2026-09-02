@@ -145,14 +145,25 @@ export interface SplitStats {
   regimeStats?: RegimeStats;
 }
 
+export interface WalkForwardFold {
+  fold: number;
+  isWindow: number;
+  oosWindow: number;
+  oosTradesCount: number;
+  oosExpectancyR: number;
+  passed: boolean;
+}
+
 export interface WalkForwardResult {
   isWindow: number;          // In-Sample window candle count (70%)
   oosWindow: number;         // Out-of-Sample window candle count (30%)
   inSample: SplitStats;      // Performance in historical 70%
   outOfSample: SplitStats;   // Performance in validation 30%
   purgedSignals?: number;    // Count of boundary-straddling trades purged from both partitions
-  passed: boolean;           // True if OOS E[R] >= 0 or no trades
+  passed: boolean;           // True if OOS E[R] >= 0.10 and trades >= effectiveMinOos
   status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES';
+  folds?: WalkForwardFold[]; // Multi-fold expanding anchored walk-forward validation (3 folds)
+  foldsPassed?: number;
 }
 
 export function createEmptyDirectionalStats(): DirectionalStats {
@@ -194,7 +205,7 @@ export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: nu
   };
 }
 
-function calculateSplitStats(
+export function calculateSplitStats(
   trades: RecordedTrade[],
   candleHours: number = 5 / 60,
   cooldownCandles: number = 12
@@ -213,11 +224,15 @@ function calculateSplitStats(
   for (const trade of trades) {
     totalR += trade.realizedR;
     if (trade.realizedR > 0) {
-      wins++;
       totalGainR += trade.realizedR;
     } else if (trade.realizedR < 0) {
-      losses++;
       totalLossR += Math.abs(trade.realizedR);
+    }
+
+    if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) {
+      wins++;
+    } else if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) {
+      losses++;
     }
 
     const dur = trade.durationCandles ?? 6;
@@ -310,9 +325,9 @@ export function calculateWalkForward(
   // Physical capacity of the OOS window derived purely from In-Sample cycle time (or fallback nominal cycle)
   const cycleTime = isAvgCycle > 0 ? isAvgCycle : ((nominalCycleCandles && nominalCycleCandles > 0) ? nominalCycleCandles : 24);
   const oosCapacity = Math.max(1, Math.floor(oosWindow / cycleTime));
-  // Scale requirement with window capacity while maintaining a strict floor of 2 trades
+  // Scale requirement with window capacity while maintaining a strict floor of 3 trades (or minOosTrades if explicitly configured < 3)
   // and capping at the nominal minOosTrades target
-  const effectiveMinOos = Math.min(minOosTrades, Math.max(2, Math.floor(oosCapacity * 0.6)));
+  const effectiveMinOos = Math.min(minOosTrades, Math.max(Math.min(minOosTrades, 3), Math.floor(oosCapacity * 0.6)));
 
   const inSample = calculateSplitStats(isTrades, candleHours, cooldownCandles);
   const outOfSample = calculateSplitStats(oosTrades, candleHours, cooldownCandles);
@@ -324,7 +339,7 @@ export function calculateWalkForward(
     status = 'NO_OOS_TRADES';
     passed = false;
   } else if (oosTrades.length < effectiveMinOos) {
-    // If the few OOS trades are already net negative or zero edge, mark as FAIL
+    // If the few OOS trades are already net negative or below positive edge hurdle, mark as FAIL
     if (outOfSample.expectancyR <= 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor < 1.0)) {
       status = 'FAIL';
       passed = false;
@@ -333,12 +348,66 @@ export function calculateWalkForward(
       status = 'INSUFFICIENT_OOS';
       passed = false;
     }
-  } else if (outOfSample.expectancyR > 0 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
+  } else if (outOfSample.expectancyR >= 0.10 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
     status = 'PASS';
     passed = true;
   } else {
     status = 'FAIL';
     passed = false;
+  }
+
+  // ── Multi-Fold Blind Walk-Forward (3 Disjoint Non-Overlapping Partitions strictly within OOS) ──
+  // Partitions OOS into 3 non-overlapping sub-windows: [0, 0.33), [0.33, 0.67), [0.67, 1.00].
+  // Ensures 100% temporal blindness vs In-Sample and mutual independence between folds
+  // (fold3 ∩ fold2 ∩ fold1 = ∅, eliminating nesting redundancy where fold3 ⊇ fold2 ⊇ fold1).
+  // Purges boundary straddlers that cross between disjoint folds.
+  // Requires >= 1 trade and E[R] >= 0.10R to pass each fold; foldsPassed >= 2 gates HIGH confidence.
+  const folds: WalkForwardFold[] = [];
+  let foldsPassed = 0;
+  const foldRanges = [
+    { startFrac: 0.00, endFrac: 1 / 3 },
+    { startFrac: 1 / 3, endFrac: 2 / 3 },
+    { startFrac: 2 / 3, endFrac: 1.00 },
+  ];
+
+  for (let fIdx = 0; fIdx < foldRanges.length; fIdx++) {
+    const { startFrac, endFrac } = foldRanges[fIdx];
+    const fStartIdx = splitIdx + Math.floor(oosWindow * startFrac);
+    const fEndIdx = fIdx === foldRanges.length - 1
+      ? splitIdx + oosWindow - 1
+      : splitIdx + Math.floor(oosWindow * endFrac) - 1;
+
+    const fOosTrades: RecordedTrade[] = [];
+
+    for (let j = 0; j < oosTrades.length; j++) {
+      const t = oosTrades[j];
+      const exec = t.executionIdx !== undefined ? t.executionIdx : t.entryIdx;
+      const exit = t.exitIdx !== undefined ? t.exitIdx : (t.entryIdx !== undefined ? t.entryIdx + (t.durationCandles ?? 1) : undefined);
+      if (exec === undefined) continue;
+
+      // Disjoint fold validation:
+      // Must execute within this fold's window [fStartIdx, fEndIdx]
+      // Straddler purging: must exit on or before this fold's horizon fEndIdx
+      if (exec >= fStartIdx && exec <= fEndIdx && exit !== undefined && exit <= fEndIdx) {
+        fOosTrades.push(t);
+      }
+    }
+
+    const fOosStats = calculateSplitStats(fOosTrades, candleHours, cooldownCandles);
+    const fPassed = fOosTrades.length >= 1 &&
+      fOosStats.expectancyR >= 0.10 &&
+      (fOosStats.profitFactor === null || fOosStats.profitFactor >= 1.0);
+
+    if (fPassed) foldsPassed++;
+
+    folds.push({
+      fold: fIdx + 1,
+      isWindow: splitIdx - oldestIdx,
+      oosWindow: fEndIdx - fStartIdx + 1,
+      oosTradesCount: fOosTrades.length,
+      oosExpectancyR: fOosStats.expectancyR,
+      passed: fPassed
+    });
   }
 
   return {
@@ -349,6 +418,8 @@ export function calculateWalkForward(
     purgedSignals,
     passed,
     status,
+    folds,
+    foldsPassed,
   };
 }
 
@@ -399,12 +470,15 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
     }
 
     if (trade.realizedR < 0) {
+      downsideSumSq += Math.pow(Math.abs(trade.realizedR), 2);
+    }
+
+    if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) {
       currentLossStreak++;
       if (currentLossStreak > maxLossStreak) {
         maxLossStreak = currentLossStreak;
       }
-      downsideSumSq += Math.pow(Math.abs(trade.realizedR), 2);
-    } else {
+    } else if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) {
       currentLossStreak = 0;
     }
 
@@ -412,21 +486,27 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
       longSignals++;
       longTotalR += trade.realizedR;
       if (trade.realizedR > 0) {
-        longWins++;
         longGainR += trade.realizedR;
       } else if (trade.realizedR < 0) {
-        longLosses++;
         longLossR += Math.abs(trade.realizedR);
+      }
+      if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) {
+        longWins++;
+      } else if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) {
+        longLosses++;
       }
     } else if (trade.dir === 'SELL') {
       shortSignals++;
       shortTotalR += trade.realizedR;
       if (trade.realizedR > 0) {
-        shortWins++;
         shortGainR += trade.realizedR;
       } else if (trade.realizedR < 0) {
-        shortLosses++;
         shortLossR += Math.abs(trade.realizedR);
+      }
+      if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) {
+        shortWins++;
+      } else if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) {
+        shortLosses++;
       }
     }
 
@@ -436,13 +516,13 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
     if (isTrending) {
       trendSignals++;
       trendTotalR += trade.realizedR;
-      if (trade.realizedR > 0) trendWins++;
-      else if (trade.realizedR < 0) trendLosses++;
+      if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) trendWins++;
+      else if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) trendLosses++;
     } else {
       rangeSignals++;
       rangeTotalR += trade.realizedR;
-      if (trade.realizedR > 0) rangeWins++;
-      else if (trade.realizedR < 0) rangeLosses++;
+      if (trade.outcome === 'win' || (trade.outcome === undefined && trade.realizedR > 0.05)) rangeWins++;
+      else if (trade.outcome === 'loss' || (trade.outcome === undefined && trade.realizedR < -0.05)) rangeLosses++;
     }
   }
 
@@ -734,7 +814,11 @@ function evaluateOutcome(
   signal: 'BUY' | 'SELL',
   forwardWindow: number,
   stopThreshold: number,
-  targetThreshold: number
+  targetThreshold: number,
+  policyOptions?: {
+    sessionGapCutoff?: boolean;
+    stepSec?: number;
+  }
 ): TradeOutcome {
   const nextIdx = entryIdx + 1 < klines.length ? entryIdx + 1 : entryIdx;
   const entry = klines[nextIdx].open || klines[entryIdx].close;
@@ -746,7 +830,9 @@ function evaluateOutcome(
   const sim = simulateTrade(klines, entryIdx, signal, levels, {
     forwardWindow,
     enablePartials: false,
-    frictionPct: 0.08
+    frictionPct: 0.08,
+    sessionGapCutoff: policyOptions?.sessionGapCutoff,
+    stepSec: policyOptions?.stepSec
   });
   return {
     result: sim.outcome,
@@ -838,7 +924,8 @@ export function backtestConfluencia(klines: Kline[], interval: string, symbol?: 
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeConfluenciaSignalsSeries(klines, interval);
-  const res = runBacktestGenericOptimized(klines, interval, signals);
+  // Confluencia is geometrically designed for stopLoss = close ± 2.0 * ATR
+  const res = runBacktestGenericOptimized(klines, interval, signals, 2.0);
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -849,7 +936,8 @@ export function backtestScoring(klines: Kline[], interval: string, weights?: Sco
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeScoringSignalsSeries(klines, interval, weights);
-  const res = runBacktestGenericOptimized(klines, interval, signals);
+  // Scoring evaluates and validates R:R against slDist = 1.5 * ATR
+  const res = runBacktestGenericOptimized(klines, interval, signals, 1.5);
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1083,16 +1171,30 @@ export function backtestMultitemporal(
 function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
-  signals: ('BUY' | 'SELL' | 'NEUTRAL')[]
+  signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
+  customAtrMultiplier?: number
 ): BacktestResult {
   const params = getParams(interval, klines.length);
-  const { evalWindow, forwardWindow, forwardLabel, targetMultiplier } = params;
+  const atrMultiplier = customAtrMultiplier ?? params.atrMultiplier;
+  const { evalWindow, targetMultiplier } = params;
+
+  // Scale forwardWindow proportionally with risk multiplier when a custom ATR multiplier is used
+  // (e.g. Confluencia with 2.0x ATR requires 10 candles in 5m / 7 candles in 1h to reach its 3.0x ATR target
+  // without dying in flat timeouts; Scoring with 1.5x ATR requires 8 candles in 5m / 5 candles in 1h)
+  const forwardWindowScale = customAtrMultiplier ? (customAtrMultiplier / params.atrMultiplier) : 1.0;
+  const forwardWindow = Math.round(params.forwardWindow * forwardWindowScale);
+
+  const forwardLabel = interval === '5m'
+    ? `${forwardWindow} velas (${forwardWindow * 5} min)`
+    : (interval === '1h'
+      ? `${forwardWindow} velas (${forwardWindow} hs)`
+      : `${forwardWindow} velas (${forwardWindow} días)`);
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades
   // leaks future volatility into the result.
   const atrSeries = calculateATRSeries(klines, 14);
   const latestAtr = atrSeries[atrSeries.length - 1];
-  const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, params.atrMultiplier, params.fallbackThreshold);
+  const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, atrMultiplier, params.fallbackThreshold);
   const targetThreshold = threshold * targetMultiplier;
   const baseEvalWindow = interval === '5m' ? 576 : interval === '1h' ? 168 : 60;
   const minCandles = baseEvalWindow + forwardWindow;
@@ -1147,6 +1249,9 @@ function runBacktestGenericOptimized(
       continue;
     }
 
+    // In 5m, filter out the final 30 mins (6 candles = ~7% of session).
+    // In 1h, do NOT discard (which would wipe out 57% of the session from 12:30-15:30);
+    // instead, allow 1h trades to run and let sessionGapCutoff model realistic market close at 16:00.
     if (isSessionBased && interval === '5m') {
       if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
         discards.sessionGap++;
@@ -1166,13 +1271,25 @@ function runBacktestGenericOptimized(
     const entryThreshold = getAdaptiveThreshold(
       atrSeries[i],
       klines[i].close,
-      params.atrMultiplier,
+      atrMultiplier,
       params.fallbackThreshold
     );
     const entryTargetThreshold = entryThreshold * targetMultiplier;
 
     totalSignals++;
-    const outcome = evaluateOutcome(klines, i, signal, forwardWindow, entryThreshold, entryTargetThreshold);
+    const stepSec = interval === '5m' ? 300 : interval === '1h' ? 3600 : 86400;
+    const outcome = evaluateOutcome(
+      klines,
+      i,
+      signal,
+      forwardWindow,
+      entryThreshold,
+      entryTargetThreshold,
+      {
+        sessionGapCutoff: isSessionBased && (interval === '5m' || interval === '1h'),
+        stepSec
+      }
+    );
 
     totalRealizedR += outcome.realizedR;
     totalDurationCandles += outcome.durationCandles;
@@ -1234,7 +1351,7 @@ function runBacktestGenericOptimized(
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
   const minOosTrades = interval === '1h' ? 3 : interval === '1d' ? 2 : 5;
-  const nominalCycle = params.forwardWindow + params.cooldownPeriod;
+  const nominalCycle = forwardWindow + params.cooldownPeriod;
   const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, nominalCycle, candleHours, params.cooldownPeriod);
 
   return {
@@ -1413,7 +1530,9 @@ export function backtestMultifractalMTF(
       enablePartials: false,
       earlyAdverseCutoffBars: 3,
       earlyAdverseCutoffR: 0.5,
-      frictionPct: 0.08
+      frictionPct: 0.08,
+      sessionGapCutoff: isSessionBased,
+      stepSec: 300
     });
 
     totalRealizedR += sim.realizedR;

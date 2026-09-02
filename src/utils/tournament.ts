@@ -139,13 +139,14 @@ export function evaluateStrategyTournament(
     };
   };
 
-  // Helper to calculate Bayesian Shrunk Expectancy score normalized by time, downside risk and current regime
-  // Evaluated strictly on In-Sample (or full sample if no split) without OOS contamination (purely blind OOS)
-  const calcScore = (c: StrategyCandidate): number => {
-    const isMetrics = getMetrics(c, true);
-    const { expR, resolved, maxDrawdownR, timeFactor, sortinoRatio, regimeStats } = isMetrics;
+  // Multiplicity deflation factor (White's Reality Check / Bonferroni adjustment):
+  // Deflates score when selecting the maximum of K competing candidate models
+  const activeCandidatesCount = candidates.filter(c => getMetrics(c, true).resolved >= minLimitedResolved).length;
+  const multiplicityFactor = 1 / Math.sqrt(1 + 0.10 * Math.max(0, activeCandidatesCount - 1));
 
-    if (resolved <= 0 || expR <= 0) return 0;
+  // Helper to compute Bayesian-shrunk time-normalized score strictly from In-Sample data
+  const calcScore = (candidate: StrategyCandidate): number => {
+    const { expR, resolved, timeFactor, maxDrawdownR, sortinoRatio, regimeStats } = getMetrics(candidate, true);
 
     // 1. Empirical Bayesian Shrinkage towards null prior (E[R] = 0):
     // Prior uncertainty factor N0: skeptical market baseline requiring sample proof
@@ -179,7 +180,7 @@ export function evaluateStrategyTournament(
       }
     }
 
-    return timeNormScore * ddPenalty * sortinoMultiplier * regimeMultiplier;
+    return timeNormScore * ddPenalty * sortinoMultiplier * regimeMultiplier * multiplicityFactor;
   };
 
   // Helper to check if a candidate's regime performance is decisively toxic under Bayesian uncertainty
@@ -194,9 +195,6 @@ export function evaluateStrategyTournament(
   };
 
   // 1. Check for HIGH confidence candidates:
-  // - In-Sample robust edge: isMetrics.resolved >= minHighResolved, isMetrics.profitFactor >= 1.25, isMetrics.expR > 0
-  // - Blind Out-of-Sample Certification: c.walkForward.status === 'PASS' (OOS confirms positive edge in blind validation)
-  // - Regime Hard Gate: Strategy must NOT possess decisively toxic expectancy in the active market regime
   const highCandidates = candidates
     .filter(c => {
       const isMetrics = getMetrics(c, true);
@@ -213,20 +211,72 @@ export function evaluateStrategyTournament(
     .sort((a, b) => b.score - a.score);
 
   if (highCandidates.length > 0) {
-    const winner = highCandidates[0].candidate;
-    const { expR, expPerHour } = getMetrics(winner);
-    const pfStr = winner.profitFactor !== null && Number.isFinite(winner.profitFactor) && winner.profitFactor < 99.0
-      ? `PF ${winner.profitFactor.toFixed(2)}`
+    const winnerItem = highCandidates[0];
+    const winner = winnerItem.candidate;
+    const winnerScore = winnerItem.score;
+    const isMetrics = getMetrics(winner, true);
+
+    // ── Multiplicity Selection-of-Maximum Bias Gate ──
+    // When evaluating K competing engines, selecting the maximum estimator inflates observed edge.
+    // Hurdle 1: Absolute deflated expectancy hurdle for HIGH certification.
+    // Evaluated on deflated quality expectancy (R per trade, independent of duration / timeFactor)
+    // so that fast scalps (e.g. Standard, 1.5h) and longer setups (e.g. VCME Sniper, 7h) face
+    // an identical, uniform certification standard of statistical edge.
+    const deflatedQualityExpR = winnerScore * isMetrics.timeFactor;
+    const minHighDeflatedHurdle = 0.040; // +0.04R quality edge per trade
+    const passesAbsoluteHurdle = deflatedQualityExpR >= minHighDeflatedHurdle;
+
+    // Hurdle 2: Decisive separation margin over the runner-up under multiplicity.
+    // If K >= 3 active candidates compete and multiple candidates pass HIGH criteria,
+    // the winner must separate from the runner-up by a margin scaling with K.
+    // If within noise, selection-of-maximum implies winner was chosen by luck -> degrade HIGH to LIMITED.
+    let passesSeparationMargin = true;
+    let multiplicityNote = '';
+    if (activeCandidatesCount >= 3 && highCandidates.length >= 2) {
+      const runnerUpScore = highCandidates[1].score;
+      const marginRequired = 0.025 * Math.min(4, activeCandidatesCount - 1); // e.g. 5% for K=3, 7.5% for K=4, 10% for K=5
+      if (runnerUpScore > 0 && winnerScore < runnerUpScore * (1 + marginRequired)) {
+        passesSeparationMargin = false;
+        const actualMarginPct = ((winnerScore / runnerUpScore - 1) * 100).toFixed(1);
+        const reqMarginPct = (marginRequired * 100).toFixed(1);
+        multiplicityNote = ` · Margen sobre 2º (${highCandidates[1].candidate.label}) insuficiente (${actualMarginPct}% vs ${reqMarginPct}% req bajo K=${activeCandidatesCount}) → Degradado a LIMITED`;
+      }
+    }
+
+    if (!passesAbsoluteHurdle) {
+      multiplicityNote += ` · Score deflactado (${deflatedQualityExpR.toFixed(3)}R < ${minHighDeflatedHurdle.toFixed(3)}R) insuficiente bajo multiplicidad K=${activeCandidatesCount} → Degradado a LIMITED`;
+    }
+
+    // Hurdle 3: Multi-Fold Walk-Forward consistency gate.
+    // If multi-fold diagnostics exist, candidate must validate on at least 2 progressive folds (foldsPassed >= 2).
+    let passesFoldsGate = true;
+    if (winner.walkForward?.folds && winner.walkForward.folds.length > 0) {
+      const foldsPassed = winner.walkForward.foldsPassed ?? 0;
+      if (foldsPassed < 2) {
+        passesFoldsGate = false;
+        multiplicityNote += ` · Folds Walk-Forward insuficientes (${foldsPassed}/${winner.walkForward.folds.length} aprobados, mín 2 req) → Degradado a LIMITED`;
+      }
+    }
+
+    const confidence: 'HIGH' | 'LIMITED' = (passesAbsoluteHurdle && passesSeparationMargin && passesFoldsGate) ? 'HIGH' : 'LIMITED';
+
+    const pfStr = isMetrics.profitFactor !== null && Number.isFinite(isMetrics.profitFactor) && isMetrics.profitFactor < 99.0
+      ? `PF ${isMetrics.profitFactor.toFixed(2)}`
       : 'PF N/D';
 
-    const riskInfo = winner.maxDrawdownR !== undefined && winner.maxDrawdownR > 0
-      ? `, MDD ${winner.maxDrawdownR.toFixed(1)}R`
+    const isMDD = winner.walkForward?.inSample?.maxDrawdownR ?? winner.maxDrawdownR;
+    const riskInfo = isMDD !== undefined && isMDD > 0
+      ? `, MDD ${isMDD.toFixed(1)}R`
       : '';
-    const sortinoInfo = winner.sortinoRatio !== null && winner.sortinoRatio !== undefined
-      ? `, Sortino ${winner.sortinoRatio.toFixed(1)}`
+    const isSortino = winner.walkForward?.inSample?.sortinoRatio ?? winner.sortinoRatio;
+    const sortinoInfo = isSortino !== null && isSortino !== undefined
+      ? `, Sortino ${isSortino.toFixed(1)}`
+      : '';
+    const foldsNote = winner.walkForward?.foldsPassed !== undefined
+      ? `, ${winner.walkForward.foldsPassed}/${winner.walkForward.folds?.length ?? 3} folds`
       : '';
     const wfInfo = winner.walkForward && winner.walkForward.status === 'PASS' && winner.walkForward.outOfSample.signals > 0
-      ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R`
+      ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R${foldsNote}`
       : '';
     const regimeInfo = currentRegime
       ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (Histéresis ≥26/≤22)' : '💤 Rango (Histéresis ≤22/≥26)'}`
@@ -235,33 +285,31 @@ export function evaluateStrategyTournament(
     return {
       bestStrategy: winner.key,
       strategyLabel: winner.label,
-      confidence: 'HIGH',
-      compositeScore: highCandidates[0].score,
-      profitFactor: winner.profitFactor,
-      expectancyR: Number(expR.toFixed(3)),
-      expectancyPerHour: Number(expPerHour.toFixed(3)),
-      maxDrawdownR: winner.maxDrawdownR,
-      sortinoRatio: winner.sortinoRatio,
+      confidence,
+      compositeScore: winnerScore,
+      profitFactor: isMetrics.profitFactor,
+      expectancyR: Number(isMetrics.expR.toFixed(3)),
+      expectancyPerHour: Number(isMetrics.expPerHour.toFixed(3)),
+      maxDrawdownR: isMDD,
+      sortinoRatio: isSortino,
       walkForward: winner.walkForward,
       longStats: winner.walkForward?.inSample?.longStats ?? winner.longStats,
       shortStats: winner.walkForward?.inSample?.shortStats ?? winner.shortStats,
       currentRegime,
-      reasoning: `${winner.label} (E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}, ${winner.resolved} trades${regimeInfo})`,
+      reasoning: confidence === 'HIGH'
+        ? `${winner.label} (IS: ${isMetrics.resolved} trades, E[R] ${isMetrics.expR > 0 ? '+' : ''}${isMetrics.expR.toFixed(2)}R, ${isMetrics.expPerHour.toFixed(2)}R/h, ${pfStr}${sortinoInfo}${riskInfo}${wfInfo}${regimeInfo})`
+        : `${winner.label} — Filtro de multiplicidad (IS: ${isMetrics.resolved} trades, E[R] ${isMetrics.expR > 0 ? '+' : ''}${isMetrics.expR.toFixed(2)}R, ${pfStr}${multiplicityNote}${regimeInfo})`,
     };
   }
 
   // 2. Check for LIMITED confidence candidates:
-  // - In-Sample minimum sample (isMetrics.resolved >= minLimitedResolved), positive In-Sample edge (isMetrics.expR > 0, score > 0)
-  // - Strict WF gating (status !== 'FAIL') and non-toxic active regime
   const limitedCandidates = candidates
     .filter(c => {
       const isMetrics = getMetrics(c, true);
       if (isMetrics.resolved < minLimitedResolved) return false;
       if (isMetrics.expR <= 0) return false;
-      // Strict rejection: A strategy that failed Out-of-Sample is completely disqualified from alerts
       if (c.walkForward && c.walkForward.status === 'FAIL') return false;
 
-      // Regime Hard Gate: Reject candidates with decisively toxic expectancy in active regime (IS-based)
       if (isRegimeDecisivelyToxic(isMetrics.regimeStats)) {
         return false;
       }
@@ -277,34 +325,37 @@ export function evaluateStrategyTournament(
 
   if (limitedCandidates.length > 0) {
     const winner = limitedCandidates[0].candidate;
-    const { expR, expPerHour } = getMetrics(winner);
-    const pfStr = winner.profitFactor !== null && Number.isFinite(winner.profitFactor) && winner.profitFactor < 99.0
-      ? `PF ${winner.profitFactor.toFixed(2)}`
+    const isMetrics = getMetrics(winner, true);
+    const pfStr = isMetrics.profitFactor !== null && Number.isFinite(isMetrics.profitFactor) && isMetrics.profitFactor < 99.0
+      ? `PF ${isMetrics.profitFactor.toFixed(2)}`
       : 'PF N/D';
-    const wfOosNote = winner.walkForward?.status === 'INSUFFICIENT_OOS' && winner.resolved >= minHighResolved
+    const wfOosNote = winner.walkForward?.status === 'INSUFFICIENT_OOS' && isMetrics.resolved >= minHighResolved
       ? ` · Muestra OOS reducida (${winner.walkForward.outOfSample.signals} trades)`
-      : winner.walkForward?.status === 'NO_OOS_TRADES' && winner.resolved >= minHighResolved
+      : winner.walkForward?.status === 'NO_OOS_TRADES' && isMetrics.resolved >= minHighResolved
       ? ' · Sin trades en OOS'
       : '';
     const regimeInfo = currentRegime
       ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (Histéresis ≥26/≤22)' : '💤 Rango (Histéresis ≤22/≥26)'}`
       : '';
 
+    const isMDD = winner.walkForward?.inSample?.maxDrawdownR ?? winner.maxDrawdownR;
+    const isSortino = winner.walkForward?.inSample?.sortinoRatio ?? winner.sortinoRatio;
+
     return {
       bestStrategy: winner.key,
       strategyLabel: winner.label,
       confidence: 'LIMITED',
       compositeScore: limitedCandidates[0].score,
-      profitFactor: winner.profitFactor,
-      expectancyR: Number(expR.toFixed(3)),
-      expectancyPerHour: Number(expPerHour.toFixed(3)),
-      maxDrawdownR: winner.maxDrawdownR,
-      sortinoRatio: winner.sortinoRatio,
+      profitFactor: isMetrics.profitFactor,
+      expectancyR: Number(isMetrics.expR.toFixed(3)),
+      expectancyPerHour: Number(isMetrics.expPerHour.toFixed(3)),
+      maxDrawdownR: isMDD,
+      sortinoRatio: isSortino,
       walkForward: winner.walkForward,
       longStats: winner.walkForward?.inSample?.longStats ?? winner.longStats,
       shortStats: winner.walkForward?.inSample?.shortStats ?? winner.shortStats,
       currentRegime,
-      reasoning: `${winner.label} — Muestra limitada (${winner.resolved}/${minHighResolved} trades, E[R] ${expR > 0 ? '+' : ''}${expR.toFixed(2)}R, ${pfStr}${wfOosNote}${regimeInfo})`,
+      reasoning: `${winner.label} — Muestra limitada (${isMetrics.resolved}/${minHighResolved} trades IS, E[R] ${isMetrics.expR > 0 ? '+' : ''}${isMetrics.expR.toFixed(2)}R, ${pfStr}${wfOosNote}${regimeInfo})`,
     };
   }
 

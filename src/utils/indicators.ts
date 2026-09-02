@@ -1055,6 +1055,33 @@ export function calculateVWAPSeries(klines: Kline[], interval: string = '1h', sy
   return vwapSeries;
 }
 
+export function calculateVWAPReliabilitySeries(
+  klines: Kline[],
+  interval: string = '1h',
+  symbol?: string,
+  minBars: number = 3
+): boolean[] {
+  const length = klines ? klines.length : 0;
+  const reliable: boolean[] = new Array(length).fill(false);
+  if (!klines || length === 0) return reliable;
+
+  let prevSessionId = '';
+  let sessionBarCount = 0;
+
+  for (let i = 0; i < length; i++) {
+    const sessionId = getSessionId(klines[i], interval, symbol);
+    if (sessionId !== prevSessionId && prevSessionId !== '') {
+      sessionBarCount = 0;
+    }
+    prevSessionId = sessionId;
+    sessionBarCount++;
+    // First 2 bars of session are degenerate opening volume noise (HLC3 coin flip)
+    reliable[i] = sessionBarCount >= minBars;
+  }
+
+  return reliable;
+}
+
 export interface MACDSeriesData {
   macd: number[];
   signal: number[];
@@ -2175,15 +2202,25 @@ export interface VolumeCompositionItem {
 export function calculateVolumeComposition(klines: Kline[], period: number = 20): VolumeCompositionItem[] {
   if (!klines || klines.length === 0) return [];
 
-  const volumes = klines.map(k => k.volume);
-  const smaV = calculateSMA(volumes, period);
+  const len = klines.length;
+  const volSMA = new Array(len).fill(0);
+  let sumVol = 0;
+  for (let i = 0; i < Math.min(period, len); i++) {
+    sumVol += klines[i].volume;
+  }
+  if (len >= period) volSMA[period - 1] = sumVol / period;
+  for (let i = period; i < len; i++) {
+    volSMA[i] = sumVol / period;
+    sumVol = sumVol - klines[i - period].volume + klines[i].volume;
+  }
+
   const result: VolumeCompositionItem[] = [];
 
-  for (let i = 0; i < klines.length; i++) {
+  for (let i = 0; i < len; i++) {
     const k = klines[i];
     const range = k.high - k.low;
     const vol = k.volume;
-    const avgVol = isNaN(smaV[i]) ? vol : smaV[i];
+    const avgVol = (i < period - 1 || volSMA[i] === 0) ? (vol || 1) : volSMA[i];
     const volumeMultiplier = avgVol > 0 ? vol / avgVol : 1;
 
     let activeBuyRatio = 0.5;

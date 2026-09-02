@@ -559,7 +559,7 @@ function App() {
 
             const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
             const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
-            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR);
+            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR, bestStrategy);
 
             if (bestStrategy === 'multitemporal' && vcmeResult) {
               const isBuySig = overallSignal.includes('BUY');

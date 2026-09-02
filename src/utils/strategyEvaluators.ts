@@ -9,6 +9,7 @@ import {
   calculateStochRSISeries,
   calculateVolumeSignalSeries,
   calculateVWAPSeries,
+  calculateVWAPReliabilitySeries,
   calculateMACDSeries,
   type MACDSeriesData,
   calculateATRSeries,
@@ -44,9 +45,9 @@ import {
 import { formatSmartPrice, formatSmartNumber } from './formatters';
 import type { DiscardBreakdown } from './backtester';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 1. CONFLUENCIA / EXPERIMENTAL SIGNAL (Signal 1)
-// ═══════════════════════════════════════════════════════════════════════════
+// ==========================================
+// 1. CONFLUENCIA ENGINE (Signal 1)
+// ==========================================
 
 export interface ConfluenciaContext {
   klines: Kline[];
@@ -55,6 +56,7 @@ export interface ConfluenciaContext {
   ema9: number[];
   ema20: number[];
   vwap: number[];
+  vwapReliable?: boolean[];
   atr: number[];
   volSMA: number[];
 }
@@ -69,13 +71,14 @@ export interface ConfluenciaEvaluationResult {
 export function buildConfluenciaContext(klines: Kline[], interval: string = '1h'): ConfluenciaContext {
   const length = klines ? klines.length : 0;
   if (length === 0) {
-    return { klines: [], interval, closes: [], ema9: [], ema20: [], vwap: [], atr: [], volSMA: [] };
+    return { klines: [], interval, closes: [], ema9: [], ema20: [], vwap: [], vwapReliable: [], atr: [], volSMA: [] };
   }
 
   const closes = klines.map(k => k.close);
   const ema9 = calculateEMA(closes, 9);
   const ema20 = calculateEMA(closes, 20);
   const vwap = calculateVWAPSeries(klines, interval);
+  const vwapReliable = calculateVWAPReliabilitySeries(klines, interval);
   const atr = calculateATRSeries(klines, 14);
 
   const volSMA = new Array(length).fill(0);
@@ -89,7 +92,7 @@ export function buildConfluenciaContext(klines: Kline[], interval: string = '1h'
     sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
   }
 
-  return { klines, interval, closes, ema9, ema20, vwap, atr, volSMA };
+  return { klines, interval, closes, ema9, ema20, vwap, vwapReliable, atr, volSMA };
 }
 
 export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): ConfluenciaEvaluationResult {
@@ -115,21 +118,27 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
   const e9 = ctx.ema9[i];
   const e20 = ctx.ema20[i];
   const vw = ctx.vwap[i];
+  const isVwapReliable = ctx.vwapReliable && ctx.vwapReliable.length > i ? ctx.vwapReliable[i] : true;
   const vAvg = ctx.volSMA[i];
   const atr = ctx.atr[i];
 
   const cp = closePosition(curr);
   const distVwapAtr = atr > 0 ? Math.abs(curr.close - vw) / atr : 0;
-  const isNotOverextended = distVwapAtr <= 2.2;
+  const isNotOverextended = isVwapReliable ? distVwapAtr <= 2.2 : true;
 
   const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > e9;
   const strongBearish = curr.close < curr.open && bRatio >= 0.4 && curr.close < e9;
   const bullish_candle = hammer || engulf === 1 || strongBullish;
   const bearish_candle = shootingStar || engulf === -1 || strongBearish;
 
-  const is_buy = curr.close > vw && e9 > e20 && curr.volume >= vAvg * 0.8
+  // Symmetrical VWAP gate: in the first 2 bars of a session, VWAP is degenerate (HLC3 coin flip)
+  // Neutralize the VWAP gate during session opening to eliminate systematic false positives
+  const vwapBuyOk = isVwapReliable ? curr.close > vw : true;
+  const vwapSellOk = isVwapReliable ? curr.close < vw : true;
+
+  const is_buy = vwapBuyOk && e9 > e20 && curr.volume >= vAvg * 0.8
                   && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
-  const is_sell = curr.close < vw && e9 < e20 && curr.volume >= vAvg * 0.8
+  const is_sell = vwapSellOk && e9 < e20 && curr.volume >= vAvg * 0.8
                   && bearish_candle && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
@@ -166,9 +175,11 @@ export interface ScoringContext {
   rsiSeries: number[];
   bbSeries: BollingerBandsSeriesResult[];
   vwapSeries: number[];
+  vwapReliableSeries?: boolean[];
   atrSeries: number[];
   obvArr: number[];
   obvEMAArr: number[];
+  volRollingArr?: number[];
   srCache: Map<number, { nearestSupport: number; nearestResistance: number }>;
 }
 
@@ -182,7 +193,7 @@ export function buildScoringContext(
   if (length === 0) {
     return {
       klines: [], interval, weights, cfg, closes: [], emaFastArr: [], emaSlowArr: [], emaMajorArr: [],
-      rsiSeries: [], bbSeries: [], vwapSeries: [], atrSeries: [], obvArr: [], obvEMAArr: [], srCache: new Map()
+      rsiSeries: [], bbSeries: [], vwapSeries: [], vwapReliableSeries: [], atrSeries: [], obvArr: [], obvEMAArr: [], volRollingArr: [], srCache: new Map()
     };
   }
 
@@ -193,10 +204,12 @@ export function buildScoringContext(
   const rsiSeries = calculateRSISeries(closes, cfg.rsiPeriod);
   const bbSeries = calculateBollingerBandsSeries(klines, cfg.bbPeriod);
   const vwapSeries = cfg.useVwap ? calculateVWAPSeries(klines, interval) : new Array(length).fill(0);
+  const vwapReliableSeries = cfg.useVwap ? calculateVWAPReliabilitySeries(klines, interval) : new Array(length).fill(true);
   const atrSeries = calculateATRSeries(klines, 14);
 
   let obvArr: number[] = [];
   let obvEMAArr: number[] = [];
+  let volRollingArr: number[] = [];
   if (cfg.useObv) {
     obvArr = [0];
     for (let i = 1; i < length; i++) {
@@ -205,6 +218,10 @@ export function buildScoringContext(
       else                                obvArr.push(obvArr[i - 1]);
     }
     obvEMAArr = calculateEMA(obvArr, 10);
+    volRollingArr = new Array(length);
+    for (let idx = 0; idx < length; idx++) {
+      volRollingArr[idx] = calculateRollingVolumeAvg(klines, idx, 20);
+    }
   }
 
   // Aligned 5-bar checkpoint cache for S/R
@@ -220,7 +237,7 @@ export function buildScoringContext(
 
   return {
     klines, interval, weights, cfg, closes, emaFastArr, emaSlowArr, emaMajorArr,
-    rsiSeries, bbSeries, vwapSeries, atrSeries, obvArr, obvEMAArr, srCache
+    rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache
   };
 }
 
@@ -256,8 +273,11 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   else if (ef < es) { s1 -= 1; n1 += `EMA${cfg.emaFast} < EMA${cfg.emaSlow} (bajista)`; }
 
   if (cfg.emaMajor && !isNaN(em)) {
-    if (closeVal > em) { s1 += 1; n1 += ` | Sobre EMA${cfg.emaMajor}`; }
-    else               { s1 -= 1; n1 += ` | Bajo EMA${cfg.emaMajor}`; }
+    const atr = ctx.atrSeries[i];
+    const distEmaAtr = atr > 0 ? (closeVal - em) / atr : (closeVal > em ? 1 : -1);
+    const s1Major = Math.tanh(distEmaAtr);
+    s1 += s1Major;
+    n1 += ` | Sobre/Bajo EMA${cfg.emaMajor} (${s1Major >= 0 ? '+' : ''}${s1Major.toFixed(2)})`;
   }
 
   // Layer 2 — RSI con pendiente
@@ -306,30 +326,46 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   let n4 = '';
   if (cfg.useVwap) {
     const vwap = ctx.vwapSeries[i];
-    const atr = ctx.atrSeries[i];
-    const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
+    const isVwapReliable = ctx.vwapReliableSeries && ctx.vwapReliableSeries.length > i ? ctx.vwapReliableSeries[i] : true;
 
-    if (distAtr > 2.0) {
-      s4 = -1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión alcista (>+2 ATR)`;
-    } else if (distAtr < -2.0) {
-      s4 = +1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión bajista (<-2 ATR)`;
-    } else if (distAtr > 0) {
-      s4 = +1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio sobre VWAP (compradores)`;
-    } else if (distAtr < 0) {
-      s4 = -1;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio bajo VWAP (vendedores)`;
-    } else {
+    if (!isVwapReliable) {
       s4 = 0;
-      n4 = `VWAP: ${formatSmartNumber(vwap)} | Precio en VWAP`;
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Apertura de sesión (VWAP no fiable neutralizado)`;
+    } else {
+      const atr = ctx.atrSeries[i];
+      const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
+
+      const absDist = Math.abs(distAtr);
+
+      if (absDist >= 2.2) {
+        s4 = distAtr > 0 ? -1 : 1;
+        n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión ${distAtr > 0 ? 'alcista (>+2.2 ATR)' : 'bajista (<-2.2 ATR)'}`;
+      } else if (absDist >= 1.8) {
+        // Rampa continua de transición entre 1.8 y 2.2 ATR que invierte el signo suavemente
+        // sin discontinuidad: en 1.8 vale tanh(1.8) (~0.95), cruza por 0 en ~2.0, y llega a ±1.0 en 2.2.
+        const t = (absDist - 1.8) / 0.4;
+        const v = (1 - t) * Math.tanh(1.8) - t * 1.0;
+        s4 = distAtr >= 0 ? v : -v;
+        n4 = `VWAP: ${formatSmartNumber(vwap)} | Transición sobreextensión (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
+      } else {
+        // Mapeo continuo suave tanh que elimina el salto binario y el churn por ruido cerca de 0
+        s4 = Math.tanh(distAtr);
+        n4 = `VWAP: ${formatSmartNumber(vwap)} | Score continuo (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
+      }
     }
   } else if (cfg.useObv) {
     const obvLast = ctx.obvArr[i];
     const obvEMA = ctx.obvEMAArr[i];
-    if (obvLast > obvEMA) { s4 += 1; n4 = 'OBV > OBV_EMA10 (acumulación)'; }
-    else                  { s4 -= 1; n4 = 'OBV < OBV_EMA10 (distribución)'; }
+    const avgVol = (ctx.volRollingArr && ctx.volRollingArr[i] > 0)
+      ? ctx.volRollingArr[i]
+      : calculateRollingVolumeAvg(ctx.klines, i, 20);
+    const safeAvgVol = avgVol > 0 ? avgVol : (curr.volume || 1);
+
+    // Mapeo continuo suave tanh de la divergencia OBV vs su media, normalizado por volumen medio
+    // Elimina el salto binario ±1.0 duro en 1D y el churn por ruido cerca del cruce
+    const distObv = (obvLast - obvEMA) / safeAvgVol;
+    s4 = Math.tanh(distObv);
+    n4 = `OBV: ${formatSmartNumber(obvLast)} vs EMA ${formatSmartNumber(obvEMA)} | Score continuo (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
   } else {
     n4 = 'Indicador de volumen no disponible';
   }
@@ -396,9 +432,16 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   const w6 = s6 * structureWeight;
   const totalScore = w1 + w2 + w3 + w4 + w5 + w6;
 
-  const maxTrend = cfg.emaMajor ? 2 : 1;
-  const maxPossible = (maxTrend * w.trend) + w.rsi + w.bollinger + w.volume + w.candle + structureWeight;
-  const threshold = Number((maxPossible * 0.5).toFixed(2));
+  // Aporte máximo realmente alcanzable por capa:
+  // - Capas discretas (EMA fast/slow, RSI, Bollinger, Velas, Estructura): ±1.0
+  // - Capas continuas con tanh (EMA mayor, VWAP y OBV): al activarse un setup el precio suele estar
+  //   a ~0.3-0.6 ATR o distancia moderada, aportando típicamente ~0.50 en lugar del ±1.0 teórico discreto.
+  const maxTrend = 1 + (cfg.emaMajor ? 0.50 : 0);
+  const maxVolume = (cfg.useVwap || cfg.useObv) ? 0.50 : 0;
+  const maxPossible = (maxTrend * w.trend) + w.rsi + w.bollinger + (maxVolume * w.volume) + w.candle + structureWeight;
+  // Umbral calibrado al 40% del máximo alcanzable (compensando la compresión de tanh)
+  // para preservar la frecuencia de señales original sin introducir ruido cerca de cero.
+  const threshold = Number((maxPossible * 0.40).toFixed(2));
 
   let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
   if      (totalScore >=  threshold) signal = 'BUY';
@@ -582,22 +625,21 @@ export function evaluateStandardVotingAt(
   });
 
   let rawSignal = 'NEUTRAL';
-  if (buyVotes >= 3 && sellVotes === 0) {
+  // Require voteMargin >= 2 as the absolute floor to emit any directional signal
+  // A single-vote majority (e.g. 1-0 or 2-1) is noisy and rejected to NEUTRAL
+  if (buyVotes - sellVotes >= 3 && sellVotes === 0) {
     rawSignal = 'STRONG BUY';
-  } else if (buyVotes > sellVotes) {
+  } else if (buyVotes - sellVotes >= 2) {
     rawSignal = 'BUY';
-  } else if (sellVotes >= 3 && buyVotes === 0) {
+  } else if (sellVotes - buyVotes >= 3 && buyVotes === 0) {
     rawSignal = 'STRONG SELL';
-  } else if (sellVotes > buyVotes) {
+  } else if (sellVotes - buyVotes >= 2) {
     rawSignal = 'SELL';
   }
 
-  // Relative volume confirmation filter
-  const rvolThreshold = rawSignal.includes('BUY') ? 0.9 : 0.6;
-  const voteMargin = Math.abs(buyVotes - sellVotes);
-  const effectiveRvolThreshold = voteMargin < 2 ? Math.max(rvolThreshold, 1.1) : rvolThreshold;
-
-  if (rawSignal !== 'NEUTRAL' && rvol < effectiveRvolThreshold) {
+  // Symmetrical relative volume confirmation filter (0.90 for both BUY and SELL)
+  const rvolThreshold = 0.9;
+  if (rawSignal !== 'NEUTRAL' && rvol < rvolThreshold) {
     rawSignal = 'NEUTRAL';
   }
 
@@ -641,6 +683,7 @@ export interface VCMESniperContext {
   ema50_1d: number[];
   adxData1d: ReturnType<typeof calculateADXSeries>;
   avgDailyRange: number;
+  avgDailyRange1d: number[];
   // 1H
   closes1h: number[];
   ema200_1h: number[];
@@ -651,6 +694,7 @@ export interface VCMESniperContext {
   macdData1h: MACDSeriesData;
   atrSeries1h: number[];
   vwapSeries1h: number[];
+  vwapReliable1h?: boolean[];
   chandelierData: ReturnType<typeof calculateChandelierExit>;
   atrSma1hArr: number[];
   // 5M
@@ -659,6 +703,7 @@ export interface VCMESniperContext {
   ema9_5m: number[];
   ema21_5m: number[];
   vwapSeries5m: number[];
+  vwapReliable5m?: boolean[];
   rsiSeries5m: number[];
   atrSeries5m: number[];
   adxSeries5m: ReturnType<typeof calculateADXSeries>;
@@ -691,8 +736,18 @@ export function buildVCMESniperContext(
   const ema200_1d = closes1d.length >= 200 ? calculateEMA(closes1d, 200) : new Array(closes1d.length).fill(NaN);
   const ema50_1d = closes1d.length >= 50 ? calculateEMA(closes1d, 50) : new Array(closes1d.length).fill(NaN);
   const adxData1d = klines1d ? calculateADXSeries(klines1d, 14) : { adx: [], plusDI: [], minusDI: [] };
-  const last20Ranges = klines1d ? klines1d.slice(-20).map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0) : [];
-  const avgDailyRange = last20Ranges.reduce((a, b) => a + b, 0) / Math.max(1, last20Ranges.length);
+  const dailyRangePct1d = klines1d ? klines1d.map(k => k.close > 0 ? (k.high - k.low) / k.close * 100 : 0) : [];
+  const avgDailyRange1d = new Array(len1d).fill(0);
+  let rangeSum1d = 0;
+  for (let idx = 0; idx < Math.min(20, len1d); idx++) {
+    rangeSum1d += dailyRangePct1d[idx];
+  }
+  if (len1d >= 20) avgDailyRange1d[19] = rangeSum1d / 20;
+  for (let idx = 20; idx < len1d; idx++) {
+    avgDailyRange1d[idx] = rangeSum1d / 20;
+    rangeSum1d = rangeSum1d - dailyRangePct1d[idx - 20] + dailyRangePct1d[idx];
+  }
+  const avgDailyRange = len1d > 0 ? (avgDailyRange1d[len1d - 1] || (rangeSum1d / Math.max(1, len1d))) : 0;
 
   // 1H
   const closes1h = klines1h ? klines1h.map(k => k.close) : [];
@@ -704,6 +759,7 @@ export function buildVCMESniperContext(
   const macdData1h = calculateMACDSeries(closes1h);
   const atrSeries1h = klines1h ? calculateATRSeries(klines1h, 14) : [];
   const vwapSeries1h = klines1h ? calculateVWAPSeries(klines1h, '1h', symbol) : [];
+  const vwapReliable1h = klines1h ? calculateVWAPReliabilitySeries(klines1h, '1h', symbol) : [];
   const chandelierData = klines1h ? calculateChandelierExit(klines1h, 22, 3.0) : { long: [], short: [] };
 
   const atrSma1hArr = new Array(len1h).fill(0);
@@ -723,6 +779,7 @@ export function buildVCMESniperContext(
   const ema9_5m = calculateEMA(closes5m, 9);
   const ema21_5m = calculateEMA(closes5m, 21);
   const vwapSeries5m = klines5m ? calculateVWAPSeries(klines5m, style === 'swing' ? '1h' : '5m', symbol) : [];
+  const vwapReliable5m = klines5m ? calculateVWAPReliabilitySeries(klines5m, style === 'swing' ? '1h' : '5m', symbol) : [];
   const rsiSeries5m = calculateRSISeries(closes5m, 14);
   const atrSeries5m = klines5m ? calculateATRSeries(klines5m, 14) : [];
   const adxSeries5m = klines5m ? calculateADXSeries(klines5m, 14) : { adx: [], plusDI: [], minusDI: [] };
@@ -771,10 +828,10 @@ export function buildVCMESniperContext(
 
   return {
     klines5m, klines1h, klines1d, symbol, style, triggerMode,
-    closes1d, ema200_1d, ema50_1d, adxData1d, avgDailyRange,
+    closes1d, ema200_1d, ema50_1d, adxData1d, avgDailyRange, avgDailyRange1d,
     closes1h, ema200_1h, ema50_1h, ema20_1h, rsiSeries1h, adxSeries1h,
-    macdData1h, atrSeries1h, vwapSeries1h, chandelierData, atrSma1hArr,
-    closes5m, bbSeries5m, ema9_5m, ema21_5m, vwapSeries5m, rsiSeries5m,
+    macdData1h, atrSeries1h, vwapSeries1h, vwapReliable1h, chandelierData, atrSma1hArr,
+    closes5m, bbSeries5m, ema9_5m, ema21_5m, vwapSeries5m, vwapReliable5m, rsiSeries5m,
     atrSeries5m, adxSeries5m, vol5m, volSma5m, bbWidth5m,
     idx1hMap, idx1dMap
   };
@@ -860,9 +917,10 @@ export function evaluateVCMESniperAt(
     const adxVal = ctx.adxSeries1h.adx[hIdx];
     const regimeOkLong = adxVal > 20 && slopeAtr > 0.05;
 
+    const isVwap1hOkLong = (!ctx.vwapReliable1h || !ctx.vwapReliable1h[hIdx]) ? true : ctx.closes1h[hIdx] > ctx.vwapSeries1h[hIdx];
     return (
       regimeOkLong &&
-      ctx.closes1h[hIdx] > ctx.vwapSeries1h[hIdx] &&
+      isVwap1hOkLong &&
       ctx.ema20_1h[hIdx] > ctx.ema50_1h[hIdx] &&
       ctx.rsiSeries1h[hIdx] >= 50 && ctx.rsiSeries1h[hIdx] <= 70 &&
       hist > 0 &&
@@ -882,9 +940,10 @@ export function evaluateVCMESniperAt(
     const adxVal = ctx.adxSeries1h.adx[hIdx];
     const regimeOkShort = adxVal > 20 && slopeAtr < -0.05;
 
+    const isVwap1hOkShort = (!ctx.vwapReliable1h || !ctx.vwapReliable1h[hIdx]) ? true : ctx.closes1h[hIdx] < ctx.vwapSeries1h[hIdx];
     return (
       regimeOkShort &&
-      ctx.closes1h[hIdx] < ctx.vwapSeries1h[hIdx] &&
+      isVwap1hOkShort &&
       ctx.ema20_1h[hIdx] < ctx.ema50_1h[hIdx] &&
       ctx.rsiSeries1h[hIdx] >= 30 && ctx.rsiSeries1h[hIdx] <= 50 &&
       hist < 0 &&
@@ -893,11 +952,13 @@ export function evaluateVCMESniperAt(
   };
 
   const isInvalidatedLong = (hIdx: number) => {
-    return ctx.closes1h[hIdx] < ctx.vwapSeries1h[hIdx] || ctx.ema20_1h[hIdx] < ctx.ema50_1h[hIdx];
+    const isVwap1hBad = (ctx.vwapReliable1h && ctx.vwapReliable1h[hIdx]) ? ctx.closes1h[hIdx] < ctx.vwapSeries1h[hIdx] : false;
+    return isVwap1hBad || ctx.ema20_1h[hIdx] < ctx.ema50_1h[hIdx];
   };
 
   const isInvalidatedShort = (hIdx: number) => {
-    return ctx.closes1h[hIdx] > ctx.vwapSeries1h[hIdx] || ctx.ema20_1h[hIdx] > ctx.ema50_1h[hIdx];
+    const isVwap1hBad = (ctx.vwapReliable1h && ctx.vwapReliable1h[hIdx]) ? ctx.closes1h[hIdx] > ctx.vwapSeries1h[hIdx] : false;
+    return isVwap1hBad || ctx.ema20_1h[hIdx] > ctx.ema50_1h[hIdx];
   };
 
   let setupArmedLong = false;
@@ -1008,13 +1069,17 @@ export function evaluateVCMESniperAt(
     return high >= Math.min(e9, e21, vw) && high < swingHigh10;
   };
 
+  const isVwapReliable5m = ctx.vwapReliable5m && ctx.vwapReliable5m.length > i ? ctx.vwapReliable5m[i] : true;
+  const vwapLongOk = isVwapReliable5m ? curr5m.close > vwap5m : true;
+  const vwapShortOk = isVwapReliable5m ? curr5m.close < vwap5m : true;
+
   const maxPrevHigh3 = Math.max(ctx.klines5m[i - 1].high, ctx.klines5m[i - 2].high, ctx.klines5m[i - 3].high);
   const condPullbackLong = ctx.triggerMode === 'agresivo' &&
                            (hasPullbackLong(i) || hasPullbackLong(i - 1) || hasPullbackLong(i - 2)) &&
                            curr5m.close > maxPrevHigh3 &&
                            curr5m.close > curr5m.open &&
                            rvol >= 1.5 &&
-                           curr5m.close > vwap5m;
+                           vwapLongOk;
 
   const minPrevLow3 = Math.min(ctx.klines5m[i - 1].low, ctx.klines5m[i - 2].low, ctx.klines5m[i - 3].low);
   const condPullbackShort = ctx.triggerMode === 'agresivo' &&
@@ -1022,7 +1087,7 @@ export function evaluateVCMESniperAt(
                             curr5m.close < minPrevLow3 &&
                             curr5m.close < curr5m.open &&
                             rvol >= 1.8 &&
-                            curr5m.close < vwap5m;
+                            vwapShortOk;
 
   let condBreakoutLong = false;
   let condBreakoutShort = false;
@@ -1123,14 +1188,16 @@ export function evaluateVCMESniperAt(
   const strengthCandleLong = candleRange > 0 ? (curr5m.close > curr5m.open) && ((curr5m.close - curr5m.low) > 0.60 * candleRange) : false;
   const strengthCandleShort = candleRange > 0 ? (curr5m.close < curr5m.open) && ((curr5m.high - curr5m.close) > 0.60 * candleRange) : false;
 
-  const qualityLong = (curr5m.close - vwap5m) <= 2.0 * atr5m &&
+  const vwapExtLongOk = isVwapReliable5m ? (curr5m.close - vwap5m) <= 2.0 * atr5m : true;
+  const qualityLong = vwapExtLongOk &&
                       candleBodyRatio(curr5m) >= 0.3 &&
                       strengthCandleLong &&
                       upperWickRatio(curr5m) <= 0.35 &&
                       minutesSinceOpen >= 5 &&
                       rvol < 8.0;
 
-  const qualityShort = (vwap5m - curr5m.close) <= 2.0 * atr5m &&
+  const vwapExtShortOk = isVwapReliable5m ? (vwap5m - curr5m.close) <= 2.0 * atr5m : true;
+  const qualityShort = vwapExtShortOk &&
                        candleBodyRatio(curr5m) >= 0.3 &&
                        strengthCandleShort &&
                        lowerWickRatio(curr5m) <= 0.35 &&
@@ -1141,11 +1208,13 @@ export function evaluateVCMESniperAt(
   const getContinuousConfidence = (dir: 'LONG' | 'SHORT') => {
     const isLong = dir === 'LONG';
     const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
-    const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200_1d ? 1 : 0) : (lastClose1d < lastEma200_1d ? 1 : 0));
+    const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200Ref ? 1 : 0) : (lastClose1d < lastEma200Ref ? 1 : 0));
     const macdScore = 0.20 * (isLong ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
     const distRatio = Math.abs(curr5m.close - ema21Val) / (atr5m || 1);
     const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
-    const vwapScore = 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0));
+    const vwapScore = isVwapReliable5m
+      ? 0.10 * (isLong ? (curr5m.close > vwap5m ? 1 : 0) : (curr5m.close < vwap5m ? 1 : 0))
+      : 0.05;
     const totalScore = volScore + macroScore + macdScore + distScore + vwapScore;
 
     // Directional veto penalty: direct conflict with 1D bias cuts confidence in half
@@ -1357,8 +1426,12 @@ export function evaluateVCMESniperAt(
   const maxUnits = entry > 0 ? (0.20 * accountEquity) / entry : 0;
   positionSizeUnits = Math.min(positionSizeUnits, maxUnits);
 
+  const currentAvgDailyRange = (idx1d >= 0 && ctx.avgDailyRange1d && idx1d < ctx.avgDailyRange1d.length && ctx.avgDailyRange1d[idx1d] > 0)
+    ? ctx.avgDailyRange1d[idx1d]
+    : ctx.avgDailyRange;
+
   const marketRegime = atrVal1h > 1.2 * atrSma1h ? 'Alta Volatilidad' : 'Normal';
-  const volatilityProfile = ctx.avgDailyRange > 3.5 ? 'Alta Volatilidad' : 'Normal';
+  const volatilityProfile = currentAvgDailyRange > 3.5 ? 'Alta Volatilidad' : 'Normal';
   const atrPercent = entry > 0 ? (atr5m / entry * 100) : 0;
 
   return {
@@ -1380,7 +1453,7 @@ export function evaluateVCMESniperAt(
     triggerDetail,
     rsi1H: Number(rsiVal1h.toFixed(1)),
     macdHistDirection: macdHistDir,
-    ema200_1D: lastEma200_1d,
+    ema200_1D: lastEma200Ref,
     ema50_1H: ema50Val1h,
     vwap5m,
     bbUpper5m: bb.upper,
@@ -1395,7 +1468,7 @@ export function evaluateVCMESniperAt(
     volatilityProfile,
     recentPerfLabel: 'VCME v2.0 Activo',
     atrPercent,
-    avgDailyRange: ctx.avgDailyRange,
+    avgDailyRange: Number(currentAvgDailyRange.toFixed(2)),
     confidence,
     discardReason,
     snapshot: {
@@ -1576,7 +1649,9 @@ export function evaluateMultifractalMTFAt(
     reasoning = `Placing SL at channel midpoint (${formatSmartPrice(stopLoss)}) for institutional breakdown expansion hypothesis.`;
   }
   // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (LONG)
+  // Strict Layer 1 Macro Alignment: Mean reversion BUY is forbidden against a confirmed BEARISH 1D bias
   else if (
+    bias1D !== 'BEARISH' &&
     currDread.isOversold &&
     currCandle.low < prevCandle.low &&
     currDread.mcd > prevDread.mcd &&
@@ -1588,7 +1663,9 @@ export function evaluateMultifractalMTFAt(
     reasoning = `Placing SL below absorption low (${formatSmartPrice(stopLoss)}) for mean reversion divergence.`;
   }
   // ESTRATEGIA 2: REVERSIÓN EXCESIVA A LA MEDIA (SHORT)
+  // Strict Layer 1 Macro Alignment: Mean reversion SELL is forbidden against a confirmed BULLISH 1D bias
   else if (
+    bias1D !== 'BULLISH' &&
     currDread.isOverbought &&
     currCandle.high > prevCandle.high &&
     currDread.mcd < prevDread.mcd &&
@@ -1637,7 +1714,16 @@ export function evaluateMultifractalMTFAt(
       }
     }
   } else if (signal === 'NEUTRAL') {
-    if (currVolComp.volumeMultiplier < minVolMultiplier) {
+    const isLongMeanReversionSetup = currDread.isOversold && currCandle.low < prevCandle.low && currDread.mcd > prevDread.mcd && currVolComp.isPassiveBuyAbsorption;
+    const isShortMeanReversionSetup = currDread.isOverbought && currCandle.high > prevCandle.high && currDread.mcd < prevDread.mcd && currVolComp.isPassiveSellAbsorption;
+
+    if (isLongMeanReversionSetup && bias1D === 'BEARISH') {
+      discardReason = 'regimeFilter';
+      reasoning = `Discarded: Long mean reversion setup rejected due to conflicting 1D bearish macro bias (${bias1D}).`;
+    } else if (isShortMeanReversionSetup && bias1D === 'BULLISH') {
+      discardReason = 'regimeFilter';
+      reasoning = `Discarded: Short mean reversion setup rejected due to conflicting 1D bullish macro bias (${bias1D}).`;
+    } else if (currVolComp.volumeMultiplier < minVolMultiplier) {
       discardReason = 'volumeFilter';
     } else if (bias1D === 'NEUTRAL') {
       discardReason = 'regimeFilter';

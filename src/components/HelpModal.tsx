@@ -195,15 +195,15 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           <section>
             <SectionTitle>¿Qué es FinceptTerminal?</SectionTitle>
             <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: '1.7', marginBottom: '14px' }}>
-              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real para operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> (Intradía 5m y Swing 1H). Analiza criptomonedas y acciones de Wall Street mediante cinco motores matemáticos independientes, simulador de ejecución unificado (`simulateTrade`), métricas de riesgo institucional en R (Drawdown en R, Sortino, racha de pérdidas), factor de beneficio homogéneo (PF en R), scoring de contracción bayesiana (Bayesian Shrinkage), selección condicionada por régimen de volatilidad (ADX &gt; 25 vs &le; 25) y certificación ciega Walk-Forward (70/30).
+              FinceptTerminal es una estación cuantitativa de análisis técnico en tiempo real para operaciones de <strong style={{ color: 'var(--text-primary)' }}>corto plazo</strong> (Intradía 5m y Swing 1H). Analiza criptomonedas y acciones de Wall Street mediante cinco motores matemáticos independientes, simulador de ejecución unificado (`simulateTrade`) con slippage adverso en órdenes a mercado y deadband simétrico en R, métricas de riesgo institucional (Drawdown en R, Sortino, racha de pérdidas), factor de beneficio homogéneo (PF en R), scoring de contracción bayesiana (Bayesian Shrinkage), selección condicionada por régimen de volatilidad con histéresis ([22, 26]), compuerta activa de multiplicidad (White's Reality Check), validación Walk-Forward con 3 folds disjuntos (`foldsPassed ≥ 2`) y scoring continuo $C^0$ sin escalones binarios.
             </p>
 
             {/* Key concepts grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
               {[
                 { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo de la watchlist y presets con confluencias 3/3, compresión BB y RVOL estacional.' },
-                { icon: '🏆', title: 'Torneo Bayesiano & QVE', text: 'Ranking puro In-Sample con contracción empírica a E[R]=0, modulación por régimen ADX y certificación OOS.' },
-                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit y fricción contable (0.08%).' },
+                { icon: '🏆', title: 'Torneo Bayesiano & QVE', text: 'Ranking puro In-Sample, compuerta de multiplicidad Bonferroni (+0.04R hurdle), margen sobre 2º y Walk-Forward disjunto.' },
+                { icon: '⚡', title: 'VCME & MTF Parity', text: 'Simulador unificado con salidas 3-tier, Time-Stop a 8 velas, Emergency Exit, slippage de mercado y fricción contable (0.08%).' },
                 { icon: '🎯', title: 'Audit Tracker & Chart', text: 'Seguimiento causal sin repintado en velas vivas, líneas visuales en TradingView y cero alertas fantasma.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>
@@ -221,7 +221,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {[
                 { icon: '⚡', color: 'var(--accent-yellow)', text: 'Las señales se calculan sobre la ÚLTIMA VELA CERRADA, no sobre la vela en formación, para evitar repintado temporal.' },
-                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 2.5R), al menos 3 trades para LIMITED, ranking libre de data leakage y certificación ciega Walk-Forward (OOS PASS). Las estrategias con WF FAIL quedan descartadas a FLAT (NONE).' },
+                { icon: '🔍', color: 'var(--accent-blue)', text: 'El Torneo exige E[R] > 0, ratio Sortino consistente, control de Drawdown (MDD ≤ 2.5R), al menos 3 trades para LIMITED, ranking libre de data leakage, validación Walk-Forward con 3 particiones disjuntas (foldsPassed ≥ 2 para HIGH), y superación del hurdle deflactado (+0.04R) y margen sobre el 2º clasificado.' },
                 { icon: '🌊', color: 'var(--accent-green)', text: 'Condicionamiento Dinámico por Régimen (Histéresis [22, 26]): En mercados de alta tendencia (ADX ≥ 26) el torneo prioriza motores de ruptura y descarta reversiones tóxicas; en rango (ADX ≤ 22) prioriza osciladores y reversión a la media. Entre 22 y 26 conserva inercia para evitar parpadeos.' },
                 { icon: '📉', color: 'var(--accent-red)', text: 'El Profit Factor se calcula homogéneamente en múltiplos R (PF_R = Σ Gains_R / Σ |Losses_R|), garantizando perfecta comparabilidad entre scalps de 5m con stop estrecho y swings de 1H con stop amplio.' },
                 { icon: '⏱', color: 'var(--accent-yellow)', text: 'VCME Sniper exige un Confidence Score ≥ 65% con campana óptima a 0.5 ATR para disparar. Es normal que transcurran horas sin señal — esto es protección algorítmica por diseño.' },
@@ -253,11 +253,12 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 description="Motor de entrada por confluencia de múltiples condiciones en el timeframe activo. Evalúa que el precio esté bien posicionado (sobre VWAP, sobre EMAs cruzadas) con volumen real y una vela de calidad antes de disparar."
                 howItWorks={[
                   'EMA 9 > EMA 20 para BUY (tendencia de corto plazo alcista)',
-                  'Precio sobre VWAP de sesión (compradores dominan)',
+                  'Precio sobre VWAP de sesión (compradores dominan, con neutralización de apertura)',
                   'Volumen de la vela ≥ 80% del promedio de 20 velas (confirmación)',
                   'Patrón de vela válido: martillo, envolvente alcista, o cierre fuerte (cuerpo ≥ 40%)',
                   'closePosition: ≥ 0.50 para BUY (mitad superior) / ≤ 0.50 para SELL (mitad inferior)',
                   'Filtro anti-chasing: precio no más de 2.2 × ATR del VWAP',
+                  'Stop Loss a 2.0 × ATR con TP a 3.0 × ATR (1.5R) y horizonte escalado (10 velas 5m / 7 velas 1h)',
                 ]}
                 strengths={['Muy intuitivo — basado en principios clásicos de price action', 'Bajo ruido cuando el mercado tiene dirección clara', 'Rápido de calcular — sin dependencias multitemporal']}
                 weaknesses={['No tiene filtro de tendencia macro (1D) propio — depende del torneo', 'Puede fallar en mercados laterales o con gaps de volumen', 'Simétrico: la señal SELL es menos confiable que el BUY']}
@@ -269,31 +270,32 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 number="S2"
                 name="Scoring Multicapa"
                 color="#10b981"
-                badge="PONDERADO · 6 CAPAS"
+                badge="PONDERADO · 6 CAPAS CONTINUAS"
                 badgeColor="#10b981"
-                description="Motor cuantitativo de puntajes ponderados. Cada indicador suma o resta puntos según su lectura. La señal solo se emite si el score supera el 50% del máximo teórico Y existe suficiente espacio de riesgo/recompensa hacia el próximo nivel S/R."
+                description="Motor cuantitativo de puntajes continuos ponderados. Utiliza mapeos suaves mediante tangentes hiperbólicas (tanh) en EMA mayor, VWAP y OBV, eliminando discontinuidades binarias. Se activa al superar el 40% del máximo alcanzable con espacio R:R hacia S/R."
                 howItWorks={[
-                  'Capa 1 — Tendencia EMA: cruce EMA rápida/lenta + precio vs EMA mayor (ajustable por TF)',
+                  'Capa 1 — Tendencia EMA: cruce EMA rápida/lenta + aporte continuo tanh((close - EMA_major)/ATR)',
                   'Capa 2 — RSI con pendiente: sobreventa/sobrecompra + dirección del momentum',
                   'Capa 3 — Bollinger %B: posición del precio dentro de las bandas + squeeze',
-                  'Capa 4 — Volumen: VWAP (intradía) u OBV (diario) según el timeframe',
+                  'Capa 4 — Volumen: VWAP continuo con rampa suave a 1.8-2.2 ATR (intradía) u OBV continuo tanh normalizado por volumen medio (diario)',
                   'Capa 5 — Calidad de vela: ratio de cuerpo, mechas de rechazo adversas',
                   'Capa 6 — Estructura S/R: proximidad a soportes y resistencias pivot',
                   'Validación R:R: si el reward hasta la próxima resistencia es < 1.5 × SL, la señal se cancela',
+                  'Geometría calibrada: SL a 1.5 × ATR y horizonte escalado a 8 velas (5m) / 5 velas (1h)',
                 ]}
-                strengths={['El más completo y configurable (pesos ajustables por el usuario)', 'La validación R:R previene entradas con poco espacio', 'Funciona bien en cualquier timeframe (5m, 1h, 1d) con configuraciones distintas']}
+                strengths={['Mapeo continuo C0 que erradica el churn y saltos abruptos por ruido', 'La validación R:R previene entradas con poco espacio', 'Funciona bien en cualquier timeframe (5m, 1h, 1d) con configuraciones calibradas']}
                 weaknesses={['Puede ser conservador: muchas condiciones = menos señales', 'Los niveles S/R dinámicos son menos precisos en activos poco líquidos', 'Si el mercado está lateral, el RSI y las EMAs se contradicen constantemente']}
                 bestFor="Análisis riguroso antes de entrar. Ideal como confirmación de señales de otros motores"
-                considerations="Los pesos por defecto son: Tendencia 1.5, Volumen 1.5, resto 1.0. Podés ajustarlos en la pestaña Estrategias. Si ajustás el peso de la Capa 1 al máximo, el sistema se convierte casi en un seguidor de tendencia puro."
+                considerations="Los pesos por defecto son: Tendencia 1.5, Volumen 1.5, resto 1.0. El umbral se calibra automáticamente al 40% de la capacidad continua alcanzable (2.50 en 5m, 2.80 en 1h/1d)."
               />
 
               <SignalCard
                 number="S3"
                 name="Standard Voting"
                 color="#8b5cf6"
-                badge="VOTACIÓN · 6 INDICADORES"
+                badge="VOTACIÓN · MAYORÍA NETA ≥ 2"
                 badgeColor="#8b5cf6"
-                description="Sistema de votación democrática entre 6 indicadores clásicos. Cada uno vota BUY, SELL o NEUTRAL de forma independiente. La señal se emite cuando hay mayoría clara, confirmada por volumen relativo y la posición del cierre en la vela."
+                description="Sistema de votación democrática entre 6 indicadores clásicos. Exige una mayoría neta calificada (voteMargin ≥ 2) confirmada por volumen relativo simétrico y la posición del cierre en la vela."
                 howItWorks={[
                   'RSI (14): sobreventa < 30 → BUY, sobrecompra > 70 → SELL',
                   'MACD (12,26,9): cruce del histograma con filtro de aceleración',
@@ -301,10 +303,11 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   'Supertrend (10,3): flip de dirección reciente (última vela o hasta 3 atrás)',
                   'Stochastic RSI: cruce de %K/%D en zona extrema (< 20 o > 80)',
                   'Volumen: spike ≥ 1.5× el promedio de 20 velas',
+                  'Mayoría neta: exige margen de votos ≥ 2 y RVOL simétrico de 0.9x para BUY y SELL',
                   'Filtro final: EMA 200 como tendencia macro + closePosition de la vela',
                 ]}
-                strengths={['Robusto: requiere consenso, no depende de un solo indicador', 'El filtro EMA 200 evita operar contra la tendencia mayor', 'Transparente — podés ver exactamente qué vota cada indicador en la UI']}
-                weaknesses={['Los indicadores clásicos son laggeados: señalan movimientos que ya empezaron', 'En tendencias fuertes, RSI y Bollinger están permanentemente en zona extrema → muchos NEUTRALes', 'RVOL adaptativo: BUY base 0.9×, SELL base 0.6×; sube a 1.1× si el margen de votos es estrecho (< 2)']}
+                strengths={['Robusto: requiere consenso real (margen ≥ 2), evitando señales con un solo voto', 'Filtro RVOL simétrico de 0.9x evita operar ventas sin liquidez', 'Transparente — podés ver exactamente qué vota cada indicador en la UI']}
+                weaknesses={['Los indicadores clásicos son laggeados: señalan movimientos que ya empezaron', 'En tendencias fuertes, RSI y Bollinger están permanentemente en zona extrema → muchos NEUTRALes']}
                 bestFor="Mercados con impulso claro y volumen confirmatorio. Bueno en timeframes 1h y 1d"
                 considerations="El indicador de pendiente RSI (▲/▼) en la UI es puramente informativo. El voto del RSI no cambia por la pendiente, pero te ayuda a leer si el momentum está acelerando o frenando antes de entrar."
               />
@@ -341,10 +344,10 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                 howItWorks={[
                   'CAPA 1 — Andian Oscillator (1D): descompone velas diarias en fuerza bull/bear normalizada. Bias BULLISH cuando green > orange y red está en percentil 20',
                   'CAPA 2 — Revolution Volatility Band (1H): Bollinger Bands horarias con historial de 200 barras. COMPRIMIDO cuando el ancho cae al percentil 15',
-                  'CAPA 3A — Volume Composition (5M): ratio compra/venta activa por vela. Ruptura requiere vol multiplier ≥ 1.5× y dominancia ≥ 65%',
+                  'CAPA 3A — Volume Composition (5M): ratio compra/venta activa sin auto-inclusión. Ruptura requiere vol multiplier ≥ 1.5× y dominancia ≥ 65%',
                   'CAPA 3B — Dread Blitz MCD (5M): oscilador de momentum (precio vs EMA12 / ATR) con Bollinger Bands para detectar sobrecompra/sobreventa',
                   'Estrategia Ruptura: las 3 capas alineadas + cierre fuera de banda + volumen institucional',
-                  'Estrategia Reversión: Dread Blitz en zona extrema + divergencia + absorción pasiva en mechas (no requiere compresión 1H)',
+                  'Estrategia Reversión: Dread Blitz en zona extrema + divergencia + absorción en mechas + compatibilidad estricta con sesgo 1D (prohíbe compras con bias diario bajista)',
                   'Corte adverso temprano: si en las primeras 3 velas el precio retrocede ≥ 0.5R en contra de la entrada, se cierra la posición con pérdida reducida (-0.5R en lugar de -1.0R de SL completo)',
                 ]}
                 strengths={['Captura movimientos explosivos de alta volatilidad', 'La estrategia de Reversión no necesita la compresión 1H → más oportunidades', 'El Andian Oscillator es un sesgo macro no convencional, menos "seguido por todos"', 'Corte temprano a -0.5R reduce drásticamente el impacto de pérdidas en falsas rupturas']}

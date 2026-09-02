@@ -420,6 +420,34 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - `getKlinesFingerprint` implementa un hash aritmético FNV-1a de 32 bits de cero asignación sobre las últimas 1.500 velas, garantizando que cualquier corrección de datos pasados invalide el caché instantáneamente sin penalización de CPU ($< 0.01\text{ms}$).
   - **Suite de Pruebas Ampliada**:
     - **100/100 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
+- **Actualización v2026.09.02.1 — Robustez Cuantitativa Institucional, Multiplicidad, Folds Disjuntos y Scoring Continuo C0**:
+  - **Compuerta Activa de Multiplicidad (White's Reality Check / Bonferroni)**:
+    - `tournament.ts` implementa un hurdle de expectativa deflactada de calidad expresado en $R$ por trade ($E[R]_{\text{deflated}} = \text{winnerScore} \cdot \text{timeFactor} \ge +0.040R$), independiente de la duración o `timeFactor`, asegurando igual estándar entre scalps de 1.5h y swings de 7h.
+    - Margen de separación escalonado sobre el 2º clasificado bajo $K \ge 3$ competidores, con acumulación aditiva de notas en `multiplicityNote` sin sobrescritura.
+  - **Validación Walk-Forward Multi-Fold Disjunta**:
+    - `calculateWalkForward` divide el tramo OOS en 3 particiones temporales estrictamente disjuntas e independientes ($[0, \frac{1}{3})$, $[\frac{1}{3}, \frac{2}{3})$, $[\frac{2}{3}, 1.00]$).
+    - Purga de straddlers entre bloques y compuerta activa `foldsPassed >= 2` para otorgar certificación `HIGH`.
+  - **Scoring Multicapa Continuo ($C^0$)**:
+    - Mapeos continuos $\tanh$ en Capa 1 (EMA mayor), Capa 4 (VWAP en intradía) y Capa 4 (OBV en diario normalizado por volumen medio), erradicando saltos binarios y churn por ruido.
+    - Rampa suave de transición continua entre $1.8$ y $2.2$ ATR en Capa 4 para sobreextensión, eliminando el knife-edge de 2.94 puntos a $\pm 2.0$ ATR.
+    - Recalibración del umbral al 40% del potencial alcanzable ($2.50$ en 5m, $2.80$ en 1h/1d).
+  - **Geometría de Riesgo y Horizontes Temporales Escalados**:
+    - Confluencia ejecuta con SL a $2.0 \times \text{ATR}$ y Scoring con SL a $1.5 \times \text{ATR}$.
+    - Escalado proporcional de `forwardWindow`: Confluencia escala a 10 velas (50m en 5m) y 7 velas (7h en 1h); Scoring escala a 8 velas (5m) y 5 velas (1h), eliminando resoluciones prematuras por timeout.
+  - **Simulación Realista y Microestructura**:
+    - Llenado de Stop Loss en gaps de mercado sin truncamiento optimista.
+    - Slippage adverso (+0.03%) en órdenes a mercado (`SL`, `TIME_STOP`, `EMERGENCY_EXIT`, `SESSION_GAP`), preservando precios exactos en TPs límites.
+    - Deadband de scratch simétrico en unidades de $R$ ($|R| \le 0.05R$) con cómputo simétrico en Profit Factor y Sortino.
+    - Escalado proporcional de fricción en salidas multi-tier.
+  - **Filtros de Señal y Paridad**:
+    - Neutralización de VWAP en las primeras 2-3 barras de sesión por degeneración HLC3.
+    - Standard Voting: piso de mayoría neta (`voteMargin >= 2`) y RVOL simétrico de 0.9x para BUY y SELL.
+    - Multifractal: compatibilidad obligatoria con sesgo macro 1D en reversión a la media.
+    - Gestión de gaps en 1H sin descarte del 57% de la tarde, delegando a `SESSION_GAP`.
+    - Lookahead eliminado en `avgDailyRange` (indexación puntual `idx1dMap[i]`).
+    - Exclusión de vela actual en RVOL de Multifractal y fallback macro VCME con `lastEma200Ref`.
+  - **Suite de Pruebas Unitarias**:
+    - **124/124 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
 
 ---
 

@@ -62,12 +62,19 @@ export function calculateAlertLevels(
   signal: string,
   entryPrice: number,
   interval: string,
-  atr?: number
+  atr?: number,
+  strategyKey?: string
 ): { stopLoss: number; takeProfit1: number; takeProfit2?: number } {
   const isBuy = signal.includes('BUY');
   
-  // Parity with backtester.ts getParams:
-  const atrMultiplier = interval === '1d' ? 1.0 : 1.2;
+  // Parity with backtester.ts strategy-specific risk geometry:
+  // Confluencia is designed with 2.0*ATR, Scoring with 1.5*ATR, Standard with 1.2*ATR (or 1.0 on 1d)
+  let atrMultiplier = interval === '1d' ? 1.0 : 1.2;
+  if (strategyKey === 'confluencia') {
+    atrMultiplier = 2.0;
+  } else if (strategyKey === 'scoring') {
+    atrMultiplier = 1.5;
+  }
   const fallbackThreshold = interval === '1d' ? 0.015 : interval === '1h' ? 0.012 : 0.008;
   
   let stopPct = fallbackThreshold;
