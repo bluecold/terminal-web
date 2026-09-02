@@ -3440,6 +3440,38 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(emptyTourney.confidence, 'NONE');
   });
 
+  // Test 106: Walk-Forward adaptive OOS threshold derives strictly from In-Sample cycle time without OOS duration leakage
+  test('calculateWalkForward adaptive capacity derives strictly from In-Sample trades without OOS duration leakage', () => {
+    // Dataset 0..99 (100 candles), splitIdx = 70, oosWindow = 30
+    // In-Sample trades with fast cycles (duration 2 candles + 2 cooldown = 4 candles)
+    const baseISTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 10, exitIdx: 12, durationCandles: 2 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 20, exitIdx: 22, durationCandles: 2 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 30, exitIdx: 32, durationCandles: 2 },
+    ];
+
+    // Scenario 1: Short OOS trade (duration = 2)
+    const tradesWithShortOOS: RecordedTrade[] = [
+      ...baseISTrades,
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 75, exitIdx: 77, durationCandles: 2 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 85, exitIdx: 87, durationCandles: 2 }
+    ];
+
+    // Scenario 2: Huge timeout OOS trade (duration = 50)
+    const tradesWithHugeOOS: RecordedTrade[] = [
+      ...baseISTrades,
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 75, exitIdx: 125, durationCandles: 50 },
+      { dir: 'SELL', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 85, exitIdx: 135, durationCandles: 50 }
+    ];
+
+    const wf1 = calculateWalkForward(tradesWithShortOOS, 0, 99, 0.70, 5, 24, 5 / 60, 2);
+    const wf2 = calculateWalkForward(tradesWithHugeOOS, 0, 99, 0.70, 5, 24, 5 / 60, 2);
+
+    // Both must compute the exact same In-Sample cycle time and exact same status
+    assert.strictEqual(wf1.status, wf2.status, 'Altering OOS trade duration must not alter OOS capacity or validation status');
+    assert.strictEqual(wf1.passed, wf2.passed);
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

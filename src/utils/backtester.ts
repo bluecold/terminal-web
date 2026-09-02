@@ -253,7 +253,7 @@ export function calculateWalkForward(
   latestIdx: number,
   splitRatio: number = 0.70,
   minOosTrades: number = 5,
-  avgCycleCandles?: number,
+  nominalCycleCandles?: number,
   candleHours: number = 5 / 60,
   cooldownCandles: number = 12
 ): WalkForwardResult {
@@ -261,13 +261,6 @@ export function calculateWalkForward(
   const isWindow = Math.round(totalCandles * splitRatio);
   const oosWindow = Math.max(0, totalCandles - isWindow);
   const splitIdx = oldestIdx + isWindow;
-
-  // Calculate physical capacity of the OOS window based on average cycle time
-  const cycleTime = (avgCycleCandles && avgCycleCandles > 0) ? avgCycleCandles : 24;
-  const oosCapacity = Math.max(1, Math.floor(oosWindow / cycleTime));
-  // Scale requirement with window capacity while maintaining a strict floor of 2 trades
-  // and capping at the nominal minOosTrades target
-  const effectiveMinOos = Math.min(minOosTrades, Math.max(2, Math.floor(oosCapacity * 0.6)));
 
   // Purged Partitioning:
   // - inSample: trades that execute and exit strictly before splitIdx
@@ -297,6 +290,29 @@ export function calculateWalkForward(
       purgedSignals++;
     }
   }
+
+  // Calculate In-Sample average cycle length (holding duration + cooldown) strictly from In-Sample trades
+  let isAvgCycle = 0;
+  if (isTrades.length > 0) {
+    let totalIsCycleCandles = 0;
+    for (let j = 0; j < isTrades.length; j++) {
+      const t = isTrades[j];
+      const dur = t.durationCandles ?? (
+        t.entryIdx !== undefined && t.exitIdx !== undefined
+          ? Math.max(1, t.exitIdx - t.entryIdx)
+          : 6
+      );
+      totalIsCycleCandles += (dur + cooldownCandles);
+    }
+    isAvgCycle = totalIsCycleCandles / isTrades.length;
+  }
+
+  // Physical capacity of the OOS window derived purely from In-Sample cycle time (or fallback nominal cycle)
+  const cycleTime = isAvgCycle > 0 ? isAvgCycle : ((nominalCycleCandles && nominalCycleCandles > 0) ? nominalCycleCandles : 24);
+  const oosCapacity = Math.max(1, Math.floor(oosWindow / cycleTime));
+  // Scale requirement with window capacity while maintaining a strict floor of 2 trades
+  // and capping at the nominal minOosTrades target
+  const effectiveMinOos = Math.min(minOosTrades, Math.max(2, Math.floor(oosCapacity * 0.6)));
 
   const inSample = calculateSplitStats(isTrades, candleHours, cooldownCandles);
   const outOfSample = calculateSplitStats(oosTrades, candleHours, cooldownCandles);
@@ -1028,7 +1044,8 @@ export function backtestMultitemporal(
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
   const minOosTrades = style === 'swing' ? 3 : 5;
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles, candleHours, cooldownPeriod);
+  const nominalCycle = style === 'swing' ? (48 + cooldownPeriod) : (6 + cooldownPeriod);
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, nominalCycle, candleHours, cooldownPeriod);
 
   const res: BacktestResult = {
     totalSignals,
@@ -1217,7 +1234,8 @@ function runBacktestGenericOptimized(
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
   const minOosTrades = interval === '1h' ? 3 : interval === '1d' ? 2 : 5;
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, avgCycleCandles, candleHours, params.cooldownPeriod);
+  const nominalCycle = params.forwardWindow + params.cooldownPeriod;
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, nominalCycle, candleHours, params.cooldownPeriod);
 
   return {
     totalSignals,
@@ -1453,7 +1471,8 @@ export function backtestMultifractalMTF(
   const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
   const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, 5, avgCycleCandles, 5 / 60, cooldownPeriod);
+  const nominalCycle = 12 + cooldownPeriod;
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, 5, nominalCycle, 5 / 60, cooldownPeriod);
 
   const res: BacktestResult = {
     totalSignals,
