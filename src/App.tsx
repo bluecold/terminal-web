@@ -10,8 +10,8 @@ import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
 import type { Kline } from './services/api';
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
-import { createFallbackBacktestResult, getStrategyCooldownMs, type BacktestResult, type DirectionalStats } from './utils/backtester';
-import { runQVESelection, sanitizeSignalWithDirectionalEdge, type StrategyCandidate, type ConfidenceLevel } from './utils/tournament';
+import { getStrategyCooldownMs } from './utils/backtester';
+import { runQVESelection, sanitizeSignalWithDirectionalEdge } from './utils/tournament';
 import { APP_VERSION } from './version';
 import {
   calculateAlertLevels,
@@ -363,18 +363,6 @@ function App() {
   // Keep track of the last known signals for all scanned symbols (watchlist + active)
   const lastSignalsRef = useRef<Record<string, string>>({});
 
-  // Cache best strategy per symbol (refreshed every 5 minutes to avoid excessive backtest computation)
-  const bestStrategyRef = useRef<Record<string, {
-    strategy: string;
-    pf: number | null;
-    winRate?: number;
-    confidence?: ConfidenceLevel;
-    strategyLabel?: string;
-    longStats?: DirectionalStats;
-    shortStats?: DirectionalStats;
-    timestamp: number;
-  }>>({});
-
   // Cooldown for notifications/logging per symbol and timeframe (persisted in localStorage)
   const alertCooldownsRef = useRef<Record<string, number>>((() => {
     try {
@@ -442,53 +430,23 @@ function App() {
           if (data1h.length > 0) scannedKlinesMap[`${symbol}:1h`] = data1h;
           if (data1d.length > 0) scannedKlinesMap[`${symbol}:1d`] = data1d;
 
-          // ── Determine best strategy (cached for 5 minutes) ──────────────
+          // ── Determine best strategy using QVE (backed by fast FNV-1a backtest caching) ──
           const now = Date.now();
-          const cached = bestStrategyRef.current[symbol];
-          let bestStrategy: StrategyCandidate['key'] | 'NONE' = 'NONE';
-          let strategyLabel = '';
-          let bestPF: number | null = null;
-          let bestConfidence: ConfidenceLevel = 'NONE';
-          let btMulti: BacktestResult = createFallbackBacktestResult('datos insuficientes', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)');
+          const qve = runQVESelection({
+            symbol,
+            data5m,
+            data1h,
+            data1d,
+            executionStyle,
+            triggerMode,
+            scoringWeights,
+          });
 
-          if (!cached || now - cached.timestamp > 5 * 60 * 1000) {
-            const qve = runQVESelection({
-              symbol,
-              data5m,
-              data1h,
-              data1d,
-              executionStyle,
-              triggerMode,
-              scoringWeights,
-            });
-
-            bestStrategy = qve.bestStrategy;
-            strategyLabel = qve.strategyLabel;
-            bestPF = qve.profitFactor;
-            bestConfidence = qve.confidence;
-            btMulti = qve.btMulti;
-
-            bestStrategyRef.current[symbol] = {
-              strategy: bestStrategy,
-              pf: bestPF,
-              winRate: qve.winRate,
-              confidence: bestConfidence,
-              strategyLabel,
-              longStats: qve.tournament.longStats,
-              shortStats: qve.tournament.shortStats,
-              timestamp: now,
-            };
-          } else {
-            bestStrategy = cached.strategy as StrategyCandidate['key'] | 'NONE';
-            bestPF = cached.pf;
-            bestConfidence = cached.confidence || 'HIGH';
-            strategyLabel = cached.strategyLabel || (bestStrategy === 'confluencia' ? 'Confluencia' : bestStrategy === 'scoring' ? 'Scoring' : bestStrategy === 'multitemporal' ? 'VCME Sniper' : bestStrategy === 'multifractal' ? 'Multifractal MTF' : 'Standard');
-            btMulti = {
-              ...createFallbackBacktestResult('cached', executionStyle === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)'),
-              profitFactor: cached.pf,
-              winRate: cached.winRate || 0.50,
-            };
-          }
+          const bestStrategy = qve.bestStrategy;
+          const strategyLabel = qve.strategyLabel;
+          const bestPF = qve.profitFactor;
+          const bestConfidence = qve.confidence;
+          const btMulti = qve.btMulti;
 
           // ── Calculate signal using the best strategy on CLOSED candles ──
           let overallSignal = 'NEUTRAL';
@@ -557,11 +515,10 @@ function App() {
           }
 
           // ── Validate directional expectancy (min 3 resolved trades) ──────
-          const currentCached = bestStrategyRef.current[symbol];
           overallSignal = sanitizeSignalWithDirectionalEdge(
             overallSignal,
-            currentCached?.longStats,
-            currentCached?.shortStats,
+            qve.tournament.longStats,
+            qve.tournament.shortStats,
             3
           );
 
@@ -753,7 +710,6 @@ function App() {
     return () => {
       isMounted = false;
       lastSignalsRef.current = {};
-      bestStrategyRef.current = {};
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
