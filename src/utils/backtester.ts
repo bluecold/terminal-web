@@ -761,7 +761,7 @@ function evaluateOutcome(
 // ─── Cache Layer for Backtesting Performance ──────────────────────────────
 const backtestCache = new Map<string, { fingerprint: string; result: BacktestResult }>();
 
-function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
+export function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
   let fp = '';
   for (let sIdx = 0; sIdx < seriesList.length; sIdx++) {
     const s = seriesList[sIdx];

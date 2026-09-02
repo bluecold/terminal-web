@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Eye, AlertTriangle, ShieldCheck, Zap } from 'lucide-react';
-import { fetchKlines, type Kline } from '../services/api';
+import { fetchKlines } from '../services/api';
 import {
   calculateStandardVoting,
   calculateExperimentalSignal,
@@ -16,6 +16,7 @@ import {
 } from '../utils/indicators';
 import { formatSmartPrice } from '../utils/formatters';
 import { runQVESelection, sanitizeSignalWithDirectionalEdge, type ConfidenceLevel } from '../utils/tournament';
+import { getKlinesFingerprint } from '../utils/backtester';
 
 // Clock helper to isolate Date.now() access from component render body
 function getNowTimestamp(): number {
@@ -106,12 +107,6 @@ export default function MarketRadar({
     bbWidthPercent: number;
   }
   const calcCacheRef = useRef<Map<string, CachedRadarAnalytics>>(new Map());
-
-  const getKlinesFingerprint = (klines: Kline[]) => {
-    if (!klines || klines.length === 0) return '0';
-    const last = klines[klines.length - 1];
-    return `${klines.length}_${last.time}_${last.close}_${last.high}_${last.low}_${last.volume}`;
-  };
 
   const symbolsToScan = useMemo(() => {
     if (activePreset === 'watchlist') {
@@ -236,12 +231,10 @@ export default function MarketRadar({
       const closed1h = getConfirmedClosedKlines(k1h, '1h', symbol);
       const closed1d = getConfirmedClosedKlines(k1d, '1d', symbol);
 
-      // Smart cache check using robust OHLCV candle fingerprints, user profile, and scoring weights
-      const fp5m = getKlinesFingerprint(closed5m);
-      const fp1h = getKlinesFingerprint(closed1h);
-      const fp1d = getKlinesFingerprint(closed1d);
+      // Smart cache check using robust FNV-1a OHLCV candle fingerprints, user profile, and scoring weights
+      const klinesHash = getKlinesFingerprint([closed5m, closed1h, closed1d]);
       const wKey = scoringWeights ? `${scoringWeights.trend}_${scoringWeights.rsi}_${scoringWeights.bollinger}_${scoringWeights.volume}_${scoringWeights.candle}` : 'default';
-      const cacheHash = `${symbol}_${fp5m}_${fp1h}_${fp1d}_${executionStyle}_${triggerMode}_${wKey}`;
+      const cacheHash = `${symbol}_${klinesHash}_${executionStyle}_${triggerMode}_${wKey}`;
 
       let analytics: CachedRadarAnalytics;
       const cached = !forceFresh ? calcCacheRef.current.get(symbol) : undefined;
