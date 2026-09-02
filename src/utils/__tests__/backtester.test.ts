@@ -3472,6 +3472,25 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(wf1.passed, wf2.passed);
   });
 
+  // Test 107: Walk-Forward requires strictly positive E[R] > 0 and rejects exact 0.00R breakeven
+  test('calculateWalkForward requires strictly positive E[R] > 0 and marks exact 0.00R breakeven as FAIL', () => {
+    // 5 OOS trades with exact 0.00R net edge: 2 wins (+1.0R each) and 2 losses (-1.0R each)
+    const breakevenOOSTrades: RecordedTrade[] = [
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', executionIdx: 20, exitIdx: 30 },
+      { dir: 'SELL', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', executionIdx: 40, exitIdx: 50 },
+      // OOS (splitIdx = 70)
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 72, exitIdx: 75 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', executionIdx: 76, exitIdx: 79 },
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', executionIdx: 80, exitIdx: 83 },
+      { dir: 'SELL', realizedR: -1.0, pnlPct: -4.0, outcome: 'loss', executionIdx: 84, exitIdx: 87 }
+    ];
+
+    const wf = calculateWalkForward(breakevenOOSTrades, 0, 99, 0.70, 4);
+    assert.strictEqual(wf.outOfSample.expectancyR, 0, 'OOS expectancy is exactly 0.00R');
+    assert.strictEqual(wf.status, 'FAIL', 'Exact 0.00R breakeven OOS sample must FAIL validation');
+    assert.strictEqual(wf.passed, false, 'Breakeven OOS must not pass');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

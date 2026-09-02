@@ -324,8 +324,8 @@ export function calculateWalkForward(
     status = 'NO_OOS_TRADES';
     passed = false;
   } else if (oosTrades.length < effectiveMinOos) {
-    // If the few OOS trades are already net negative, mark as FAIL
-    if (outOfSample.expectancyR < 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor < 1.0)) {
+    // If the few OOS trades are already net negative or zero edge, mark as FAIL
+    if (outOfSample.expectancyR <= 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor < 1.0)) {
       status = 'FAIL';
       passed = false;
     } else {
@@ -333,7 +333,7 @@ export function calculateWalkForward(
       status = 'INSUFFICIENT_OOS';
       passed = false;
     }
-  } else if (outOfSample.expectancyR >= 0 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
+  } else if (outOfSample.expectancyR > 0 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
     status = 'PASS';
     passed = true;
   } else {
