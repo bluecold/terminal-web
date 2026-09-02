@@ -3124,17 +3124,17 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       }
     };
 
-    // 1. In Trending market (ADX >= 26): Trend strategy wins; Range strategy is hard-gated (negative trending expectancy)
+    // 1. In Trending market (Histéresis >= 26 / <= 22): Trend strategy wins; Range strategy is hard-gated (negative trending expectancy)
     const tourneyTrending = evaluateStrategyTournament([trendStrategy, rangeStrategy], '5m', 'trending');
     assert.strictEqual(tourneyTrending.bestStrategy, 'multitemporal', 'Trend strategy must win in trending regime');
     assert.strictEqual(tourneyTrending.confidence, 'HIGH');
-    assert.ok(tourneyTrending.reasoning.includes('🔥 Tendencia (ADX≥26)'));
+    assert.ok(tourneyTrending.reasoning.includes('🔥 Tendencia (Histéresis ≥26/≤22)'));
 
-    // 2. In Ranging market (ADX <= 22): Range strategy wins; Trend strategy is hard-gated (negative ranging expectancy)
+    // 2. In Ranging market (Histéresis <= 22 / >= 26): Range strategy wins; Trend strategy is hard-gated (negative ranging expectancy)
     const tourneyRanging = evaluateStrategyTournament([trendStrategy, rangeStrategy], '5m', 'ranging');
     assert.strictEqual(tourneyRanging.bestStrategy, 'confluencia', 'Range strategy must win in ranging regime');
     assert.strictEqual(tourneyRanging.confidence, 'HIGH');
-    assert.ok(tourneyRanging.reasoning.includes('💤 Rango (ADX≤22)'));
+    assert.ok(tourneyRanging.reasoning.includes('💤 Rango (Histéresis ≤22/≥26)'));
   });
 
   // Test 97: Rejection of negative In-Sample candidates from LIMITED confidence (zero score / no edge)

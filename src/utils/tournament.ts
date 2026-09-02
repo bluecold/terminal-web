@@ -229,7 +229,7 @@ export function evaluateStrategyTournament(
       ? `, WF OOS ${winner.walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${winner.walkForward.outOfSample.expectancyR.toFixed(2)}R`
       : '';
     const regimeInfo = currentRegime
-      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX≥26)' : '💤 Rango (ADX≤22)'}`
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (Histéresis ≥26/≤22)' : '💤 Rango (Histéresis ≤22/≥26)'}`
       : '';
 
     return {
@@ -287,7 +287,7 @@ export function evaluateStrategyTournament(
       ? ' · Sin trades en OOS'
       : '';
     const regimeInfo = currentRegime
-      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (ADX≥26)' : '💤 Rango (ADX≤22)'}`
+      ? ` · ${currentRegime === 'trending' ? '🔥 Tendencia (Histéresis ≥26/≤22)' : '💤 Rango (Histéresis ≤22/≥26)'}`
       : '';
 
     return {
