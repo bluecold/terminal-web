@@ -10,6 +10,7 @@ import {
   evaluateConfluenciaAt,
   buildScoringContext,
   evaluateScoringAt,
+  DEFAULT_SCORING_THRESHOLD_RATIO,
   buildStandardVotingContext,
   evaluateStandardVotingAt,
   buildVCMESniperContext,
@@ -993,13 +994,20 @@ export function backtestConfluencia(klines: Kline[], interval: string, symbol?: 
   return setBacktestCache(cacheKey, klines, res);
 }
 
-export function backtestScoring(klines: Kline[], interval: string, weights?: ScoringWeights, symbol?: string): BacktestResult {
+export function backtestScoring(
+  klines: Kline[],
+  interval: string,
+  weights?: ScoringWeights,
+  symbol?: string,
+  thresholdRatio?: number
+): BacktestResult {
   const w = weights || DEFAULT_WEIGHTS;
-  const weightsKey = `${w.trend}_${w.rsi}_${w.bollinger}_${w.volume}_${w.candle}`;
+  const ratioKey = thresholdRatio ?? DEFAULT_SCORING_THRESHOLD_RATIO;
+  const weightsKey = `${w.trend}_${w.rsi}_${w.bollinger}_${w.volume}_${w.candle}_${ratioKey}`;
   const cacheKey = `scoring:${symbol || 'any'}:${interval}:${weightsKey}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
-  const signals = computeScoringSignalsSeries(klines, interval, weights);
+  const signals = computeScoringSignalsSeries(klines, interval, weights, thresholdRatio);
   // Scoring evaluates and validates R:R against slDist = 1.5 * ATR
   const res = runBacktestGenericOptimized(klines, interval, signals, 1.5, 'scoring');
   return setBacktestCache(cacheKey, klines, res);
@@ -1482,13 +1490,14 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
 export function computeScoringSignalsSeries(
   klines: Kline[],
   interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS
+  weights: ScoringWeights = DEFAULT_WEIGHTS,
+  thresholdRatio?: number
 ): ('BUY' | 'SELL' | 'NEUTRAL')[] {
   const length = klines ? klines.length : 0;
   const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
   if (length < 60) return signals;
 
-  const ctx = buildScoringContext(klines, interval, weights);
+  const ctx = buildScoringContext(klines, interval, weights, thresholdRatio);
   for (let i = 59; i < length; i++) {
     const res = evaluateScoringAt(ctx, i);
     signals[i] = res.signal === 'HOLD' ? 'NEUTRAL' : res.signal;

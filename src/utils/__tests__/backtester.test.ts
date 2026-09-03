@@ -61,6 +61,7 @@ import {
   buildConfluenciaContext,
   buildScoringContext,
   evaluateScoringAt,
+  DEFAULT_SCORING_THRESHOLD_RATIO,
   buildVCMESniperContext,
   evaluateVCMESniperAt,
   buildStandardVotingContext,
@@ -69,6 +70,7 @@ import {
   evaluateMultifractalMTFAt,
   type MultifractalMTFContext
 } from '../strategyEvaluators';
+import { DEFAULT_WEIGHTS } from '../indicators';
 import { sanitizeKlines, type Kline } from '../../services/api';
 
 function generateSyntheticKlines(count: number, intervalSeconds: number, startPrice: number = 100, drift: number = 0): Kline[] {
@@ -4417,31 +4419,36 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res1h.discards.sessionGap, 0, '1H backtest must NOT discard afternoon bars via isNearSessionEnd (0% gap discards)');
   });
 
-  // Test 121: Scoring threshold restoration on true mathematical maxPossible and VWAP directional veto
-  test('Scoring restores true maxPossible, 50% threshold, and enforces explicit VWAP directional veto', () => {
+  // Test 121: Scoring threshold calibrated against watchlist data (0.45) and VWAP directional veto
+  test('Scoring restores true maxPossible, 0.45 empirical threshold, and enforces explicit VWAP directional veto', () => {
     // 1. 5m context: emaMajor is null, useVwap is true.
     // True mathematical max: trend 1.0 (1.5x), volume 1.0 (1.5x), rsi 1.0 (1.0x), bb 1.0 (1.0x), candle 1.0 (1.0x), structure 1.0 (1.0x)
     // maxPossible = 1.5 + 1.5 + 1.0 + 1.0 + 1.0 + 1.0 = 7.00
-    // threshold = 7.00 * 0.50 = 3.50 (eliminates double discount)
+    // threshold = 7.00 * 0.45 = 3.15 (calibrated against real watchlist signal rate)
+    assert.strictEqual(DEFAULT_SCORING_THRESHOLD_RATIO, 0.45, 'DEFAULT_SCORING_THRESHOLD_RATIO must be calibrated to 0.45');
     const synth5m: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 300,
       open: 100, high: 101, low: 99, close: 100, volume: 1000
     }));
     const ctx5m = buildScoringContext(synth5m, '5m');
     const res5m = evaluateScoringAt(ctx5m, 60);
-    assert.strictEqual(res5m.threshold, 3.50, '5m Scoring threshold must equal 50% of true maxPossible (7.00 * 0.50 = 3.50)');
+    assert.strictEqual(res5m.threshold, 3.15, '5m Scoring threshold must equal 45% of true maxPossible (7.00 * 0.45 = 3.15)');
+
+    // Custom threshold ratio test (e.g. 0.50):
+    const ctx5m50 = buildScoringContext(synth5m, '5m', DEFAULT_WEIGHTS, 0.50);
+    assert.strictEqual(evaluateScoringAt(ctx5m50, 60).threshold, 3.50, 'Custom ratio 0.50 must equal 3.50');
 
     // 2. 1h context: emaMajor is 50, useVwap is true.
     // True mathematical max: trend 2.0 (1.5x = 3.0), volume 1.0 (1.5x = 1.5), rest 1.0 (4.0x)
     // maxPossible = 3.0 + 1.5 + 4.0 = 8.50
-    // threshold = 8.50 * 0.50 = 4.25 (eliminates double discount)
+    // threshold = 8.50 * 0.45 = 3.83 (calibrated against real watchlist signal rate)
     const synth1h: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 3600,
       open: 100, high: 101, low: 99, close: 100, volume: 1000
     }));
     const ctx1h = buildScoringContext(synth1h, '1h');
     const res1h = evaluateScoringAt(ctx1h, 60);
-    assert.strictEqual(res1h.threshold, 4.25, '1h Scoring threshold must equal 50% of true maxPossible (8.50 * 0.50 = 4.25)');
+    assert.strictEqual(res1h.threshold, 3.83, '1h Scoring threshold must equal 45% of true maxPossible (8.50 * 0.45 = 3.83)');
 
     // 3. VWAP Directional Veto in ordinary trend zone (|distAtr| < 1.8 ATR):
     // When price is below VWAP within ordinary trend territory, Scoring must veto any BUY signal, converting it to HOLD.
@@ -4635,8 +4642,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }));
     const ctx1d = buildScoringContext(synth1d, '1d');
     const res1d = evaluateScoringAt(ctx1d, 60);
-    // 1D maxPossible is 8.50, threshold is 4.25 (50%)
-    assert.strictEqual(res1d.threshold, 4.25, '1D Scoring threshold must equal 50% of true maxPossible (8.50 * 0.50 = 4.25)');
+    // 1D maxPossible is 8.50, threshold is 3.83 (45% empirical calibration)
+    assert.strictEqual(res1d.threshold, 3.83, '1D Scoring threshold must equal 45% of true maxPossible (8.50 * 0.45 = 3.83)');
     // Layer 4 note must be continuous
     assert.ok(res1d.layers.volume.note.includes('Score continuo'), '1D OBV Layer 4 note must show continuous score');
   });

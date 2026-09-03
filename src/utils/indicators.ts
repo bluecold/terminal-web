@@ -17,7 +17,8 @@ import {
   type VCMESniperContext,
   type VCMESniperEvaluationResult,
   type MultifractalMTFContext,
-  type MultifractalMTFEvaluationResult
+  type MultifractalMTFEvaluationResult,
+  DEFAULT_SCORING_THRESHOLD_RATIO
 } from './strategyEvaluators';
 
 export {
@@ -25,6 +26,7 @@ export {
   evaluateConfluenciaAt,
   buildScoringContext,
   evaluateScoringAt,
+  DEFAULT_SCORING_THRESHOLD_RATIO,
   buildStandardVotingContext,
   evaluateStandardVotingAt,
   buildVCMESniperContext,

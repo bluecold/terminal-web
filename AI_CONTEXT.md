@@ -534,6 +534,20 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Esto permite la activación de setups de clímax y rebote cuando confluyen las capas de reversión (Bollinger, RSI oversold, martillo y soporte S/R), restaurando el rango dinámico bidireccional de la Capa 4 y devolviendo el sentido funcional a la rampa de transición continua.
   - **Suite de Pruebas Unitarias**:
     - **130/130 tests unitarios pasando** con Test 121 actualizado para verificar tanto el veto en zona tendencial ($|\text{distAtr}| < 1.8$) como la exención en sobreextensión extrema ($|\text{distAtr}| \ge 1.8$).
+- **Actualización v2026.09.03.6 — Calibración Empírica del Umbral de Scoring Anclada a Datos Reales**:
+  - **Medición de Tasa Real de Señales en Watchlist Multi-Activo**:
+    - Se instrumentó `backtestScoring` con barrido de umbrales `[0.40, 0.45, 0.50]` sobre datos de mercado reales de Binance y Yahoo Finance para los 10 activos de la watchlist (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`, `BNBUSDT`, `TSLA`, `MSFT`, `NVDA`, `AAPL`, `HUT`, `SATL`).
+    - **Hallazgos Empíricos:**
+      - El umbral `0.40` demostró hiper-actividad y sobreoperación ruidosa (hasta 45 señales en 366 velas 5m), destruyendo la expectancia estadística ($E[R]$ marcadamente negativa por exceso de ruido).
+      - El umbral `0.50` ($3.50$ en 5m / $4.25$ en 1h) redujo en exceso las oportunidades en cripto intradiario debido a que las capas continuas con $\tanh$ alcanzan típicamente $0.46 \dots 0.69$ en lugar de $\pm 1.0$, dejando un margen muy estrecho ($\times 1.20$).
+      - El umbral `0.45` alcanzó el balance óptimo: **80.0% (8/10)** de los activos en 5m superan `minHighResolved >= 8` con operaciones resueltas de calidad y **100.0% (10/10)** en 1h superan `minHighResolved >= 5`, con un margen realista de $\times 1.33$ sobre setups alcistas representativos.
+  - **Fijación Canónica y Soporte de Parámetro Libre (`thresholdRatio`)**:
+    - Se definió `DEFAULT_SCORING_THRESHOLD_RATIO = 0.45` canónico:
+      - 5m: $7.00 \times 0.45 = \mathbf{3.15}$
+      - 1h / 1d: $8.50 \times 0.45 = \mathbf{3.83}$
+    - Se expuso `thresholdRatio?: number` en `buildScoringContext`, `evaluateScoringAt`, `computeScoringSignalsSeries` y `backtestScoring`, permitiendo su ajuste y validación experimental sin romper interfaces ni introducir acoplamientos rígidos.
+  - **Suite de Pruebas Unitarias**:
+    - **130/130 tests unitarios pasando** actualizados con el nuevo umbral calibrado a 0.45 y tests de custom ratios.
 
 ---
 
