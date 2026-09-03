@@ -16,6 +16,8 @@ import {
   getStrategyCooldownMs,
   getStrategyForwardWindow,
   getStrategySignalWarmup,
+  getStrategyAtrMultiplier,
+  isExecutionAcrossSessionGap,
   runBacktestGenericOptimized,
   type RecordedTrade
 } from '../backtester';
@@ -4922,7 +4924,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     // Place a BUY signal on a session closing candle (e.g. candle 69, which is the 7th candle of Day 10)
     const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(klines1h.length).fill('NEUTRAL');
     signals[69] = 'BUY'; // Day 10 closing candle: next candle 70 is Day 11 open after 61200s overnight jump
-    const btRes = runBacktestGenericOptimized(klines1h, '1h', signals);
+    const btRes = runBacktestGenericOptimized(klines1h, '1h', signals, 'standard');
     assert.strictEqual(btRes.discards.sessionGap, 1, 'Closing bar signal where execution candle jumps overnight gap must be counted under discards.sessionGap');
     assert.strictEqual(btRes.totalSignals, 0, 'No day trade should be opened across the overnight gap');
   });
@@ -4969,8 +4971,12 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     // Verify forwardWindow single source of truth in runBacktestGenericOptimized
     const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(612).fill('NEUTRAL');
-    const genericRes = runBacktestGenericOptimized(klines612, '5m', signals, 2.0);
+    const genericRes = runBacktestGenericOptimized(klines612, '5m', signals, 'confluencia');
     assert.strictEqual(genericRes.forwardWindow, 10, 'runBacktestGenericOptimized must derive 10 candles via getStrategyForwardWindow');
+
+    // Verify strategyKey decoupling: passing custom 2.0 ATR multiplier to standard does NOT reroute to Confluencia forwardWindow
+    const standardCustomAtr = runBacktestGenericOptimized(klines612, '5m', signals, 'standard', 2.0);
+    assert.strictEqual(standardCustomAtr.forwardWindow, 6, 'Overriding ATR multiplier must NOT re-route standard forwardWindow');
 
     // 2. Non-vacuous Walk-Forward folds gate:
     // Candidate where all 3 OOS folds have NO_DATA (0 trades, e.g. due to boundary straddling in low-frequency swing)
@@ -5046,6 +5052,26 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     // preserving the true 70/30 active opportunity balance without In-Sample dilution.
     assert.ok(resStandard1h.walkForward.isWindow > 0, 'In-sample window must be strictly positive');
     assert.ok(resStandard1h.walkForward.oosWindow > 0, 'Out-of-sample window must be strictly positive');
+  });
+
+  // Test 132: Strategy key decoupling and canonical session gap execution guard
+  test('runBacktestGenericOptimized decouples strategyKey from ATR multiplier and unifies session gap guards', () => {
+    // 1. Verify getStrategyAtrMultiplier:
+    assert.strictEqual(getStrategyAtrMultiplier('confluencia', '5m'), 2.0, 'Confluencia ATR multiplier must be 2.0');
+    assert.strictEqual(getStrategyAtrMultiplier('scoring', '5m'), 1.5, 'Scoring ATR multiplier must be 1.5');
+    assert.strictEqual(getStrategyAtrMultiplier('standard', '5m'), 1.2, 'Standard ATR multiplier must be 1.2 in 5m');
+    assert.strictEqual(getStrategyAtrMultiplier('standard', '1d'), 1.0, 'Standard ATR multiplier must be 1.0 in 1d');
+
+    // 2. Verify isExecutionAcrossSessionGap:
+    const klinesWithGap: Kline[] = [
+      { time: 1000, open: 10, high: 11, low: 9, close: 10, volume: 100 },
+      { time: 1300, open: 10, high: 11, low: 9, close: 10, volume: 100 },
+      { time: 62500, open: 10, high: 11, low: 9, close: 10, volume: 100 }, // overnight gap > 900s
+    ];
+    assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 0, '5m'), false, 'Normal 300s bar must not be flagged as gap');
+    assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 1, '5m'), true, 'Execution candle jumping overnight gap must return true');
+    assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 2, '5m'), false, 'Last candle cannot jump across non-existent candle');
+    assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 1, '1d'), false, 'Daily interval is exempt from intraday session gap cuts');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

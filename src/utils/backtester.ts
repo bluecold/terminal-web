@@ -767,6 +767,19 @@ export function getStrategyForwardWindow(
 }
 
 /**
+ * Canonical ATR risk multiplier per strategy:
+ * - Confluencia: 2.0x ATR (wider swing stops for multi-EMA trend following)
+ * - Scoring: 1.5x ATR (balanced structure & volatility stops)
+ * - Standard / default: 1.2x on 5m/1h, 1.0x on 1d
+ */
+export function getStrategyAtrMultiplier(strategyKey: string = 'standard', interval: string = '5m'): number {
+  const norm = strategyKey.toLowerCase();
+  if (norm.includes('confluencia')) return 2.0;
+  if (norm.includes('scoring')) return 1.5;
+  return interval.toLowerCase() === '1d' ? 1.0 : 1.2;
+}
+
+/**
  * Canonical warmup floor based on the earliest candle index where the strategy
  * produces valid, non-sterile signals and indicators (specifically ADX(14) which requires 29 bars):
  * - Standard Voting: index 34 (MACD 26, RSI 14, Supertrend)
@@ -884,6 +897,18 @@ export function isNearSessionEnd(klines: Kline[], idx: number, interval: string,
     if (gap > expectedGapSec * 3) return true;
   }
   return false;
+}
+
+/**
+ * Canonical helper: checks if the execution candle (i + 1) crosses an overnight session gap.
+ * When true, entering at i+1.open would execute post-gap with overnight exposure or inverted gap risk.
+ * Used across runBacktestGenericOptimized, backtestMultitemporal, and backtestMultifractalMTF.
+ */
+export function isExecutionAcrossSessionGap(klines: Kline[], i: number, interval: string = '5m'): boolean {
+  if (interval === '1d' || i + 1 >= klines.length) return false;
+  const nextGap = klines[i + 1].time - klines[i].time;
+  const expectedGapSec = interval === '5m' ? 300 : (interval === '1h' ? 3600 : 300);
+  return nextGap > expectedGapSec * 3;
 }
 
 // ─── Trade Outcome Evaluation ──────────────────────────────────────────────
@@ -1004,7 +1029,7 @@ export function backtestStandard(klines: Kline[], interval: string, symbol?: str
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeStandardSignalsSeries(klines);
-  const res = runBacktestGenericOptimized(klines, interval, signals, undefined, 'standard');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'standard');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1014,7 +1039,7 @@ export function backtestConfluencia(klines: Kline[], interval: string, symbol?: 
   if (cached) return cached;
   const signals = computeConfluenciaSignalsSeries(klines, interval);
   // Confluencia is geometrically designed for stopLoss = close ± 2.0 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 2.0, 'confluencia');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'confluencia');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1033,7 +1058,7 @@ export function backtestScoring(
   if (cached) return cached;
   const signals = computeScoringSignalsSeries(klines, interval, weights, thresholdRatio);
   // Scoring evaluates and validates R:R against slDist = 1.5 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 1.5, 'scoring');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'scoring');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1133,13 +1158,10 @@ export function backtestMultitemporal(
     }
 
     // In session-based dayTrading, do not enter across an overnight gap:
-    if (isSessionBased && style === 'dayTrading' && i + 1 < klines5m.length) {
-      const nextGap = klines5m[i + 1].time - klines5m[i].time;
-      if (nextGap > 900) {
-        discards.sessionGap++;
-        neutrals++;
-        continue;
-      }
+    if (isSessionBased && style === 'dayTrading' && isExecutionAcrossSessionGap(klines5m, i, '5m')) {
+      discards.sessionGap++;
+      neutrals++;
+      continue;
     }
 
     totalSignals++;
@@ -1277,17 +1299,14 @@ export function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
-  customAtrMultiplier?: number,
-  strategyKey?: string
+  strategyKey: string = 'standard',
+  customAtrMultiplier?: number
 ): BacktestResult {
-  const inferredStrategy = strategyKey ?? (
-    customAtrMultiplier === 2.0 ? 'confluencia' : customAtrMultiplier === 1.5 ? 'scoring' : 'standard'
-  );
   // Canonical forwardWindow derived purely from getStrategyForwardWindow
-  const forwardWindow = getStrategyForwardWindow(inferredStrategy, interval);
-  const warmupFloor = getStrategySignalWarmup(inferredStrategy);
+  const forwardWindow = getStrategyForwardWindow(strategyKey, interval);
+  const warmupFloor = getStrategySignalWarmup(strategyKey);
   const params = getParams(interval, klines.length, forwardWindow, warmupFloor);
-  const atrMultiplier = customAtrMultiplier ?? params.atrMultiplier;
+  const atrMultiplier = customAtrMultiplier ?? getStrategyAtrMultiplier(strategyKey, interval);
   const { evalWindow, targetMultiplier, forwardLabel } = params;
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades
@@ -1364,14 +1383,10 @@ export function runBacktestGenericOptimized(
 
     // In session-based day trading (5m and 1h), do not enter across an overnight gap:
     // if the immediate next candle (execution candle i+1) is across a session gap, skip this single closing candle.
-    if (isSessionBased && interval !== '1d' && i + 1 < klines.length) {
-      const nextGap = klines[i + 1].time - klines[i].time;
-      const expectedGap = interval === '5m' ? 300 : 3600;
-      if (nextGap > expectedGap * 3) {
-        discards.sessionGap++;
-        neutrals++;
-        continue;
-      }
+    if (isSessionBased && isExecutionAcrossSessionGap(klines, i, interval)) {
+      discards.sessionGap++;
+      neutrals++;
+      continue;
     }
 
     const entryThreshold = getAdaptiveThreshold(
@@ -1619,13 +1634,10 @@ export function backtestMultifractalMTF(
     }
 
     // In session-based 5m day trading, do not enter across an overnight gap:
-    if (isSessionBased && i + 1 < klines5m.length) {
-      const nextGap = klines5m[i + 1].time - klines5m[i].time;
-      if (nextGap > 900) {
-        discards.sessionGap++;
-        neutrals++;
-        continue;
-      }
+    if (isSessionBased && isExecutionAcrossSessionGap(klines5m, i, '5m')) {
+      discards.sessionGap++;
+      neutrals++;
+      continue;
     }
 
     totalSignals++;

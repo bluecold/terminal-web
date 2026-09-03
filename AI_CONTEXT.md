@@ -562,6 +562,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se actualizó `getParams` para aceptar `warmupParam` y se fijó `oldestEvalIdx = Math.max(warmupFloor, latestEvalIdx - evalWindow + 1)` en todos los timeframes (5m, 1h, 1d) y en `backtestMultifractalMTF`.
   - **Suite de Pruebas Unitarias**:
     - **131/131 tests unitarios pasando** con el nuevo Test 131 que verifica los valores canónicos de `getStrategySignalWarmup`, la eliminación del prefijo estéril en 1H (Standard y Scoring) y la integridad de la partición Walk-Forward sin barras muertas.
+- **Actualización v2026.09.03.8 — Desacoplamiento de StrategyKey y Unificación de Guards de Gaps de Sesión**:
+  - **Desacoplamiento Estricto de `strategyKey` vs Multiplicador ATR (`getStrategyAtrMultiplier`)**:
+    - Anteriormente, `runBacktestGenericOptimized` infería la estrategia basándose en el multiplicador numérico recibido cuando no se pasaba `strategyKey` (`2.0 → confluencia`, `1.5 → scoring`).
+    - Al ser una función exportada, cualquier llamador que usara `2.0` como multiplicador por otro motivo heredaba silenciosamente el horizonte de 10 velas de Confluencia.
+    - Se creó la función canónica `getStrategyAtrMultiplier(strategyKey, interval)` y se reordenó la firma de `runBacktestGenericOptimized(klines, interval, signals, strategyKey = 'standard', customAtrMultiplier?)`.
+    - La identidad del motor queda desacoplada de los multiplicadores: pasar un multiplicador personalizado de 2.0 a `standard` no corrompe su `forwardWindow` (6 velas) ni su suelo de warmup (34 velas).
+  - **Unificación Canónica del Guard de Entrada en Gaps de Sesión (`isExecutionAcrossSessionGap`)**:
+    - Se reemplazaron las comprobaciones manuales dispersas con el número mágico `900` (`nextGap > 900`) en `backtestMultitemporal` y `backtestMultifractalMTF`.
+    - Se introdujo `isExecutionAcrossSessionGap(klines, i, interval)` que evalúa dinámicamente `nextGap > expectedGapSec * 3` (`300s` en 5m, `3600s` en 1h, eximiendo `1d`), compartiéndolo uniformemente entre el motor genérico y los motores especializados.
+  - **Suite de Pruebas Unitarias**:
+    - **132/132 tests unitarios pasando** con el nuevo Test 132 que valida `getStrategyAtrMultiplier`, la detección de gaps de ejecución mediante `isExecutionAcrossSessionGap` y la inmunidad del forward window ante multiplicadores ATR desacoplados.
 
 ---
 
