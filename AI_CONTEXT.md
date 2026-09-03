@@ -492,6 +492,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Esto evita abrir micro-daytrades 17.5 horas después al open del día siguiente por señales del cierre, con un costo mínimo (1/7 = 14% en 1H y 1/78 = 1.3% en 5m), manteniendo intacta la evaluación del 86-99% de la sesión.
   - **Suite de Pruebas Unitarias**:
     - **128/128 tests unitarios pasando** con el nuevo Test 128 que valida la invariante temporal en `simulateTrade` y el descarte de señales en la última barra de sesión.
+- **Actualización v2026.09.03.2 — Restauración de Umbrales Scoring sobre `maxPossible` Canónico y Veto Direccional VWAP**:
+  - **Eliminación del Doble Descuento en `evaluateScoringAt` (`strategyEvaluators.ts`)**:
+    - Se restauró la definición matemática de `maxPossible` sobre la capacidad asintótica máxima ($\pm 1.0$) de todas las capas: `maxTrend = 1 + (cfg.emaMajor ? 1.0 : 0)` y `maxVolume = 1.0`. `maxPossible` regresa a sus valores verdaderos de 7.00 en 5m y 8.50 en 1H/1D.
+    - Se restableció el multiplicador canónico al 50%: `threshold = Number((maxPossible * 0.50).toFixed(2))`, devolviendo los umbrales canónicos: **3.50 en 5m** y **4.25 en 1H/1D** (eliminando el abaratamiento espurio a 2.50 / 2.80).
+  - **Veto Direccional Estricto de VWAP**:
+    - Se incorporó la regla de alineación institucional con el flujo intradiario cuando el VWAP es fiable (`isVwapReliable`):
+      - Si `signal === 'BUY'` y `closeVal < vwap`: se bloquea y conmuta a `'HOLD'` con nota explícita `Veto direccional VWAP: BUY bloqueado bajo VWAP`.
+      - Si `signal === 'SELL'` y `closeVal > vwap`: se bloquea y conmuta a `'HOLD'` con nota explícita `Veto direccional VWAP: SELL bloqueado sobre VWAP`.
+    - Erradica compras en descuento bajista o cortos contra la liquidez compradora, asegurando que el suavizado con $\tanh$ no rompa el rol rector del VWAP en intradía.
+  - **Suite de Pruebas Unitarias**:
+    - **128/128 tests unitarios pasando** actualizados en Test 121 y Test 124 para validar los umbrales de 3.50 (5m) y 4.25 (1H/1D) y la actuación activa del veto direccional VWAP.
 
 ---
 

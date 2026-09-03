@@ -432,20 +432,34 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   const w6 = s6 * structureWeight;
   const totalScore = w1 + w2 + w3 + w4 + w5 + w6;
 
-  // Aporte máximo realmente alcanzable por capa:
+  // Capacidad máxima teórica alcanzable por capa:
   // - Capas discretas (EMA fast/slow, RSI, Bollinger, Velas, Estructura): ±1.0
-  // - Capas continuas con tanh (EMA mayor, VWAP y OBV): al activarse un setup el precio suele estar
-  //   a ~0.3-0.6 ATR o distancia moderada, aportando típicamente ~0.50 en lugar del ±1.0 teórico discreto.
-  const maxTrend = 1 + (cfg.emaMajor ? 0.50 : 0);
-  const maxVolume = (cfg.useVwap || cfg.useObv) ? 0.50 : 0;
+  // - Capas continuas con tanh (EMA mayor, VWAP y OBV): asintóticamente ±1.0
+  const maxTrend = 1 + (cfg.emaMajor ? 1.0 : 0);
+  const maxVolume = (cfg.useVwap || cfg.useObv) ? 1.0 : 0;
   const maxPossible = (maxTrend * w.trend) + w.rsi + w.bollinger + (maxVolume * w.volume) + w.candle + structureWeight;
-  // Umbral calibrado al 40% del máximo alcanzable (compensando la compresión de tanh)
-  // para preservar la frecuencia de señales original sin introducir ruido cerca de cero.
-  const threshold = Number((maxPossible * 0.40).toFixed(2));
+  const threshold = Number((maxPossible * 0.50).toFixed(2));
 
   let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
   if      (totalScore >=  threshold) signal = 'BUY';
   else if (totalScore <= -threshold) signal = 'SELL';
+
+  // Veto direccional estricto de VWAP:
+  // En intradía (5m y 1h), una estrategia tendencial/momentum no debe comprar por debajo de VWAP
+  // ni vender por encima de VWAP, preservando la alineación institucional con el flujo diario.
+  if (cfg.useVwap) {
+    const isVwapReliable = ctx.vwapReliableSeries && ctx.vwapReliableSeries.length > i ? ctx.vwapReliableSeries[i] : true;
+    if (isVwapReliable) {
+      const vwap = ctx.vwapSeries[i];
+      if (signal === 'BUY' && closeVal < vwap) {
+        signal = 'HOLD';
+        n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP';
+      } else if (signal === 'SELL' && closeVal > vwap) {
+        signal = 'HOLD';
+        n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP';
+      }
+    }
+  }
 
   // R:R validation
   if (signal !== 'HOLD') {

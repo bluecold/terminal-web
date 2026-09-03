@@ -4410,31 +4410,53 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res1h.discards.sessionGap, 0, '1H backtest must NOT discard afternoon bars via isNearSessionEnd (0% gap discards)');
   });
 
-  // Test 121: Scoring threshold recalibration on achievable tanh layer capacities
-  test('Scoring recalibrates maxPossible and threshold based on achievable tanh layer potentials', () => {
+  // Test 121: Scoring threshold restoration on true mathematical maxPossible and VWAP directional veto
+  test('Scoring restores true maxPossible, 50% threshold, and enforces explicit VWAP directional veto', () => {
     // 1. 5m context: emaMajor is null, useVwap is true.
-    // Achievable max: trend 1.0 (1.5x), volume 0.50 (1.5x), rsi 1.0 (1.0x), bb 1.0 (1.0x), candle 1.0 (1.0x), structure 1.0 (1.0x)
-    // maxPossible = 1.5 + 0.75 + 1.0 + 1.0 + 1.0 + 1.0 = 6.25
-    // threshold = 6.25 * 0.40 = 2.50 (was uncalibrated 3.50)
+    // True mathematical max: trend 1.0 (1.5x), volume 1.0 (1.5x), rsi 1.0 (1.0x), bb 1.0 (1.0x), candle 1.0 (1.0x), structure 1.0 (1.0x)
+    // maxPossible = 1.5 + 1.5 + 1.0 + 1.0 + 1.0 + 1.0 = 7.00
+    // threshold = 7.00 * 0.50 = 3.50 (eliminates double discount)
     const synth5m: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 300,
       open: 100, high: 101, low: 99, close: 100, volume: 1000
     }));
     const ctx5m = buildScoringContext(synth5m, '5m');
     const res5m = evaluateScoringAt(ctx5m, 60);
-    assert.strictEqual(res5m.threshold, 2.50, '5m Scoring threshold must equal 40% of achievable maxPossible (6.25 * 0.40 = 2.50)');
+    assert.strictEqual(res5m.threshold, 3.50, '5m Scoring threshold must equal 50% of true maxPossible (7.00 * 0.50 = 3.50)');
 
     // 2. 1h context: emaMajor is 50, useVwap is true.
-    // Achievable max: trend 1.50 (1.5x = 2.25), volume 0.50 (1.5x = 0.75), rest 1.0 (4.0x)
-    // maxPossible = 2.25 + 0.75 + 4.0 = 7.00
-    // threshold = 7.00 * 0.40 = 2.80 (was uncalibrated 4.25)
+    // True mathematical max: trend 2.0 (1.5x = 3.0), volume 1.0 (1.5x = 1.5), rest 1.0 (4.0x)
+    // maxPossible = 3.0 + 1.5 + 4.0 = 8.50
+    // threshold = 8.50 * 0.50 = 4.25 (eliminates double discount)
     const synth1h: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 3600,
       open: 100, high: 101, low: 99, close: 100, volume: 1000
     }));
     const ctx1h = buildScoringContext(synth1h, '1h');
     const res1h = evaluateScoringAt(ctx1h, 60);
-    assert.strictEqual(res1h.threshold, 2.80, '1h Scoring threshold must equal 40% of achievable maxPossible (7.00 * 0.40 = 2.80)');
+    assert.strictEqual(res1h.threshold, 4.25, '1h Scoring threshold must equal 50% of true maxPossible (8.50 * 0.50 = 4.25)');
+
+    // 3. VWAP Directional Veto:
+    // When price is below VWAP, Scoring must veto any BUY signal, converting it to HOLD.
+    // Build a bullish candle context where close is below VWAP
+    const synthVwapVeto: Kline[] = new Array(70).fill(null).map((_, idx) => ({
+      time: 1700000000 + idx * 300,
+      open: 100 + (idx === 65 ? -2 : 0),
+      high: 102,
+      low: 98,
+      close: 100 + (idx === 65 ? -1.5 : 0),
+      volume: 2000
+    }));
+    const ctxVeto = buildScoringContext(synthVwapVeto, '5m');
+    // Force closes[65] to be below VWAP while other indicators might be positive
+    const vwapAt65 = ctxVeto.vwapSeries[65];
+    ctxVeto.closes[65] = vwapAt65 - 0.5; // Strictly below VWAP
+    const resVeto = evaluateScoringAt(ctxVeto, 65);
+    assert.notStrictEqual(resVeto.signal, 'BUY', 'Scoring must NEVER emit BUY when price is below VWAP');
+    if (resVeto.score >= resVeto.threshold) {
+      assert.strictEqual(resVeto.signal, 'HOLD', 'BUY signal above threshold must be converted to HOLD by VWAP directional veto');
+      assert.ok(resVeto.layers.volume.note.includes('Veto direccional VWAP'), 'Volume note must document VWAP veto');
+    }
   });
 
   // Test 122: Scoring Layer 4 VWAP continuous transition ramp across 1.8-2.2 ATR
@@ -4596,8 +4618,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     }));
     const ctx1d = buildScoringContext(synth1d, '1d');
     const res1d = evaluateScoringAt(ctx1d, 60);
-    // 1D maxPossible is 7.00, threshold is 2.80 (40%)
-    assert.strictEqual(res1d.threshold, 2.80, '1D Scoring threshold must equal 40% of achievable maxPossible (7.00 * 0.40 = 2.80)');
+    // 1D maxPossible is 8.50, threshold is 4.25 (50%)
+    assert.strictEqual(res1d.threshold, 4.25, '1D Scoring threshold must equal 50% of true maxPossible (8.50 * 0.50 = 4.25)');
     // Layer 4 note must be continuous
     assert.ok(res1d.layers.volume.note.includes('Score continuo'), '1D OBV Layer 4 note must show continuous score');
   });
