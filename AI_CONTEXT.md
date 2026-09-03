@@ -464,6 +464,15 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se añadió `forwardWindow?: number;` al interfaz y a los retornos de todos los motores para introspección y diagnósticos directos.
   - **Suite de Pruebas Unitarias**:
     - **125/125 tests unitarios pasando** con el nuevo Test 125 que valida la paridad tripartita Backtest ↔ Torneo ↔ Live Alert Tracker.
+- **Actualización v2026.09.02.3 — Distinción Epistémica entre Falta de Datos y Evidencia Negativa en Walk-Forward**:
+  - **Clasificación Tripartita de Folds (`PASS` | `FAIL` | `NO_DATA`)**:
+    - En `calculateWalkForward` (`backtester.ts`), los folds del OOS con 0 operaciones cerradas se clasifican formalmente como `status: 'NO_DATA'`, impidiendo que la ausencia de eventos o el purgado de straddlers cuente espuriamente como un fracaso estadístico.
+    - Se añade la métrica `foldsWithData` en `WalkForwardResult` para registrar la cantidad de particiones temporales que tuvieron evidencia empírica.
+  - **Compuerta Adaptativa de Estabilidad en Torneo (`tournament.ts`)**:
+    - Se recalibró el requisito de certificación `HIGH` a `foldsPassed >= Math.min(2, effectiveFoldsWithData)`.
+    - En motores de baja cadencia o ciclo amplio (e.g. VCME Swing), donde solo 1 o 2 folds tienen datos, la estrategia puede alcanzar `HIGH` si todos sus folds observados aprueban con $E[R] \ge +0.10R$ y no presentan fallos decisivos, erradicando la penalización estructural frente a scalps de alta frecuencia.
+  - **Suite de Pruebas Unitarias**:
+    - **126/126 tests unitarios pasando** con el nuevo Test 126 que valida exhaustivamente la clasificación `NO_DATA` y la compuerta adaptativa.
 
 ---
 

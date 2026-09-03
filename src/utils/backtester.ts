@@ -152,6 +152,7 @@ export interface WalkForwardFold {
   oosTradesCount: number;
   oosExpectancyR: number;
   passed: boolean;
+  status?: 'PASS' | 'FAIL' | 'NO_DATA';
 }
 
 export interface WalkForwardResult {
@@ -164,6 +165,7 @@ export interface WalkForwardResult {
   status: 'PASS' | 'FAIL' | 'INSUFFICIENT_OOS' | 'NO_OOS_TRADES';
   folds?: WalkForwardFold[]; // Multi-fold expanding anchored walk-forward validation (3 folds)
   foldsPassed?: number;
+  foldsWithData?: number;
 }
 
 export function createEmptyDirectionalStats(): DirectionalStats {
@@ -361,9 +363,12 @@ export function calculateWalkForward(
   // Ensures 100% temporal blindness vs In-Sample and mutual independence between folds
   // (fold3 ∩ fold2 ∩ fold1 = ∅, eliminating nesting redundancy where fold3 ⊇ fold2 ⊇ fold1).
   // Purges boundary straddlers that cross between disjoint folds.
-  // Requires >= 1 trade and E[R] >= 0.10R to pass each fold; foldsPassed >= 2 gates HIGH confidence.
+  // Classifies each fold into 'PASS' (>= 1 trade & E[R] >= 0.10), 'FAIL' (trades present but underperforming),
+  // or 'NO_DATA' (0 closed trades due to low event density or purged straddlers).
+  // Differentiates absence of evidence from negative evidence.
   const folds: WalkForwardFold[] = [];
   let foldsPassed = 0;
+  let foldsWithData = 0;
   const foldRanges = [
     { startFrac: 0.00, endFrac: 1 / 3 },
     { startFrac: 1 / 3, endFrac: 2 / 3 },
@@ -393,20 +398,32 @@ export function calculateWalkForward(
       }
     }
 
-    const fOosStats = calculateSplitStats(fOosTrades, candleHours, cooldownCandles);
-    const fPassed = fOosTrades.length >= 1 &&
-      fOosStats.expectancyR >= 0.10 &&
-      (fOosStats.profitFactor === null || fOosStats.profitFactor >= 1.0);
+    const fTradesCount = fOosTrades.length;
+    let foldStatus: 'PASS' | 'FAIL' | 'NO_DATA' = 'NO_DATA';
+    let fPassed = false;
+    let foldExpR = 0;
 
-    if (fPassed) foldsPassed++;
+    if (fTradesCount > 0) {
+      foldsWithData++;
+      const fOosStats = calculateSplitStats(fOosTrades, candleHours, cooldownCandles);
+      foldExpR = fOosStats.expectancyR;
+      if (foldExpR >= 0.10 && (fOosStats.profitFactor === null || fOosStats.profitFactor >= 1.0)) {
+        fPassed = true;
+        foldStatus = 'PASS';
+        foldsPassed++;
+      } else {
+        foldStatus = 'FAIL';
+      }
+    }
 
     folds.push({
       fold: fIdx + 1,
       isWindow: splitIdx - oldestIdx,
       oosWindow: fEndIdx - fStartIdx + 1,
-      oosTradesCount: fOosTrades.length,
-      oosExpectancyR: fOosStats.expectancyR,
-      passed: fPassed
+      oosTradesCount: fTradesCount,
+      oosExpectancyR: foldExpR,
+      passed: fPassed,
+      status: foldStatus
     });
   }
 
@@ -420,6 +437,7 @@ export function calculateWalkForward(
     status,
     folds,
     foldsPassed,
+    foldsWithData,
   };
 }
 

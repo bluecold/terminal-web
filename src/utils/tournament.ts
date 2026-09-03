@@ -249,13 +249,24 @@ export function evaluateStrategyTournament(
     }
 
     // Hurdle 3: Multi-Fold Walk-Forward consistency gate.
-    // If multi-fold diagnostics exist, candidate must validate on at least 2 progressive folds (foldsPassed >= 2).
+    // Differentiates between negative evidence (FAIL) and absence of evidence (NO_DATA / empty fold).
+    // An empty fold (0 trades due to long cycle or purged straddlers) does not constitute failure.
+    // Gate requires foldsPassed >= min(2, foldsWithData).
+    // When foldsWithData >= 2, at least 2 folds must pass (at most 1 failure).
+    // When foldsWithData === 1, that single fold must pass and no fold may have failed.
     let passesFoldsGate = true;
     if (winner.walkForward?.folds && winner.walkForward.folds.length > 0) {
+      const folds = winner.walkForward.folds;
       const foldsPassed = winner.walkForward.foldsPassed ?? 0;
-      if (foldsPassed < 2) {
+      const foldsWithData = winner.walkForward.foldsWithData ?? (
+        folds.filter(f => f.status !== 'NO_DATA' && ((f.oosTradesCount ?? (f as { oosTrades?: number }).oosTrades ?? 0) > 0 || f.passed)).length
+      );
+      const effectiveFoldsWithData = Math.max(foldsPassed, foldsWithData);
+      const minFoldsRequired = Math.min(2, effectiveFoldsWithData);
+
+      if (foldsPassed < minFoldsRequired) {
         passesFoldsGate = false;
-        multiplicityNote += ` · Folds Walk-Forward insuficientes (${foldsPassed}/${winner.walkForward.folds.length} aprobados, mín 2 req) → Degradado a LIMITED`;
+        multiplicityNote += ` · Folds Walk-Forward insuficientes (${foldsPassed}/${folds.length} aprobados, mín ${minFoldsRequired} req) → Degradado a LIMITED`;
       }
     }
 

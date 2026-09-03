@@ -4666,6 +4666,101 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(btConf1d.forwardWindow, getStrategyExpiryCandles('Confluencia', '1d'), 'Confluencia 1d backtest vs live forwardWindow parity');
   });
 
+  test('multi-fold Walk-Forward classifies empty folds as NO_DATA without penalizing low-frequency swing engines', () => {
+    // 1. Synthetic dataset where In-Sample has 8 wins and OOS has positive trades in Fold 1 and Fold 3,
+    // but Fold 2 has 0 trades (due to long cycle / absence of signals).
+    const trades: RecordedTrade[] = [
+      // 8 In-Sample trades [0..69]
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 10, exitIdx: 14 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 18, exitIdx: 22 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 26, exitIdx: 30 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 34, exitIdx: 38 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 42, exitIdx: 46 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 50, exitIdx: 54 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 58, exitIdx: 62 },
+      { dir: 'BUY', realizedR: 1.0, pnlPct: 4.0, outcome: 'win', entryIdx: 64, exitIdx: 68 },
+      // OOS trades [70..99] (3 folds of 10 bars: [70..79], [80..89], [90..99])
+      // Fold 1 [70..79]: 1 trade @ 72-76 with +1.5R
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 72, exitIdx: 76 },
+      // Fold 2 [80..89]: NO trades (0 trades)
+      // Fold 3 [90..99]: 1 trade @ 92-96 with +1.5R
+      { dir: 'BUY', realizedR: 1.5, pnlPct: 6.0, outcome: 'win', entryIdx: 92, exitIdx: 96 }
+    ];
+
+    const wf = calculateWalkForward(trades, 0, 99, 0.70, 2, 20);
+    assert.strictEqual(wf.status, 'PASS');
+    assert.ok(wf.folds && wf.folds.length === 3);
+
+    // Verify Fold 1: PASS
+    assert.strictEqual(wf.folds[0].oosTradesCount, 1);
+    assert.strictEqual(wf.folds[0].status, 'PASS');
+    assert.strictEqual(wf.folds[0].passed, true);
+
+    // Verify Fold 2: NO_DATA (not marked as a negative failure!)
+    assert.strictEqual(wf.folds[1].oosTradesCount, 0);
+    assert.strictEqual(wf.folds[1].status, 'NO_DATA');
+    assert.strictEqual(wf.folds[1].passed, false);
+
+    // Verify Fold 3: PASS
+    assert.strictEqual(wf.folds[2].oosTradesCount, 1);
+    assert.strictEqual(wf.folds[2].status, 'PASS');
+    assert.strictEqual(wf.folds[2].passed, true);
+
+    // Folds metrics
+    assert.strictEqual(wf.foldsPassed, 2);
+    assert.strictEqual(wf.foldsWithData, 2);
+
+    // 2. Evaluate Tournament gate: Candidate with 2/2 folds with data passed achieves HIGH
+    const candidate2Of2: StrategyCandidate = {
+      key: 'vcme',
+      label: 'VCME Swing',
+      profitFactor: 3.0,
+      expectancyR: 1.20,
+      winRate: 0.80,
+      resolved: 10,
+      forwardWindow: 48,
+      walkForward: wf
+    };
+
+    const tourney2Of2 = evaluateStrategyTournament([candidate2Of2], '1h');
+    assert.strictEqual(tourney2Of2.confidence, 'HIGH', 'Candidate with 2/2 folds passed must earn HIGH');
+
+    // 3. Evaluate when only 1 fold has data in a low-frequency regime, and that fold passes (+1.5R)
+    const candidate1Of1: StrategyCandidate = {
+      ...candidate2Of2,
+      walkForward: {
+        ...wf,
+        foldsPassed: 1,
+        foldsWithData: 1,
+        folds: [
+          { fold: 1, isWindow: 70, oosWindow: 10, oosTradesCount: 1, oosExpectancyR: 1.50, passed: true, status: 'PASS' },
+          { fold: 2, isWindow: 70, oosWindow: 10, oosTradesCount: 0, oosExpectancyR: 0, passed: false, status: 'NO_DATA' },
+          { fold: 3, isWindow: 70, oosWindow: 10, oosTradesCount: 0, oosExpectancyR: 0, passed: false, status: 'NO_DATA' }
+        ]
+      }
+    };
+    const tourney1Of1 = evaluateStrategyTournament([candidate1Of1], '1h');
+    assert.strictEqual(tourney1Of1.confidence, 'HIGH', 'Single fold with data passing +1.5R and zero failures must earn HIGH');
+
+    // 4. Candidate with a decisive negative failure (e.g. Fold 1 has -1.0R loss) must be degraded to LIMITED
+    const candidate1Fail: StrategyCandidate = {
+      ...candidate2Of2,
+      walkForward: {
+        ...wf,
+        foldsPassed: 0,
+        foldsWithData: 1,
+        folds: [
+          { fold: 1, isWindow: 70, oosWindow: 10, oosTradesCount: 1, oosExpectancyR: -1.00, passed: false, status: 'FAIL' },
+          { fold: 2, isWindow: 70, oosWindow: 10, oosTradesCount: 0, oosExpectancyR: 0, passed: false, status: 'NO_DATA' },
+          { fold: 3, isWindow: 70, oosWindow: 10, oosTradesCount: 0, oosExpectancyR: 0, passed: false, status: 'NO_DATA' }
+        ]
+      }
+    };
+    const tourney1Fail = evaluateStrategyTournament([candidate1Fail], '1h');
+    assert.strictEqual(tourney1Fail.confidence, 'LIMITED', 'Candidate with a failing fold must be degraded to LIMITED');
+    assert.ok(tourney1Fail.reasoning.includes('Folds Walk-Forward insuficientes'));
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }
