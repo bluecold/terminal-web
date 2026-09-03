@@ -503,6 +503,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Erradica compras en descuento bajista o cortos contra la liquidez compradora, asegurando que el suavizado con $\tanh$ no rompa el rol rector del VWAP en intradía.
   - **Suite de Pruebas Unitarias**:
     - **128/128 tests unitarios pasando** actualizados en Test 121 y Test 124 para validar los umbrales de 3.50 (5m) y 4.25 (1H/1D) y la actuación activa del veto direccional VWAP.
+- **Actualización v2026.09.03.3 — Activación de Pendiente RSI (RSI Slope) en Votación Standard**:
+  - **Alineación de Momentum en el Voto RSI (`strategyEvaluators.ts`)**:
+    - En `evaluateStandardVotingAt`, `rsiSlopeDir` (`calculateRSISlope`) se utilizaba exclusivamente con fines cosméticos para renderizar la flecha `▲/▼` en el panel. El voto se decidía únicamente por el nivel estático (`rsiVal < 30` para BUY, `> 70` para SELL).
+    - Con el piso estricto de `voteMargin >= 2`, caídas abruptas donde el precio perforaba la banda inferior de Bollinger (`close < bb.lower`) y el RSI caía en picada (< 30) formaban un consenso de reversión espurio 2-0, comprando directamente "cuchillos cayendo" sin confirmación de freno.
+    - Se condicionó el voto RSI a la confirmación de giro o estabilización de la pendiente:
+      - `BUY`: `rsiVal < 30 && rsiSlopeDir >= 0` (el RSI ha frenado su caída y gira al alza o se estabiliza).
+      - `SELL`: `rsiVal > 70 && rsiSlopeDir <= 0` (el RSI ha frenado su expansión alcista y gira a la baja o se estabiliza).
+    - Esto erradica las entradas precipitadas contra el momentum violento manteniendo la simetría del motor.
+  - **Suite de Pruebas Unitarias**:
+    - **129/129 tests unitarios pasando** con el nuevo Test 129 que valida la supresión de votos BUY ante cuchillos cayendo (`rsiSlopeDir = -1`) y la habilitación del voto una vez que la pendiente gira (`rsiSlopeDir >= 0`).
 
 ---
 

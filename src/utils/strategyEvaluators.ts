@@ -570,8 +570,9 @@ export function evaluateStandardVotingAt(
   const slopeArrow = rsiSlopeDir > 0 ? ' ▲' : rsiSlopeDir < 0 ? ' ▼' : '';
   let rsiSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   if (!isNaN(rsiVal)) {
-    if (rsiVal < 30) rsiSig = 'BUY';
-    else if (rsiVal > 70) rsiSig = 'SELL';
+    // Momentum slope alignment: do not vote BUY into a falling knife or SELL into runaway blow-off
+    if (rsiVal < 30 && rsiSlopeDir >= 0) rsiSig = 'BUY';
+    else if (rsiVal > 70 && rsiSlopeDir <= 0) rsiSig = 'SELL';
   }
 
   // 2. MACD Indicator
