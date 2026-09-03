@@ -594,7 +594,8 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
 
 export function createFallbackBacktestResult(
   label: string = 'datos insuficientes',
-  forwardLabel: string = 'ventana 6 velas'
+  forwardLabel: string = 'ventana 6 velas',
+  forwardWindow?: number
 ): BacktestResult {
   return {
     totalSignals: 0,
@@ -620,6 +621,7 @@ export function createFallbackBacktestResult(
     neutrals: 0,
     discards: createEmptyDiscards(),
     label,
+    forwardWindow,
     forwardLabel,
     threshold: 0,
     targetThreshold: 0,
@@ -652,6 +654,7 @@ export interface BacktestResult {
   neutrals: number;             // skipped NEUTRAL candles (sum of all discards)
   discards: DiscardBreakdown;   // Granular discard breakdown for diagnostics
   label: string;                // e.g. "últimas 150 velas"
+  forwardWindow?: number;       // e.g. 10 (exact candles in forward evaluation window)
   forwardLabel: string;         // e.g. "ventana 6 velas (30 min)"
   threshold: number;            // stop loss threshold used (adaptive)
   targetThreshold: number;      // take profit threshold (threshold × targetMultiplier)
@@ -704,6 +707,44 @@ export function getStrategyCooldownMs(interval: string, style: 'dayTrading' | 's
     return 48 * 3600 * 1000; // 48 hours for 1D Position
   }
   return 1 * 3600 * 1000;
+}
+
+/**
+ * Canonical Strategy Forward / Expiry Window in Candles:
+ * Unifies the trade evaluation horizon between Backtesting, Tournament, and Live Alert Tracker.
+ * - Multifractal MTF: 12 candles (5m = 1 hour)
+ * - VCME Sniper: 72 candles (5m Day Trading = 6 hs) / 48 candles (1H Swing = 48 hs)
+ * - Confluencia (2.0x ATR geometry): 10 candles (5m = 50 min), 7 candles (1h = 7 hs), 6 candles (1d = 6 días)
+ * - Scoring (1.5x ATR geometry): 8 candles (5m = 40 min), 5 candles (1h = 5 hs), 5 candles (1d = 5 días)
+ * - Standard (1.2x ATR geometry): 6 candles (5m = 30 min), 4 candles (1h = 4 hs), 3 candles (1d = 3 días)
+ */
+export function getStrategyForwardWindow(
+  strategy?: string,
+  interval: string = '5m',
+  executionStyle?: 'dayTrading' | 'swing'
+): number {
+  const normStrategy = (strategy ?? '').toLowerCase();
+  const normTf = (interval ?? '5m').toLowerCase();
+
+  if (normStrategy.includes('multifractal')) {
+    return 12; // 12 candles 5m = 1 hour forward window
+  }
+
+  if (normStrategy.includes('vcme') || normStrategy.includes('multitemporal')) {
+    if (executionStyle === 'swing' || normTf === '1h') return 48; // 48 candles 1h = 48 hours
+    return 72; // 72 candles 5m = 6 hours (Intraday forward window)
+  }
+
+  const baseAtrMult = normTf === '1d' ? 1.0 : 1.2;
+  const baseForward = normTf === '5m' ? 6 : (normTf === '1h' ? 4 : 3);
+
+  const isConfluencia = normStrategy.includes('confluencia');
+  const isScoring = normStrategy.includes('scoring');
+
+  const customAtrMult = isConfluencia ? 2.0 : (isScoring ? 1.5 : baseAtrMult);
+  const scale = customAtrMult / baseAtrMult;
+
+  return Math.round(baseForward * scale);
 }
 
 function getParams(interval: string, totalCandles?: number): BacktestParams {
@@ -978,6 +1019,7 @@ export function backtestMultitemporal(
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `datos insuficientes`,
+    forwardWindow,
     forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
@@ -1154,6 +1196,7 @@ export function backtestMultitemporal(
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas (${style === 'swing' ? '1h' : '5m'})`,
+    forwardWindow,
     forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
@@ -1211,6 +1254,7 @@ function runBacktestGenericOptimized(
       neutrals: 0,
       discards: createEmptyDiscards(),
       label: `datos insuficientes (${klines.length} velas)`,
+      forwardWindow,
       forwardLabel,
       threshold,
       targetThreshold,
@@ -1373,6 +1417,7 @@ function runBacktestGenericOptimized(
     neutrals,
     discards,
     label: `últimas ${actualWindow} velas`,
+    forwardWindow,
     forwardLabel,
     threshold,
     targetThreshold,
@@ -1451,6 +1496,7 @@ export function backtestMultifractalMTF(
     neutrals: 0,
     discards: createEmptyDiscards(),
     label: `últimas ${evalWindow} velas (5m)`,
+    forwardWindow,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0,
     targetThreshold: 0,
@@ -1612,6 +1658,7 @@ export function backtestMultifractalMTF(
     neutrals,
     discards,
     label: `últimas ${evalWindow} velas (5m)`,
+    forwardWindow,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0.01,
     targetThreshold: 0.015,

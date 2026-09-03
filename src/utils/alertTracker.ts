@@ -2,6 +2,7 @@ import type { Kline } from '../services/api';
 import type { ConfidenceLevel } from './tournament';
 import { calculateVWAPSeries, calculateEMA, calculateATRSeries } from './indicators';
 import { simulateTrade, type TradeLevels, type ExitPolicy } from './tradeSimulator';
+import { getStrategyForwardWindow } from './backtester';
 
 export type AlertStatus = 'OPEN' | 'TP1_HIT' | 'TP1_CLOSED' | 'TP2_HIT' | 'TP2_CLOSED' | 'SL_HIT' | 'TP1_BE_CLOSED' | 'EXPIRED';
 
@@ -140,32 +141,20 @@ export function getIntervalDurationSec(interval: string): number {
 
 /**
  * Returns the exact forward horizon (number of candles) matching the strategy's backtested window.
+ * Uses canonical getStrategyForwardWindow from backtester.ts to guarantee strict 1:1 Live/Backtest parity.
  * - VCME Day Trading (5m): 72 candles = 6 hours
  * - VCME Swing (1h): 48 candles = 48 hours
  * - Multifractal MTF (5m): 12 candles = 1 hour
- * - Standard / Confluencia / Scoring: 6 candles (5m), 4 candles (1h), 3 candles (1d)
+ * - Confluencia (2.0x ATR): 10 candles (5m), 7 candles (1h), 6 candles (1d)
+ * - Scoring (1.5x ATR): 8 candles (5m), 5 candles (1h), 5 candles (1d)
+ * - Standard (1.2x ATR): 6 candles (5m), 4 candles (1h), 3 candles (1d)
  */
 export function getStrategyExpiryCandles(
   strategy?: string,
   interval?: string,
   executionStyle?: 'dayTrading' | 'swing'
 ): number {
-  const isMultifractal = strategy?.includes('Multifractal');
-  const isVCME = strategy?.includes('VCME') || strategy?.includes('Multitemporal');
-
-  if (isMultifractal) return 12; // 12 candles 5m = 1 hour forward window
-  
-  if (isVCME) {
-    if (executionStyle === 'swing' || interval === '1h') return 48; // 48 candles 1h = 48 hours
-    return 72; // 72 candles 5m = 6 hours (Intraday forward window)
-  }
-
-  switch (interval?.toLowerCase()) {
-    case '5m': return 6;
-    case '1h': return 4;
-    case '1d': return 3;
-    default: return 24;
-  }
+  return getStrategyForwardWindow(strategy, interval ?? '5m', executionStyle);
 }
 
 /**

@@ -448,6 +448,22 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Exclusión de vela actual en RVOL de Multifractal y fallback macro VCME con `lastEma200Ref`.
   - **Suite de Pruebas Unitarias**:
     - **124/124 tests unitarios pasando** en `src/utils/__tests__/backtester.test.ts`.
+- **Actualización v2026.09.02.2 — Paridad Canónica 1:1 de `forwardWindow` con Live Alert Tracker y Torneo**:
+  - **Helper Canónico `getStrategyForwardWindow` en `backtester.ts`**:
+    - Se exportó una función única y centralizada para derivar el horizonte temporal de cada motor y timeframe:
+      - Confluencia ($2.0\times$ ATR): 10 velas (5m = 50 min), 7 velas (1h = 7 hs), 6 velas (1d = 6 días).
+      - Scoring ($1.5\times$ ATR): 8 velas (5m = 40 min), 5 velas (1h = 5 hs), 5 velas (1d = 5 días).
+      - Standard ($1.2\times$ ATR): 6 velas (5m = 30 min), 4 velas (1h = 4 hs), 3 velas (1d = 3 días).
+      - Multifractal MTF: 12 velas (5m = 1 hora).
+      - VCME Sniper: 72 velas (5m = 6 hs) / 48 velas (1h = 48 hs).
+  - **Paridad Estricta en `alertTracker.ts`**:
+    - `getStrategyExpiryCandles` delega directamente en `getStrategyForwardWindow(strategy, interval, executionStyle)`, erradicando la divergencia donde el backtest evaluaba Confluencia a 10 velas (50m) pero el tracker en vivo la cerraba a las 6 velas (30m).
+  - **Alineación de Candidatos del Torneo (`tournament.ts`)**:
+    - Se reemplazó el `forwardWindow: 6` hardcodeado en Confluencia y Scoring por `getStrategyForwardWindow(candidateKey, evalInterval, executionStyle)`, sincronizando el fallback de `exposureHours` para todos los competidores en todos los timeframes.
+  - **Campo `forwardWindow` en `BacktestResult`**:
+    - Se añadió `forwardWindow?: number;` al interfaz y a los retornos de todos los motores para introspección y diagnósticos directos.
+  - **Suite de Pruebas Unitarias**:
+    - **125/125 tests unitarios pasando** con el nuevo Test 125 que valida la paridad tripartita Backtest ↔ Torneo ↔ Live Alert Tracker.
 
 ---
 

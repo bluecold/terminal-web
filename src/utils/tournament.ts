@@ -10,6 +10,7 @@ import {
   backtestScoring,
   backtestMultitemporal,
   backtestMultifractalMTF,
+  getStrategyForwardWindow,
 } from './backtester';
 import { getConfirmedClosedKlines, calculateADXSeries, calculateRegimeSeriesWithHysteresis, type ScoringWeights } from './indicators';
 
@@ -481,7 +482,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
       shortStats: btStd?.shortStats,
       regimeStats: btStd?.regimeStats,
       walkForward: btStd?.walkForward,
-      forwardWindow: 6,
+      forwardWindow: getStrategyForwardWindow('standard', evalInterval, executionStyle),
     },
     {
       key: 'confluencia',
@@ -499,7 +500,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
       shortStats: btConf?.shortStats,
       regimeStats: btConf?.regimeStats,
       walkForward: btConf?.walkForward,
-      forwardWindow: 6,
+      forwardWindow: getStrategyForwardWindow('confluencia', evalInterval, executionStyle),
     },
     {
       key: 'scoring',
@@ -517,7 +518,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
       shortStats: btScore?.shortStats,
       regimeStats: btScore?.regimeStats,
       walkForward: btScore?.walkForward,
-      forwardWindow: 6,
+      forwardWindow: getStrategyForwardWindow('scoring', evalInterval, executionStyle),
     },
     {
       key: 'multitemporal',
@@ -535,7 +536,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
       shortStats: btMulti?.shortStats,
       regimeStats: btMulti?.regimeStats,
       walkForward: btMulti?.walkForward,
-      forwardWindow: executionStyle === 'swing' ? 48 : 72,
+      forwardWindow: getStrategyForwardWindow('multitemporal', evalInterval, executionStyle),
     },
     {
       key: 'multifractal',
@@ -553,7 +554,7 @@ export function runQVESelection(ctx: QVEAssetContext): QVESelectionResult {
       shortStats: btMF?.shortStats,
       regimeStats: btMF?.regimeStats,
       walkForward: btMF?.walkForward,
-      forwardWindow: 12,
+      forwardWindow: getStrategyForwardWindow('multifractal', evalInterval, executionStyle),
     },
   ];
 

@@ -14,6 +14,7 @@ import {
   createEmptyWalkForwardResult,
   getStrategyCooldownCandles,
   getStrategyCooldownMs,
+  getStrategyForwardWindow,
   type RecordedTrade
 } from '../backtester';
 import {
@@ -4598,6 +4599,71 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(res1d.threshold, 2.80, '1D Scoring threshold must equal 40% of achievable maxPossible (7.00 * 0.40 = 2.80)');
     // Layer 4 note must be continuous
     assert.ok(res1d.layers.volume.note.includes('Score continuo'), '1D OBV Layer 4 note must show continuous score');
+  });
+
+  test('canonical getStrategyForwardWindow enforces 1:1 parity between backtest, tournament, and live alert tracker', () => {
+    // 1. Validate getStrategyForwardWindow values across all strategies & timeframes
+    // Confluencia (2.0x ATR geometry vs base: 1.2x on 5m/1h, 1.0x on 1d)
+    assert.strictEqual(getStrategyForwardWindow('confluencia', '5m'), 10, 'Confluencia 5m forward window must be 10 candles (50m)');
+    assert.strictEqual(getStrategyForwardWindow('confluencia', '1h'), 7, 'Confluencia 1h forward window must be 7 candles (7h)');
+    assert.strictEqual(getStrategyForwardWindow('confluencia', '1d'), 6, 'Confluencia 1d forward window must be 6 candles (6d)');
+
+    // Scoring (1.5x ATR geometry vs base: 1.2x on 5m/1h, 1.0x on 1d)
+    assert.strictEqual(getStrategyForwardWindow('scoring', '5m'), 8, 'Scoring 5m forward window must be 8 candles (40m)');
+    assert.strictEqual(getStrategyForwardWindow('scoring', '1h'), 5, 'Scoring 1h forward window must be 5 candles (5h)');
+    assert.strictEqual(getStrategyForwardWindow('scoring', '1d'), 5, 'Scoring 1d forward window must be 5 candles (5d)');
+
+    // Standard (1.2x ATR geometry)
+    assert.strictEqual(getStrategyForwardWindow('standard', '5m'), 6, 'Standard 5m forward window must be 6 candles (30m)');
+    assert.strictEqual(getStrategyForwardWindow('standard', '1h'), 4, 'Standard 1h forward window must be 4 candles (4h)');
+    assert.strictEqual(getStrategyForwardWindow('standard', '1d'), 3, 'Standard 1d forward window must be 3 candles (3d)');
+
+    // Multifractal MTF (12 candles 5m)
+    assert.strictEqual(getStrategyForwardWindow('multifractal', '5m'), 12, 'Multifractal 5m forward window must be 12 candles (1h)');
+
+    // VCME Sniper (72 candles 5m Day Trading / 48 candles 1h Swing)
+    assert.strictEqual(getStrategyForwardWindow('vcme', '5m', 'dayTrading'), 72, 'VCME Day Trading forward window must be 72 candles (6h)');
+    assert.strictEqual(getStrategyForwardWindow('vcme', '1h', 'swing'), 48, 'VCME Swing forward window must be 48 candles (48h)');
+    assert.strictEqual(getStrategyForwardWindow('multitemporal', '1h'), 48, 'VCME 1h forward window must be 48 candles');
+
+    // 2. Validate exact 1:1 parity with getStrategyExpiryCandles in alertTracker
+    assert.strictEqual(getStrategyExpiryCandles('Confluencia', '5m'), 10, 'Live alert Confluencia 5m must expire at 10 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Confluencia', '1h'), 7, 'Live alert Confluencia 1h must expire at 7 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Confluencia', '1d'), 6, 'Live alert Confluencia 1d must expire at 6 candles');
+
+    assert.strictEqual(getStrategyExpiryCandles('Scoring', '5m'), 8, 'Live alert Scoring 5m must expire at 8 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Scoring', '1h'), 5, 'Live alert Scoring 1h must expire at 5 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Scoring', '1d'), 5, 'Live alert Scoring 1d must expire at 5 candles');
+
+    assert.strictEqual(getStrategyExpiryCandles('Estándar', '5m'), 6, 'Live alert Standard 5m must expire at 6 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Estándar', '1h'), 4, 'Live alert Standard 1h must expire at 4 candles');
+    assert.strictEqual(getStrategyExpiryCandles('Estándar', '1d'), 3, 'Live alert Standard 1d must expire at 3 candles');
+
+    assert.strictEqual(getStrategyExpiryCandles('Multifractal MTF', '5m'), 12, 'Live alert Multifractal 5m must expire at 12 candles');
+    assert.strictEqual(getStrategyExpiryCandles('VCME Sniper', '5m', 'dayTrading'), 72, 'Live alert VCME Day Trading must expire at 72 candles');
+    assert.strictEqual(getStrategyExpiryCandles('VCME Sniper', '1h', 'swing'), 48, 'Live alert VCME Swing must expire at 48 candles');
+
+    // 3. Validate backtest forwardWindow matches live expiry across timeframes
+    const synth5m: Kline[] = new Array(700).fill(null).map((_, idx) => ({
+      time: 1700000000 + idx * 300,
+      open: 100, high: 101, low: 99, close: 100, volume: 1000
+    }));
+    const btConf5m = backtestConfluencia(synth5m, '5m');
+    assert.strictEqual(btConf5m.forwardWindow, getStrategyExpiryCandles('Confluencia', '5m'), 'Confluencia 5m backtest vs live forwardWindow parity');
+
+    const synth1h: Kline[] = new Array(250).fill(null).map((_, idx) => ({
+      time: 1700000000 + idx * 3600,
+      open: 100, high: 101, low: 99, close: 100, volume: 1000
+    }));
+    const btConf1h = backtestConfluencia(synth1h, '1h');
+    assert.strictEqual(btConf1h.forwardWindow, getStrategyExpiryCandles('Confluencia', '1h'), 'Confluencia 1h backtest vs live forwardWindow parity');
+
+    const synth1d2: Kline[] = new Array(80).fill(null).map((_, idx) => ({
+      time: 1700000000 + idx * 86400,
+      open: 100, high: 101, low: 99, close: 100, volume: 1000
+    }));
+    const btConf1d = backtestConfluencia(synth1d2, '1d');
+    assert.strictEqual(btConf1d.forwardWindow, getStrategyExpiryCandles('Confluencia', '1d'), 'Confluencia 1d backtest vs live forwardWindow parity');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
