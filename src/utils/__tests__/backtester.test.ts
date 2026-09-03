@@ -4443,9 +4443,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const res1h = evaluateScoringAt(ctx1h, 60);
     assert.strictEqual(res1h.threshold, 4.25, '1h Scoring threshold must equal 50% of true maxPossible (8.50 * 0.50 = 4.25)');
 
-    // 3. VWAP Directional Veto:
-    // When price is below VWAP, Scoring must veto any BUY signal, converting it to HOLD.
-    // Build a bullish candle context where close is below VWAP
+    // 3. VWAP Directional Veto in ordinary trend zone (|distAtr| < 1.8 ATR):
+    // When price is below VWAP within ordinary trend territory, Scoring must veto any BUY signal, converting it to HOLD.
     const synthVwapVeto: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 300,
       open: 100 + (idx === 65 ? -2 : 0),
@@ -4457,13 +4456,24 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const ctxVeto = buildScoringContext(synthVwapVeto, '5m');
     // Force closes[65] to be below VWAP while other indicators might be positive
     const vwapAt65 = ctxVeto.vwapSeries[65];
-    ctxVeto.closes[65] = vwapAt65 - 0.5; // Strictly below VWAP
+    ctxVeto.closes[65] = vwapAt65 - 0.5; // Strictly below VWAP within ordinary trend zone (|distAtr| < 1.8)
     const resVeto = evaluateScoringAt(ctxVeto, 65);
-    assert.notStrictEqual(resVeto.signal, 'BUY', 'Scoring must NEVER emit BUY when price is below VWAP');
+    assert.notStrictEqual(resVeto.signal, 'BUY', 'Scoring must NEVER emit BUY when price is below VWAP in ordinary trend zone');
     if (resVeto.score >= resVeto.threshold) {
       assert.strictEqual(resVeto.signal, 'HOLD', 'BUY signal above threshold must be converted to HOLD by VWAP directional veto');
       assert.ok(resVeto.layers.volume.note.includes('Veto direccional VWAP'), 'Volume note must document VWAP veto');
     }
+
+    // 4. Overextension Exemption (|distAtr| >= 1.8 ATR):
+    // In extreme overextension, Layer 4 is in mean-reversion mode (s4 = +1.0 for severe drop) and exempt from veto
+    const atrAt65 = ctxVeto.atrSeries[65] || 2.0;
+    ctxVeto.closes[65] = vwapAt65 - (2.5 * atrAt65); // Severe oversold overextension (-2.5 ATR)
+    const resOverext = evaluateScoringAt(ctxVeto, 65);
+    assert.strictEqual(resOverext.layers.volume.score, 1.0, 'Layer 4 must award +1.0 for mean-reversion rebound on <-2.2 ATR drop');
+    assert.ok(
+      !resOverext.layers.volume.note.includes('Veto direccional VWAP'),
+      'Severe overextension must NOT be blocked by directional veto'
+    );
   });
 
   // Test 122: Scoring Layer 4 VWAP continuous transition ramp across 1.8-2.2 ATR

@@ -526,6 +526,14 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se documentó formalmente `isNearSessionEnd` como helper de prueba y diagnóstico, reflejando que la política de ejecución en producción está centralizada en `simulateTrade(sessionGapCutoff)` y en los filtros de cierre de sesión de barra única.
   - **Suite de Pruebas Unitarias**:
     - **130/130 tests unitarios pasando** con el nuevo Test 130 que valida el piso de calentamiento, el enrutamiento canónico de `forwardWindow` y la degradación ante folds sin datos empíricos.
+- **Actualización v2026.09.03.5 — Compatibilidad Geométrica entre Sobreextensión Capa 4 y Veto Direccional VWAP**:
+  - **Exención de Sobreextensión Extrema (`|distAtr| >= 1.8 ATR`) en Veto VWAP**:
+    - Se resolvió la incompatibilidad geométrica donde el veto direccional a ciegas (`close < vwap` para BUY y `close > vwap` para SELL) dejaba completamente inerte la rama de sobreextensión ($\ge 2.2$ ATR) y la rampa de transición continua ($1.8 \to 2.2$ ATR).
+    - El veto direccional rige estrictamente en la zona ordinaria/tendencial ($|\text{distAtr}| < 1.8$ ATR), impidiendo compras en derivas bajistas o cortos sobre el flujo institucional alcista.
+    - Cuando el precio entra en sobreextensión extrema ($|\text{distAtr}| \ge 1.8$ ATR), la Capa 4 invierte su signo hacia la reversión a la media ($s_4 = +1.0$ en capitulaciones de sobreventa, $s_4 = -1.0$ en sobrecompra climática), y queda exenta del veto direccional.
+    - Esto permite la activación de setups de clímax y rebote cuando confluyen las capas de reversión (Bollinger, RSI oversold, martillo y soporte S/R), restaurando el rango dinámico bidireccional de la Capa 4 y devolviendo el sentido funcional a la rampa de transición continua.
+  - **Suite de Pruebas Unitarias**:
+    - **130/130 tests unitarios pasando** con Test 121 actualizado para verificar tanto el veto en zona tendencial ($|\text{distAtr}| < 1.8$) como la exención en sobreextensión extrema ($|\text{distAtr}| \ge 1.8$).
 
 ---
 

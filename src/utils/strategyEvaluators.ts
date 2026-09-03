@@ -444,19 +444,29 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   if      (totalScore >=  threshold) signal = 'BUY';
   else if (totalScore <= -threshold) signal = 'SELL';
 
-  // Veto direccional estricto de VWAP:
-  // En intradía (5m y 1h), una estrategia tendencial/momentum no debe comprar por debajo de VWAP
-  // ni vender por encima de VWAP, preservando la alineación institucional con el flujo diario.
+  // Veto direccional de VWAP en régimen ordinario/tendencial (|distAtr| < 1.8 ATR):
+  // En intradía (5m y 1h), una estrategia tendencial no debe comprar por debajo de VWAP
+  // ni vender por encima de VWAP cuando el precio se encuentra en la zona ordinaria/tendencial.
+  // Sin embargo, cuando el precio entra en sobreextensión extrema (|distAtr| >= 1.8 ATR), la Capa 4
+  // invierte explícitamente su signo hacia la reversión a la media (captura de rebotes/pullbacks climáticos
+  // con confluencia de soporte/resistencia, velas y sobreventa/sobrecompra extrema), por lo que
+  // queda exenta de este veto.
   if (cfg.useVwap) {
     const isVwapReliable = ctx.vwapReliableSeries && ctx.vwapReliableSeries.length > i ? ctx.vwapReliableSeries[i] : true;
     if (isVwapReliable) {
       const vwap = ctx.vwapSeries[i];
-      if (signal === 'BUY' && closeVal < vwap) {
-        signal = 'HOLD';
-        n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP';
-      } else if (signal === 'SELL' && closeVal > vwap) {
-        signal = 'HOLD';
-        n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP';
+      const atr = ctx.atrSeries[i];
+      const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
+      const absDist = Math.abs(distAtr);
+
+      if (absDist < 1.8) {
+        if (signal === 'BUY' && closeVal < vwap) {
+          signal = 'HOLD';
+          n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP (zona tendencial)';
+        } else if (signal === 'SELL' && closeVal > vwap) {
+          signal = 'HOLD';
+          n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP (zona tendencial)';
+        }
       }
     }
   }
