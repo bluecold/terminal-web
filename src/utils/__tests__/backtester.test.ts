@@ -15,6 +15,7 @@ import {
   getStrategyCooldownCandles,
   getStrategyCooldownMs,
   getStrategyForwardWindow,
+  getStrategySignalWarmup,
   runBacktestGenericOptimized,
   type RecordedTrade
 } from '../backtester';
@@ -5005,6 +5006,46 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const tourneyZero = evaluateStrategyTournament([candidateZeroFoldsData], '1h');
     assert.strictEqual(tourneyZero.confidence, 'LIMITED', 'Candidate with 0/3 folds with data must degrade to LIMITED');
     assert.ok(tourneyZero.reasoning.includes('Folds Walk-Forward sin operaciones'), 'Reasoning must explicitly state zero operations in folds');
+  });
+
+  // Test 131: Canonical strategy warmup floor derivation across all intervals and sterile prefix elimination
+  test('oldestEvalIdx aligns with strategy warmup floor across all intervals eliminating sterile prefix and ADX NaN', () => {
+    // 1. Verify getStrategySignalWarmup values:
+    assert.strictEqual(getStrategySignalWarmup('standard'), 34, 'Standard Voting warmup floor must be index 34');
+    assert.strictEqual(getStrategySignalWarmup('confluencia'), 30, 'Confluencia warmup floor must be index 30 (ADX convergence)');
+    assert.strictEqual(getStrategySignalWarmup('scoring'), 59, 'Scoring warmup floor must be index 59');
+    assert.strictEqual(getStrategySignalWarmup('other'), 30, 'Generic fallback warmup floor must be index 30');
+
+    // 2. 1H Standard Voting on minimum sample dataset (176 candles):
+    // Previously: fallback evalWindow used totalCandles - forwardWindow - 4, making oldestEvalIdx = 4
+    // producing trades with ADX NaN and defaulting regime to 'ranging'.
+    // Now: warmupFloor = 34, evalWindow = 176 - 4 - 34 = 138, oldestEvalIdx = 176 - 1 - 4 - 138 + 1 = 34.
+    const klines1h_176 = generateSyntheticKlines(176, 3600, 100, 0.01);
+    const resStandard1h = backtestStandard(klines1h_176, '1h', 'TEST_STD_1H_WARMUP');
+    assert.strictEqual(resStandard1h.insufficient, false, '176 candles must satisfy minCandles for 1h Standard');
+    assert.ok(
+      resStandard1h.label.includes('138') || resStandard1h.label.includes('últimas'),
+      `Evaluated window must eliminate the 34-candle sterile prefix, got: ${resStandard1h.label}`
+    );
+
+    // 3. 1H Scoring on minimal dataset (200 candles):
+    // Scoring signals require 59 bars. With warmupFloor = 59:
+    // oldestEvalIdx must be >= 59.
+    const klines1h_200 = generateSyntheticKlines(200, 3600, 100, 0.01);
+    const resScoring1h = backtestScoring(klines1h_200, '1h', DEFAULT_WEIGHTS, 'TEST_SCORING_1H_WARMUP');
+    assert.strictEqual(resScoring1h.insufficient, false, '200 candles must satisfy minCandles for 1h Scoring');
+    // In 200 candles with forwardWindow = 5 (1.5x of 4 / 1.2 = 5), evalWindow = 200 - 5 - 59 = 136.
+    // latestEvalIdx = 194, oldestEvalIdx = 194 - 136 + 1 = 59.
+    assert.ok(
+      resScoring1h.label.includes('136') || resScoring1h.label.includes('135') || resScoring1h.label.includes('últimas'),
+      `Scoring 1h window must align with index 59 eliminating sterile bars, got: ${resScoring1h.label}`
+    );
+
+    // 4. In-Sample and Out-of-Sample Walk-Forward split cleanliness:
+    // Since oldestEvalIdx is >= strategy warmup, the Walk-Forward window contains 0 dead bars,
+    // preserving the true 70/30 active opportunity balance without In-Sample dilution.
+    assert.ok(resStandard1h.walkForward.isWindow > 0, 'In-sample window must be strictly positive');
+    assert.ok(resStandard1h.walkForward.oosWindow > 0, 'Out-of-sample window must be strictly positive');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

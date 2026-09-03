@@ -766,10 +766,31 @@ export function getStrategyForwardWindow(
   return Math.round(baseForward * scale);
 }
 
-function getParams(interval: string, totalCandles?: number, forwardWindowParam?: number): BacktestParams {
+/**
+ * Canonical warmup floor based on the earliest candle index where the strategy
+ * produces valid, non-sterile signals and indicators (specifically ADX(14) which requires 29 bars):
+ * - Standard Voting: index 34 (MACD 26, RSI 14, Supertrend)
+ * - Confluencia: index 30 (signals start at 20, but ADX(14) regime convergence requires 30)
+ * - Scoring: index 59 (EMA50, S/R, BB 20)
+ * - Generic/Other: index 30 (universal indicator floor for ADX(14) convergence)
+ */
+export function getStrategySignalWarmup(strategy?: string): number {
+  const norm = (strategy || '').toLowerCase();
+  if (norm.includes('scoring')) return 59;
+  if (norm.includes('standard')) return 34;
+  if (norm.includes('confluencia')) return 30;
+  return 30;
+}
+
+function getParams(
+  interval: string,
+  totalCandles?: number,
+  forwardWindowParam?: number,
+  warmupParam?: number
+): BacktestParams {
   const baseForward = interval === '5m' ? 6 : (interval === '1h' ? 4 : 3);
   const forwardWindow = forwardWindowParam ?? baseForward;
-  const warmup = 30;
+  const warmup = warmupParam ?? 30;
   switch (interval) {
     case '5m': {
       const evalWindow = totalCandles && totalCandles >= 1450
@@ -787,8 +808,11 @@ function getParams(interval: string, totalCandles?: number, forwardWindowParam?:
     }
     case '1d': {
       const forwardWindow = 3;
+      const evalWindow = totalCandles
+        ? Math.min(60, Math.max(0, totalCandles - forwardWindow - warmup))
+        : 60;
       return {
-        evalWindow: 60,                // 60 days
+        evalWindow,
         forwardWindow,
         forwardLabel: '3 velas (3 días)',
         fallbackThreshold: 0.015,
@@ -800,10 +824,10 @@ function getParams(interval: string, totalCandles?: number, forwardWindowParam?:
     case '1h':
     default: {
       const evalWindow = totalCandles && totalCandles >= 550
-        ? Math.min(720, totalCandles - forwardWindow - 30)
+        ? Math.min(720, totalCandles - forwardWindow - warmup)
         : (totalCandles && totalCandles >= 300
-          ? Math.min(350, totalCandles - forwardWindow - 20)
-          : (totalCandles ? Math.min(168, Math.max(0, totalCandles - forwardWindow - 4)) : 168));
+          ? Math.min(350, totalCandles - forwardWindow - warmup)
+          : (totalCandles ? Math.min(168, Math.max(0, totalCandles - forwardWindow - warmup)) : 168));
       return {
         evalWindow,
         forwardWindow,
@@ -1261,7 +1285,8 @@ export function runBacktestGenericOptimized(
   );
   // Canonical forwardWindow derived purely from getStrategyForwardWindow
   const forwardWindow = getStrategyForwardWindow(inferredStrategy, interval);
-  const params = getParams(interval, klines.length, forwardWindow);
+  const warmupFloor = getStrategySignalWarmup(inferredStrategy);
+  const params = getParams(interval, klines.length, forwardWindow, warmupFloor);
   const atrMultiplier = customAtrMultiplier ?? params.atrMultiplier;
   const { evalWindow, targetMultiplier, forwardLabel } = params;
 
@@ -1297,7 +1322,7 @@ export function runBacktestGenericOptimized(
 
   const isSessionBased = hasSessionGaps(klines, interval);
   const latestEvalIdx = klines.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(interval === '5m' ? 30 : 0, latestEvalIdx - evalWindow + 1);
+  const oldestEvalIdx = Math.max(warmupFloor, latestEvalIdx - evalWindow + 1);
 
   const adxSeries  = calculateADXSeries(klines, 14);
   const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);
@@ -1562,7 +1587,7 @@ export function backtestMultifractalMTF(
   let nextAllowedIdx = 0;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(20, latestEvalIdx - evalWindow + 1);
+  const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
 
   const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
   const regimeSeries = calculateRegimeSeriesWithHysteresis(ctx.adxData5M.adx, 26.0, 22.0);

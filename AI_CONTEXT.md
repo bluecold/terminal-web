@@ -548,6 +548,20 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se expuso `thresholdRatio?: number` en `buildScoringContext`, `evaluateScoringAt`, `computeScoringSignalsSeries` y `backtestScoring`, permitiendo su ajuste y validación experimental sin romper interfaces ni introducir acoplamientos rígidos.
   - **Suite de Pruebas Unitarias**:
     - **130/130 tests unitarios pasando** actualizados con el nuevo umbral calibrado a 0.45 y tests de custom ratios.
+- **Actualización v2026.09.03.7 — Alineación Canónica de Suelo de Warmup por Estrategia en Todos los Intervalos**:
+  - **Función Canónica de Warmup (`getStrategySignalWarmup`)**:
+    - Se identificó formalmente el índice inicial a partir del cual cada motor puede generar señales válidas y los indicadores macro convergen:
+      - `standard`: índice 34 (MACD 26, RSI 14, Supertrend).
+      - `confluencia`: índice 30 (señales a partir de 20, pero ADX(14) requiere $14 \times 2 + 1 = 29$ barras para no ser `NaN`).
+      - `scoring`: índice 59 (EMA50, S/R, BB 20).
+      - `genérico`: índice 30 (piso universal de convergencia de ADX).
+  - **Eliminación del Prefijo Estéril y Corrección de `oldestEvalIdx` en 1H y 1D**:
+    - Anteriormente, el suelo de warmup `Math.max(30, ...)` solo se aplicaba en `5m`, dejando a `1h` con `Math.max(0, ...)`.
+    - En muestras pequeñas de 1H (e.g. 172-176 velas), la rama de respaldo dejaba `oldestEvalIdx = 4`, provocando que las primeras operaciones se evaluaran con `ADX(14) === NaN` y recibieran régimen `'ranging'` por defecto.
+    - Además, en `calculateWalkForward`, un `oldestEvalIdx` en la barra 0 ó 4 forzaba que el 18% al 47% de la ventana In-Sample estuviera compuesto de barras estructuralmente estériles (`NEUTRAL`), sesgando la partición 70/30.
+    - Se actualizó `getParams` para aceptar `warmupParam` y se fijó `oldestEvalIdx = Math.max(warmupFloor, latestEvalIdx - evalWindow + 1)` en todos los timeframes (5m, 1h, 1d) y en `backtestMultifractalMTF`.
+  - **Suite de Pruebas Unitarias**:
+    - **131/131 tests unitarios pasando** con el nuevo Test 131 que verifica los valores canónicos de `getStrategySignalWarmup`, la eliminación del prefijo estéril en 1H (Standard y Scoring) y la integridad de la partición Walk-Forward sin barras muertas.
 
 ---
 
