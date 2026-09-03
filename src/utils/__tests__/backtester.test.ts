@@ -4761,6 +4761,60 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(tourney1Fail.reasoning.includes('Folds Walk-Forward insuficientes'));
   });
 
+  test('5m intraday session gap management eliminates dead code by replacing pre-filtering with active SESSION_GAP cutoff', () => {
+    // 1. Synthetic 5m series with 2 NYSE trading days (78 candles per day = 09:30 to 16:00 ET)
+    // Day 1: candles 0..77. Day 2 starts with an overnight gap of 17.5 hours.
+    const klines5mGap: Kline[] = [];
+    let t = 1700000000;
+    for (let c = 0; c < 78; c++) {
+      klines5mGap.push({ time: t, open: 100, high: 101, low: 99, close: 100, volume: 1000 });
+      t += 300;
+    }
+    // Overnight gap: 17.5 hours (63000 seconds)
+    t += 63000;
+    for (let c = 0; c < 78; c++) {
+      klines5mGap.push({ time: t, open: 100, high: 101, low: 99, close: 100, volume: 1000 });
+      t += 300;
+    }
+
+    // A trade entered at candle 75 (15:45 ET) on Day 1 with forwardWindow=6 (which would reach candle 81, past overnight gap).
+    // simulateTrade must NOT be blocked, but rather execute and exit at candle 77 (16:00 ET close) with SESSION_GAP!
+    const levels: TradeLevels = {
+      entryPrice: 100,
+      stopLoss: 98,
+      takeProfit1: 105
+    };
+    const sim = simulateTrade(klines5mGap, 75, 'BUY', levels, {
+      forwardWindow: 6,
+      sessionGapCutoff: true,
+      stepSec: 300,
+      frictionPct: 0.08
+    });
+    assert.strictEqual(sim.exitReason, 'SESSION_GAP', '5m trade hitting overnight session boundary must exit with SESSION_GAP');
+    assert.strictEqual(sim.exitIdx, 77, 'Exit index must be the final candle of Day 1 (candle 77, 16:00 ET) before the overnight gap');
+
+    // 2. Full 5m session-based backtest series (780 candles across 10 NYSE sessions)
+    const klines5mSession: Kline[] = [];
+    let curT = 1700000000;
+    for (let day = 0; day < 10; day++) {
+      for (let bar = 0; bar < 78; bar++) {
+        klines5mSession.push({
+          time: curT,
+          open: 100 + (day % 3),
+          high: 101 + (day % 3),
+          low: 99 + (day % 3),
+          close: 100 + (day % 3),
+          volume: 1000
+        });
+        curT += 300;
+      }
+      curT += 63000; // 17.5 hours overnight jump
+    }
+    const res5m = backtestStandard(klines5mSession, '5m', 'STOCK_5M');
+    // Pre-filtering is completely eliminated in 5m (0 discards by sessionGap)
+    assert.strictEqual(res5m.discards.sessionGap, 0, '5m backtest must NOT pre-discard closing hour bars via isNearSessionEnd');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

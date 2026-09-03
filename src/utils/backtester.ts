@@ -846,7 +846,7 @@ function hasSessionGaps(klines: Kline[], interval: string): boolean {
 
 // Checks if a given candle is near the end of a trading session.
 // We detect this by looking at whether the NEXT candle has a large time gap.
-function isNearSessionEnd(klines: Kline[], idx: number, interval: string, forwardWindow: number): boolean {
+export function isNearSessionEnd(klines: Kline[], idx: number, interval: string, forwardWindow: number): boolean {
   // Check if any of the forward candles have a session gap
   for (let f = idx + 1; f <= idx + forwardWindow && f < klines.length; f++) {
     const gap = klines[f].time - klines[f - 1].time;
@@ -1079,11 +1079,8 @@ export function backtestMultitemporal(
       continue;
     }
 
-    if (isSessionBased && style === 'dayTrading' && isNearSessionEnd(klines5m, i, tf, 6)) {
-      discards.sessionGap++;
-      neutrals++;
-      continue;
-    }
+    // In dayTrading sessions, allow trades to run normally and let sessionGapCutoff
+    // in simulateTrade handle realistic market close / MOC exits at 16:00 ET.
 
     const entryPrice = i + 1 < klines5m.length ? klines5m[i + 1].open : klines5m[i].close;
     const evalRes = evaluateVCMESniperAt(ctx, i, entryPrice);
@@ -1311,16 +1308,9 @@ function runBacktestGenericOptimized(
       continue;
     }
 
-    // In 5m, filter out the final 30 mins (6 candles = ~7% of session).
-    // In 1h, do NOT discard (which would wipe out 57% of the session from 12:30-15:30);
-    // instead, allow 1h trades to run and let sessionGapCutoff model realistic market close at 16:00.
-    if (isSessionBased && interval === '5m') {
-      if (isNearSessionEnd(klines, i, interval, forwardWindow)) {
-        discards.sessionGap++;
-        neutrals++;
-        continue;
-      }
-    }
+    // In 5m and 1h with session boundaries (e.g. NYSE/NASDAQ), do NOT pre-discard bars near session end;
+    // allow trades to evaluate normally (including closing hour momentum) and let sessionGapCutoff
+    // in evaluateOutcome / simulateTrade realistically model market close / MOC exits at 16:00 ET.
 
     const signal = signals[i] || 'NEUTRAL';
 
@@ -1554,11 +1544,8 @@ export function backtestMultifractalMTF(
       continue;
     }
 
-    if (isSessionBased && isNearSessionEnd(klines5m, i, '5m', forwardWindow)) {
-      discards.sessionGap++;
-      neutrals++;
-      continue;
-    }
+    // Allow trades to evaluate normally across session close, letting sessionGapCutoff
+    // in simulateTrade handle realistic market close / MOC exits at 16:00 ET.
 
     // Realistic execution: entry at next open
     const nextIdx = i + 1 < klines5m.length ? i + 1 : i;

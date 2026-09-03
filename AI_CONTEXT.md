@@ -473,6 +473,15 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - En motores de baja cadencia o ciclo amplio (e.g. VCME Swing), donde solo 1 o 2 folds tienen datos, la estrategia puede alcanzar `HIGH` si todos sus folds observados aprueban con $E[R] \ge +0.10R$ y no presentan fallos decisivos, erradicando la penalización estructural frente a scalps de alta frecuencia.
   - **Suite de Pruebas Unitarias**:
     - **126/126 tests unitarios pasando** con el nuevo Test 126 que valida exhaustivamente la clasificación `NO_DATA` y la compuerta adaptativa.
+- **Actualización v2026.09.02.4 — Unificación de Gestión de Gaps de Sesión y Eliminación de Código Muerto en 5m**:
+  - **Eliminación del Pre-descarte Artificial (`isNearSessionEnd`) en 5m**:
+    - Se eliminó el filtro preventivo `isNearSessionEnd` en los bucles de evaluación de `runBacktestGenericOptimized`, `backtestMultifractalMTF` y `backtestMultitemporal`.
+    - Esto erradica el descarte ciego del 8-15% final de la sesión bursátil (la Power Hour de 15:00 a 16:00 ET en NYSE/NASDAQ), permitiendo evaluar setups de alta volatilidad y volumen de cierre.
+  - **Activación Real de `SESSION_GAP` en `simulateTrade`**:
+    - `sessionGapCutoff` deja de ser código muerto inalcanzable en 5m: cualquier trade abierto en la última hora que no toque TP o SL antes del cierre de sesión (16:00 ET) se liquida de forma realista al precio de cierre de la barra de las 16:00 con slippage adverso y motivo estructural `SESSION_GAP`.
+    - La gestión de huecos overnight queda completamente armonizada entre 5m, 1h y el alert tracker en vivo.
+  - **Suite de Pruebas Unitarias**:
+    - **127/127 tests unitarios pasando** con el nuevo Test 127 que valida la resolución de trades por `SESSION_GAP` en 5m y 0 descartes preventivos.
 
 ---
 
