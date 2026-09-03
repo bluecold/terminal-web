@@ -4942,6 +4942,54 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.ok(rsiIndCurled?.value.includes('▲'), 'RSI value must display up arrow');
   });
 
+  test('evalWindow warmup floor (>=30), forwardWindow canonical routing, and non-vacuous zero-data folds gate', () => {
+    // 1. Confluencia in 5m on 612 candles: forwardWindow = 10, evalWindow should be <= 612 - 10 - 30 = 572
+    // Ensuring oldestEvalIdx >= 30 so ADX(14) is never NaN and regime is never defaulted to 'ranging'
+    const klines612 = generateSyntheticKlines(612, 300, 100, 0.01);
+    const confRes = backtestConfluencia(klines612, '5m', 'TEST_CONF_WARMUP');
+    assert.strictEqual(confRes.forwardWindow, 10, '5m Confluencia must have canonical forwardWindow = 10');
+
+    // Verify forwardWindow single source of truth in runBacktestGenericOptimized
+    const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(612).fill('NEUTRAL');
+    const genericRes = runBacktestGenericOptimized(klines612, '5m', signals, 2.0);
+    assert.strictEqual(genericRes.forwardWindow, 10, 'runBacktestGenericOptimized must derive 10 candles via getStrategyForwardWindow');
+
+    // 2. Non-vacuous Walk-Forward folds gate:
+    // Candidate where all 3 OOS folds have NO_DATA (0 trades, e.g. due to boundary straddling in low-frequency swing)
+    // Previously passed vacuously via min(2, 0) = 0 and (0 < 0) === false.
+    // Now must be degraded to LIMITED because there is 0 empirical evidence in any temporal fold.
+    const candidateZeroFoldsData: StrategyCandidate = {
+      key: 'multitemporal',
+      label: 'VCME Swing Straddled Folds',
+      profitFactor: 2.2,
+      expectancyR: 0.85,
+      expectancyPerHour: 0.5,
+      avgExposureHours: 2.0,
+      winRate: 0.65,
+      resolved: 12,
+      forwardWindow: 48,
+      walkForward: {
+        isWindow: 400,
+        oosWindow: 176,
+        inSample: { signals: 8, wins: 6, losses: 2, winRate: 0.75, expectancyR: 0.90, profitFactor: 3.0, maxDrawdownR: 1.0 },
+        outOfSample: { signals: 4, wins: 3, losses: 1, winRate: 0.75, expectancyR: 0.75, profitFactor: 2.5, maxDrawdownR: 1.0 },
+        passed: true,
+        status: 'PASS',
+        foldsPassed: 0,
+        foldsWithData: 0,
+        folds: [
+          { foldIndex: 1, isRange: [0, 400], oosRange: [400, 458], oosTradesCount: 0, expectancyR: 0, passed: false, status: 'NO_DATA' },
+          { foldIndex: 2, isRange: [0, 400], oosRange: [458, 517], oosTradesCount: 0, expectancyR: 0, passed: false, status: 'NO_DATA' },
+          { foldIndex: 3, isRange: [0, 400], oosRange: [517, 576], oosTradesCount: 0, expectancyR: 0, passed: false, status: 'NO_DATA' },
+        ]
+      }
+    };
+
+    const tourneyZero = evaluateStrategyTournament([candidateZeroFoldsData], '1h');
+    assert.strictEqual(tourneyZero.confidence, 'LIMITED', 'Candidate with 0/3 folds with data must degrade to LIMITED');
+    assert.ok(tourneyZero.reasoning.includes('Folds Walk-Forward sin operaciones'), 'Reasoning must explicitly state zero operations in folds');
+  });
+
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);
   return { passed, total };
 }

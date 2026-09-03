@@ -259,12 +259,16 @@ export function evaluateStrategyTournament(
       const folds = winner.walkForward.folds;
       const foldsPassed = winner.walkForward.foldsPassed ?? 0;
       const foldsWithData = winner.walkForward.foldsWithData ?? (
-        folds.filter(f => f.status !== 'NO_DATA' && ((f.oosTradesCount ?? (f as { oosTrades?: number }).oosTrades ?? 0) > 0 || f.passed)).length
+        folds.filter(f => f.status !== 'NO_DATA' && ((f.oosTradesCount ?? 0) > 0 || f.passed)).length
       );
       const effectiveFoldsWithData = Math.max(foldsPassed, foldsWithData);
       const minFoldsRequired = Math.min(2, effectiveFoldsWithData);
 
-      if (foldsPassed < minFoldsRequired) {
+      if (effectiveFoldsWithData === 0) {
+        // Zero empirical data across all temporal sub-folds: cannot certify HIGH without fold evidence
+        passesFoldsGate = false;
+        multiplicityNote += ` · Folds Walk-Forward sin operaciones (0/${folds.length} con datos) → Degradado a LIMITED`;
+      } else if (foldsPassed < minFoldsRequired) {
         passesFoldsGate = false;
         multiplicityNote += ` · Folds Walk-Forward insuficientes (${foldsPassed}/${folds.length} aprobados, mín ${minFoldsRequired} req) → Degradado a LIMITED`;
       }

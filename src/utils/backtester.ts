@@ -765,18 +765,19 @@ export function getStrategyForwardWindow(
   return Math.round(baseForward * scale);
 }
 
-function getParams(interval: string, totalCandles?: number): BacktestParams {
+function getParams(interval: string, totalCandles?: number, forwardWindowParam?: number): BacktestParams {
+  const baseForward = interval === '5m' ? 6 : (interval === '1h' ? 4 : 3);
+  const forwardWindow = forwardWindowParam ?? baseForward;
+  const warmup = 30;
   switch (interval) {
     case '5m': {
-      const forwardWindow = 6;
-      const warmup = 30;
       const evalWindow = totalCandles && totalCandles >= 1450
         ? Math.min(1400, totalCandles - forwardWindow - warmup)
-        : 576;
+        : (totalCandles ? Math.min(576, Math.max(0, totalCandles - forwardWindow - warmup)) : 576);
       return {
         evalWindow,
         forwardWindow,
-        forwardLabel: '6 velas (30 min)',
+        forwardLabel: `${forwardWindow} velas (${forwardWindow * 5} min)`,
         fallbackThreshold: 0.008,
         atrMultiplier: 1.2,
         targetMultiplier: 1.5,
@@ -797,14 +798,15 @@ function getParams(interval: string, totalCandles?: number): BacktestParams {
     }
     case '1h':
     default: {
-      const forwardWindow = 4;
       const evalWindow = totalCandles && totalCandles >= 550
         ? Math.min(720, totalCandles - forwardWindow - 30)
-        : (totalCandles && totalCandles >= 300 ? Math.min(350, totalCandles - forwardWindow - 20) : 168);
+        : (totalCandles && totalCandles >= 300
+          ? Math.min(350, totalCandles - forwardWindow - 20)
+          : (totalCandles ? Math.min(168, Math.max(0, totalCandles - forwardWindow - 4)) : 168));
       return {
         evalWindow,
         forwardWindow,
-        forwardLabel: '4 velas (4 hs)',
+        forwardLabel: `${forwardWindow} velas (${forwardWindow} hs)`,
         fallbackThreshold: 0.012,
         atrMultiplier: 1.2,
         targetMultiplier: 1.5,
@@ -844,8 +846,11 @@ function hasSessionGaps(klines: Kline[], interval: string): boolean {
   return false;
 }
 
-// Checks if a given candle is near the end of a trading session.
-// We detect this by looking at whether the NEXT candle has a large time gap.
+/**
+ * Test & Diagnostic Helper: checks if a given candle is near the end of a trading session.
+ * In production backtests, session boundary management is unified on `sessionGapCutoff`
+ * in simulateTrade (for intraday market close exits) and single-bar closing gap checks.
+ */
 export function isNearSessionEnd(klines: Kline[], idx: number, interval: string, forwardWindow: number): boolean {
   // Check if any of the forward candles have a session gap
   for (let f = idx + 1; f <= idx + forwardWindow && f < klines.length; f++) {
@@ -974,7 +979,7 @@ export function backtestStandard(klines: Kline[], interval: string, symbol?: str
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeStandardSignalsSeries(klines);
-  const res = runBacktestGenericOptimized(klines, interval, signals);
+  const res = runBacktestGenericOptimized(klines, interval, signals, undefined, 'standard');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -984,7 +989,7 @@ export function backtestConfluencia(klines: Kline[], interval: string, symbol?: 
   if (cached) return cached;
   const signals = computeConfluenciaSignalsSeries(klines, interval);
   // Confluencia is geometrically designed for stopLoss = close ± 2.0 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 2.0);
+  const res = runBacktestGenericOptimized(klines, interval, signals, 2.0, 'confluencia');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -996,7 +1001,7 @@ export function backtestScoring(klines: Kline[], interval: string, weights?: Sco
   if (cached) return cached;
   const signals = computeScoringSignalsSeries(klines, interval, weights);
   // Scoring evaluates and validates R:R against slDist = 1.5 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 1.5);
+  const res = runBacktestGenericOptimized(klines, interval, signals, 1.5, 'scoring');
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1240,23 +1245,17 @@ export function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
-  customAtrMultiplier?: number
+  customAtrMultiplier?: number,
+  strategyKey?: string
 ): BacktestResult {
-  const params = getParams(interval, klines.length);
+  const inferredStrategy = strategyKey ?? (
+    customAtrMultiplier === 2.0 ? 'confluencia' : customAtrMultiplier === 1.5 ? 'scoring' : 'standard'
+  );
+  // Canonical forwardWindow derived purely from getStrategyForwardWindow
+  const forwardWindow = getStrategyForwardWindow(inferredStrategy, interval);
+  const params = getParams(interval, klines.length, forwardWindow);
   const atrMultiplier = customAtrMultiplier ?? params.atrMultiplier;
-  const { evalWindow, targetMultiplier } = params;
-
-  // Scale forwardWindow proportionally with risk multiplier when a custom ATR multiplier is used
-  // (e.g. Confluencia with 2.0x ATR requires 10 candles in 5m / 7 candles in 1h to reach its 3.0x ATR target
-  // without dying in flat timeouts; Scoring with 1.5x ATR requires 8 candles in 5m / 5 candles in 1h)
-  const forwardWindowScale = customAtrMultiplier ? (customAtrMultiplier / params.atrMultiplier) : 1.0;
-  const forwardWindow = Math.round(params.forwardWindow * forwardWindowScale);
-
-  const forwardLabel = interval === '5m'
-    ? `${forwardWindow} velas (${forwardWindow * 5} min)`
-    : (interval === '1h'
-      ? `${forwardWindow} velas (${forwardWindow} hs)`
-      : `${forwardWindow} velas (${forwardWindow} días)`);
+  const { evalWindow, targetMultiplier, forwardLabel } = params;
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades
   // leaks future volatility into the result.
@@ -1290,7 +1289,7 @@ export function runBacktestGenericOptimized(
 
   const isSessionBased = hasSessionGaps(klines, interval);
   const latestEvalIdx = klines.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(0, latestEvalIdx - evalWindow + 1);
+  const oldestEvalIdx = Math.max(interval === '5m' ? 30 : 0, latestEvalIdx - evalWindow + 1);
 
   const adxSeries  = calculateADXSeries(klines, 14);
   const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);

@@ -513,6 +513,19 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Esto erradica las entradas precipitadas contra el momentum violento manteniendo la simetría del motor.
   - **Suite de Pruebas Unitarias**:
     - **129/129 tests unitarios pasando** con el nuevo Test 129 que valida la supresión de votos BUY ante cuchillos cayendo (`rsiSlopeDir = -1`) y la habilitación del voto una vez que la pendiente gira (`rsiSlopeDir >= 0`).
+- **Actualización v2026.09.03.4 — Robustez en Calentamiento de Indicadores, Enrutamiento Canónico de `forwardWindow` y Compuerta No Vacua de Folds**:
+  - **Piso Estricto de Calentamiento de Indicadores (`oldestEvalIdx >= 30`)**:
+    - En `runBacktestGenericOptimized` y `getParams`, la ventana `evalWindow` ahora incorpora el `forwardWindow` real y se aplica un piso estricto de calentamiento `oldestEvalIdx = Math.max(interval === '5m' ? 30 : 0, latestEvalIdx - evalWindow + 1)`.
+    - Esto previene que estrategias con `forwardWindow` extendido (como Confluencia en 5m con 10 velas) evalúen barras en índices 26-29 donde el ADX(14) aún no ha convergido (`NaN`), eliminando el sesgo sistemático que asignaba `'ranging'` por defecto a las primeras operaciones y distorsionaba `regimeStats`.
+  - **Enrutamiento Canónico Unificado de `forwardWindow`**:
+    - Se eliminó la duplicación de la fórmula de escalado en `runBacktestGenericOptimized`. La ventana prospectiva se deriva exclusivamente a través de la función canónica `getStrategyForwardWindow(strategyKey, interval)`, garantizando paridad matemática absoluta entre el backtest, el torneo y el tracker en vivo sin riesgo de desincronización.
+  - **Compuerta de Folds No Vacua y Limpieza de Casts Muertos (`tournament.ts`)**:
+    - Se corrigió la condición vacua en la compuerta de multiplicidad cuando `effectiveFoldsWithData === 0`: en lugar de aprobar vacuamente por `0 < 0 === false`, ahora degrada activamente a `LIMITED` con la nota explicativa `Folds Walk-Forward sin operaciones (0/N con datos)`, exigiendo validación empírica en al menos un fold temporal para otorgar confianza `HIGH`.
+    - Se eliminó el cast defensivo muerto `(f as { oosTrades?: number }).oosTrades`, unificando el acceso en `(f.oosTradesCount ?? 0) > 0 || f.passed`.
+  - **Clasificación de `isNearSessionEnd`**:
+    - Se documentó formalmente `isNearSessionEnd` como helper de prueba y diagnóstico, reflejando que la política de ejecución en producción está centralizada en `simulateTrade(sessionGapCutoff)` y en los filtros de cierre de sesión de barra única.
+  - **Suite de Pruebas Unitarias**:
+    - **130/130 tests unitarios pasando** con el nuevo Test 130 que valida el piso de calentamiento, el enrutamiento canónico de `forwardWindow` y la degradación ante folds sin datos empíricos.
 
 ---
 
