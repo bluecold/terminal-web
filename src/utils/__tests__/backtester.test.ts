@@ -15,6 +15,7 @@ import {
   getStrategyCooldownCandles,
   getStrategyCooldownMs,
   getStrategyForwardWindow,
+  runBacktestGenericOptimized,
   type RecordedTrade
 } from '../backtester';
 import {
@@ -4813,6 +4814,70 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const res5m = backtestStandard(klines5mSession, '5m', 'STOCK_5M');
     // Pre-filtering is completely eliminated in 5m (0 discards by sessionGap)
     assert.strictEqual(res5m.discards.sessionGap, 0, '5m backtest must NOT pre-discard closing hour bars via isNearSessionEnd');
+  });
+
+  test('sessionGapCutoff excludes execution candle (f > entryCandleIdx + 1) preventing pre-entry exits and inverted gap P&L', () => {
+    // 1. Synthetic series: Day 1 has 2 bars (idx 0, 1) ending at 16:00 ET (close: 100).
+    // Overnight gap of 17.5 hours leads to Day 2 open at 103 (+3% gap up in favor of long).
+    // Day 2 bars continue up to 106.
+    const klines: Kline[] = [
+      // Day 1
+      { time: 1700000000, open: 99, high: 100, low: 98, close: 99.5, volume: 1000 },
+      { time: 1700003600, open: 99.5, high: 101, low: 99, close: 100.0, volume: 1000 }, // idx 1: session close
+      // Day 2 (17.5 hour gap = 63000s)
+      { time: 1700003600 + 63000, open: 103.0, high: 105.0, low: 102.5, close: 104.5, volume: 1000 }, // idx 2: entry candle
+      { time: 1700003600 + 63000 + 3600, open: 104.5, high: 106.5, low: 104.0, close: 106.0, volume: 1000 } // idx 3: hits TP
+    ];
+
+    const levels: TradeLevels = {
+      entryPrice: 103.0,
+      stopLoss: 101.0,
+      takeProfit1: 106.0
+    };
+
+    // Signal on idx 1 (last candle of Day 1).
+    // Execution happens on idx 2 open (103.0).
+    const sim = simulateTrade(klines, 1, 'BUY', levels, {
+      forwardWindow: 4,
+      sessionGapCutoff: true,
+      stepSec: 3600,
+      frictionPct: 0.08
+    });
+
+    // Verification:
+    // 1. Exit MUST NOT precede entry: exitIdx >= 2 (was falsely exitIdx = 1 with exitPrice = 99.97)
+    assert.ok(sim.exitIdx >= 2, `exitIdx (${sim.exitIdx}) must be >= executionIdx (2)`);
+    // 2. The trade MUST NOT be liquidated on yesterday's close (99.97) as a false loss (-2.5R).
+    // Instead, it executes on Day 2, reaches 106 on idx 3, and hits TP1!
+    assert.strictEqual(sim.exitReason, 'TP1', 'Trade must reach TP1 during Day 2 without being falsely truncated by execution candle gap');
+    assert.ok(sim.realizedR > 0, `realizedR (${sim.realizedR}) must be positive`);
+    assert.strictEqual(sim.outcome, 'win');
+
+    // 2. Verify that backtester discards signals on the single closing candle of a session
+    // when the immediate next execution candle jumps across an overnight gap.
+    const klines1h: Kline[] = [];
+    let curT = 1700000000;
+    for (let day = 0; day < 30; day++) {
+      for (let bar = 0; bar < 7; bar++) {
+        klines1h.push({
+          time: curT,
+          open: 100,
+          high: 101,
+          low: 99,
+          close: 100,
+          volume: 1000
+        });
+        curT += 3600;
+      }
+      curT += 61200; // 17 hours overnight jump
+    }
+    // Total 210 candles (> minCandles 172)
+    // Place a BUY signal on a session closing candle (e.g. candle 69, which is the 7th candle of Day 10)
+    const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(klines1h.length).fill('NEUTRAL');
+    signals[69] = 'BUY'; // Day 10 closing candle: next candle 70 is Day 11 open after 61200s overnight jump
+    const btRes = runBacktestGenericOptimized(klines1h, '1h', signals);
+    assert.strictEqual(btRes.discards.sessionGap, 1, 'Closing bar signal where execution candle jumps overnight gap must be counted under discards.sessionGap');
+    assert.strictEqual(btRes.totalSignals, 0, 'No day trade should be opened across the overnight gap');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

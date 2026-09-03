@@ -113,7 +113,9 @@ export function simulateTrade(
     }
 
     // Session boundary check (overnight gap market exit)
-    if (policy.sessionGapCutoff && f > entryCandleIdx && f > 0) {
+    // The execution candle (f === entryCandleIdx + 1) is where the trade enters at open;
+    // session boundary cutoff only applies to gaps encountered AFTER entry (f > entryCandleIdx + 1).
+    if (policy.sessionGapCutoff && f > entryCandleIdx + 1 && f > 0) {
       const prevK = klines[f - 1];
       const gap = k.time - prevK.time;
       const expectedGapSec = policy.stepSec ?? 300;

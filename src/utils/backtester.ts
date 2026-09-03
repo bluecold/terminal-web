@@ -1095,6 +1095,16 @@ export function backtestMultitemporal(
       continue;
     }
 
+    // In session-based dayTrading, do not enter across an overnight gap:
+    if (isSessionBased && style === 'dayTrading' && i + 1 < klines5m.length) {
+      const nextGap = klines5m[i + 1].time - klines5m[i].time;
+      if (nextGap > 900) {
+        discards.sessionGap++;
+        neutrals++;
+        continue;
+      }
+    }
+
     totalSignals++;
 
     const levels: TradeLevels = {
@@ -1226,7 +1236,7 @@ export function backtestMultitemporal(
 // SUPPORT OPTIMIZED BACKTEST CORE
 // ==========================================
 
-function runBacktestGenericOptimized(
+export function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
@@ -1318,6 +1328,18 @@ function runBacktestGenericOptimized(
       discards.noSetup++;
       neutrals++;
       continue;
+    }
+
+    // In session-based day trading (5m and 1h), do not enter across an overnight gap:
+    // if the immediate next candle (execution candle i+1) is across a session gap, skip this single closing candle.
+    if (isSessionBased && interval !== '1d' && i + 1 < klines.length) {
+      const nextGap = klines[i + 1].time - klines[i].time;
+      const expectedGap = interval === '5m' ? 300 : 3600;
+      if (nextGap > expectedGap * 3) {
+        discards.sessionGap++;
+        neutrals++;
+        continue;
+      }
     }
 
     const entryThreshold = getAdaptiveThreshold(
@@ -1561,6 +1583,16 @@ export function backtestMultifractalMTF(
       }
       neutrals++;
       continue;
+    }
+
+    // In session-based 5m day trading, do not enter across an overnight gap:
+    if (isSessionBased && i + 1 < klines5m.length) {
+      const nextGap = klines5m[i + 1].time - klines5m[i].time;
+      if (nextGap > 900) {
+        discards.sessionGap++;
+        neutrals++;
+        continue;
+      }
     }
 
     totalSignals++;

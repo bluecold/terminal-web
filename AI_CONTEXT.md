@@ -482,6 +482,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - La gestión de huecos overnight queda completamente armonizada entre 5m, 1h y el alert tracker en vivo.
   - **Suite de Pruebas Unitarias**:
     - **127/127 tests unitarios pasando** con el nuevo Test 127 que valida la resolución de trades por `SESSION_GAP` en 5m y 0 descartes preventivos.
+- **Actualización v2026.09.03.1 — Exclusión de la Barra de Ejecución en `sessionGapCutoff` y Descarte de Cierre**:
+  - **Invariante Temporal en `simulateTrade` (`tradeSimulator.ts`)**:
+    - Se corrigió la condición de detección de gap a `f > entryCandleIdx + 1 && f > 0`.
+    - La barra forward inmediata $f = \text{entryCandleIdx} + 1$ es la barra de ejecución donde la orden entra al precio de apertura (`open`). Tratar el gap pre-existente entre la señal y la ejecución como un gap post-entrada disparaba una liquidación espuria en `klines[entryCandleIdx].close` con salida anterior a la entrada (`exitIdx < executionIdx`) e inversión de signo en el P&L.
+    - Con `f > entryCandleIdx + 1`, el corte por límite de sesión se aplica estrictamente a gaps encontrados *después* de estar en posición, garantizando que `exitIdx >= executionIdx` siempre.
+  - **Descarte de Señales en la Vela Final de Sesión (`backtester.ts`)**:
+    - En `runBacktestGenericOptimized`, `backtestMultifractalMTF` y `backtestMultitemporal` (para Day Trading), si una señal válida se genera en la última barra de la sesión regular (donde la vela de ejecución $i+1$ saltaría el gap overnight), se descarta dicha barra puntual (`discards.sessionGap++`).
+    - Esto evita abrir micro-daytrades 17.5 horas después al open del día siguiente por señales del cierre, con un costo mínimo (1/7 = 14% en 1H y 1/78 = 1.3% en 5m), manteniendo intacta la evaluación del 86-99% de la sesión.
+  - **Suite de Pruebas Unitarias**:
+    - **128/128 tests unitarios pasando** con el nuevo Test 128 que valida la invariante temporal en `simulateTrade` y el descarte de señales en la última barra de sesión.
 
 ---
 
