@@ -573,6 +573,16 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se introdujo `isExecutionAcrossSessionGap(klines, i, interval)` que evalúa dinámicamente `nextGap > expectedGapSec * 3` (`300s` en 5m, `3600s` en 1h, eximiendo `1d`), compartiéndolo uniformemente entre el motor genérico y los motores especializados.
   - **Suite de Pruebas Unitarias**:
     - **132/132 tests unitarios pasando** con el nuevo Test 132 que valida `getStrategyAtrMultiplier`, la detección de gaps de ejecución mediante `isExecutionAcrossSessionGap` y la inmunidad del forward window ante multiplicadores ATR desacoplados.
+- **Actualización v2026.09.03.9 — Scoring Capa 4 Monotónico y Veto Direccional VWAP Incondicional (Opción b)**:
+  - **Mapeo Monotónico Estricto en Capa 4 ($s_4 = \tanh(\text{distAtr})$)**:
+    - Se eliminó la rampa de sobreextensión ($1.8 \to 2.2$ ATR) y la inversión de signo para evitar contradicciones entre capas en días de tendencia continua (*trend liquidation days*).
+    - La Capa 4 ahora evalúa $s_4 = \tanh(\text{distAtr})$ como una función puramente continua, derivable y estrictamente monótona en todo el dominio $\mathbb{R}$, alineando el score de volumen $100\%$ con la dirección del flujo institucional.
+  - **Veto Direccional Incondicional de VWAP**:
+    - Se removió la exención condicional ($|\text{distAtr}| < 1.8$).
+    - El veto ahora rige de forma incondicional en intradía (5m y 1h): cualquier señal `BUY` con `close < vwap` se convierte estrictamente en `HOLD`, y cualquier `SELL` con `close > vwap` se convierte en `HOLD`.
+    - Elimina el riesgo de "comprar cuchillos cayendo" en capitulaciones intradiarias y preserva la especialización de Scoring como motor de confluencia de continuación tendencial (delegando la reversión a la media al motor especializado Multifractal MTF).
+  - **Suite de Pruebas Unitarias**:
+    - **132/132 tests unitarios pasando** con Test 90 actualizado para validar la monotonicidad tendencial estricta de Capa 4, Test 121 verificando el veto incondicional en liquidaciones severas ($-2.5$ ATR) y Test 122 validando la continuidad y monotonicidad estricta en $\mathbb{R}$.
 
 ---
 

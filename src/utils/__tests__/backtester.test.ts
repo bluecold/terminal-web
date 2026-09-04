@@ -2813,8 +2813,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(result.signals[23], 'NEUTRAL', 'Low volume candle must vote NEUTRAL');
   });
 
-  // Test 90: Scoring Layer 4 VWAP overextension is directionally symmetrical
-  test('Scoring Layer 4 VWAP overextension is directionally symmetrical and does not chase crashes', () => {
+  // Test 90: Scoring Layer 4 VWAP is strictly monotonic and trend-aligned
+  test('Scoring Layer 4 VWAP is strictly monotonic and trend-aligned without counter-trend chasing', () => {
     // Generate 65 baseline candles where VWAP is ~100 and ATR is ~1.0
     const klines: Kline[] = [];
     for (let i = 0; i < 65; i++) {
@@ -2838,7 +2838,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       volume: 1000
     }];
     const scoreBull = calculateScoringSignal(klinesBullOverextended, '5m');
-    assert.strictEqual(scoreBull.layers.volume.score, -1, 'Bullish overextension > +2 ATR must vote -1 (reversion pull)');
+    assert.ok(scoreBull.layers.volume.score > 0.95, 'Bullish trend expansion > +2.5 ATR must vote strongly positive (+1.0)');
 
     // 2. Candle overextended DOWN (< -2.5 ATR below VWAP ~100): close = 94 (< -2 ATR with ATR ~2.0)
     const klinesBearOverextended = [...klines, {
@@ -2850,7 +2850,10 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       volume: 1000
     }];
     const scoreBear = calculateScoringSignal(klinesBearOverextended, '5m');
-    assert.strictEqual(scoreBear.layers.volume.score, 1, 'Bearish overextension < -2 ATR must vote +1 (reversion pull) and not sell');
+    assert.ok(scoreBear.layers.volume.score < -0.95, 'Bearish trend liquidation < -2.5 ATR must vote strongly negative (-1.0)');
+
+    // 3. Monotonic ordering
+    assert.ok(scoreBull.layers.volume.score > scoreBear.layers.volume.score, 'Bullish volume score must be strictly greater than bearish');
   });
 
   // Test 91: Confluencia buildConfluenciaContext volSMA strictly excludes current bar
@@ -4453,8 +4456,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const res1h = evaluateScoringAt(ctx1h, 60);
     assert.strictEqual(res1h.threshold, 3.83, '1h Scoring threshold must equal 45% of true maxPossible (8.50 * 0.45 = 3.83)');
 
-    // 3. VWAP Directional Veto in ordinary trend zone (|distAtr| < 1.8 ATR):
-    // When price is below VWAP within ordinary trend territory, Scoring must veto any BUY signal, converting it to HOLD.
+    // 3. Unconditional VWAP Directional Veto (Intraday Trend Alignment):
+    // When price is below VWAP, Scoring must veto any BUY signal, converting it to HOLD.
     const synthVwapVeto: Kline[] = new Array(70).fill(null).map((_, idx) => ({
       time: 1700000000 + idx * 300,
       open: 100 + (idx === 65 ? -2 : 0),
@@ -4466,62 +4469,48 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const ctxVeto = buildScoringContext(synthVwapVeto, '5m');
     // Force closes[65] to be below VWAP while other indicators might be positive
     const vwapAt65 = ctxVeto.vwapSeries[65];
-    ctxVeto.closes[65] = vwapAt65 - 0.5; // Strictly below VWAP within ordinary trend zone (|distAtr| < 1.8)
+    ctxVeto.closes[65] = vwapAt65 - 0.5; // Moderate distance below VWAP
     const resVeto = evaluateScoringAt(ctxVeto, 65);
-    assert.notStrictEqual(resVeto.signal, 'BUY', 'Scoring must NEVER emit BUY when price is below VWAP in ordinary trend zone');
+    assert.notStrictEqual(resVeto.signal, 'BUY', 'Scoring must NEVER emit BUY when price is below VWAP');
     if (resVeto.score >= resVeto.threshold) {
       assert.strictEqual(resVeto.signal, 'HOLD', 'BUY signal above threshold must be converted to HOLD by VWAP directional veto');
       assert.ok(resVeto.layers.volume.note.includes('Veto direccional VWAP'), 'Volume note must document VWAP veto');
     }
 
-    // 4. Overextension Exemption (|distAtr| >= 1.8 ATR):
-    // In extreme overextension, Layer 4 is in mean-reversion mode (s4 = +1.0 for severe drop) and exempt from veto
+    // 4. Unconditional Veto under Severe Overextension / Trend Liquidation:
+    // In severe liquidations (e.g. -2.5 ATR drop), Layer 4 is strongly negative and VWAP veto unconditionally blocks BUY
     const atrAt65 = ctxVeto.atrSeries[65] || 2.0;
-    ctxVeto.closes[65] = vwapAt65 - (2.5 * atrAt65); // Severe oversold overextension (-2.5 ATR)
+    ctxVeto.closes[65] = vwapAt65 - (2.5 * atrAt65); // Severe oversold drop (-2.5 ATR)
     const resOverext = evaluateScoringAt(ctxVeto, 65);
-    assert.strictEqual(resOverext.layers.volume.score, 1.0, 'Layer 4 must award +1.0 for mean-reversion rebound on <-2.2 ATR drop');
-    assert.ok(
-      !resOverext.layers.volume.note.includes('Veto direccional VWAP'),
-      'Severe overextension must NOT be blocked by directional veto'
-    );
+    assert.ok(resOverext.layers.volume.score < -0.95, 'Layer 4 must award strongly negative score for price far below VWAP');
+    assert.notStrictEqual(resOverext.signal, 'BUY', 'Severe drop below VWAP must NEVER emit BUY');
   });
 
-  // Test 122: Scoring Layer 4 VWAP continuous transition ramp across 1.8-2.2 ATR
-  test('Scoring Layer 4 VWAP continuous transition ramp eliminates knife-edge jump across 1.8-2.2 ATR', () => {
-    // Verification of continuous ramp formula in evaluateScoringAt
-    const calcLayer4 = (distAtr: number) => {
-      const absDist = Math.abs(distAtr);
-      if (absDist >= 2.2) return distAtr > 0 ? -1 : 1;
-      if (absDist >= 1.8) {
-        const t = (absDist - 1.8) / 0.4;
-        const v = (1 - t) * Math.tanh(1.8) - t * 1.0;
-        return distAtr >= 0 ? v : -v;
-      }
-      return Math.tanh(distAtr);
-    };
+  // Test 122: Scoring Layer 4 VWAP is strictly continuous and strictly monotonic in R
+  test('Scoring Layer 4 VWAP is strictly continuous and strictly monotonic in R without sign inversions', () => {
+    const calcLayer4 = (distAtr: number) => Math.tanh(distAtr);
 
-    // 1. At 1.8 ATR boundary: must match tanh(1.8) (~0.9468)
-    const at1_8 = calcLayer4(1.8);
-    assert.ok(Math.abs(at1_8 - Math.tanh(1.8)) < 1e-6, 'Ramp start at 1.8 ATR must match tanh(1.8)');
+    // 1. At 0 distance (at VWAP): score is exactly 0
+    assert.strictEqual(calcLayer4(0), 0, 'Score at VWAP (0 dist) must be 0');
 
-    // 2. Across 1.99 and 2.01: delta must be smooth (< 0.12), not the former 1.96 knife-edge jump
-    const at1_99 = calcLayer4(1.99);
-    const at2_01 = calcLayer4(2.01);
-    const delta = Math.abs(at2_01 - at1_99);
-    assert.ok(delta < 0.12, `Delta between 1.99 and 2.01 ATR must be small and smooth (< 0.12), got ${delta.toFixed(4)}`);
+    // 2. Strict monotonicity: for any x1 < x2, f(x1) < f(x2)
+    const testPoints = [-3.0, -2.5, -2.0, -1.8, -1.0, -0.5, 0, 0.5, 1.0, 1.8, 2.0, 2.5, 3.0];
+    for (let idx = 0; idx < testPoints.length - 1; idx++) {
+      const p1 = testPoints[idx];
+      const p2 = testPoints[idx + 1];
+      assert.ok(
+        calcLayer4(p1) < calcLayer4(p2),
+        `Layer 4 score at ${p1} (${calcLayer4(p1)}) must be strictly less than at ${p2} (${calcLayer4(p2)})`
+      );
+    }
 
-    // 3. At 2.00 ATR midpoint: crosses through ~0 (-0.0266)
-    const at2_00 = calcLayer4(2.00);
-    assert.ok(Math.abs(at2_00) < 0.05, `At 2.00 ATR midpoint, score must smoothly cross through zero, got ${at2_00}`);
+    // 3. Smooth continuity: delta between 1.99 and 2.01 ATR is tiny (< 0.005)
+    const delta = Math.abs(calcLayer4(2.01) - calcLayer4(1.99));
+    assert.ok(delta < 0.005, `Delta across 2.0 ATR must be infinitesimal (< 0.005), got ${delta.toFixed(6)}`);
 
-    // 4. At 2.2 ATR boundary: reaches -1.0
-    const at2_2 = calcLayer4(2.2);
-    assert.strictEqual(at2_2, -1, 'Ramp end at 2.2 ATR must reach -1.0');
-
-    // 5. Symmetric behavior for negative distances (oversold bounce)
-    assert.strictEqual(calcLayer4(-2.2), 1, 'Negative ramp end at -2.2 ATR must reach +1.0');
-    assert.ok(Math.abs(calcLayer4(-2.00)) < 0.05, 'Negative ramp midpoint at -2.0 ATR must cross through zero');
-    assert.ok(Math.abs(calcLayer4(-1.8) - Math.tanh(-1.8)) < 1e-6, 'Negative ramp start at -1.8 ATR must match tanh(-1.8)');
+    // 4. Asymptotic bounds: score is bounded within (-1, 1)
+    assert.ok(calcLayer4(10) > 0.999 && calcLayer4(10) <= 1.0, 'Large positive distance approaches +1.0');
+    assert.ok(calcLayer4(-10) < -0.999 && calcLayer4(-10) >= -1.0, 'Large negative distance approaches -1.0');
   });
 
   // Test 123: Tournament multiplicity hurdle uniformity across holding durations

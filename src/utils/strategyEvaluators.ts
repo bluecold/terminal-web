@@ -346,23 +346,10 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
       const atr = ctx.atrSeries[i];
       const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
 
-      const absDist = Math.abs(distAtr);
-
-      if (absDist >= 2.2) {
-        s4 = distAtr > 0 ? -1 : 1;
-        n4 = `VWAP: ${formatSmartNumber(vwap)} | Sobreextensión ${distAtr > 0 ? 'alcista (>+2.2 ATR)' : 'bajista (<-2.2 ATR)'}`;
-      } else if (absDist >= 1.8) {
-        // Rampa continua de transición entre 1.8 y 2.2 ATR que invierte el signo suavemente
-        // sin discontinuidad: en 1.8 vale tanh(1.8) (~0.95), cruza por 0 en ~2.0, y llega a ±1.0 en 2.2.
-        const t = (absDist - 1.8) / 0.4;
-        const v = (1 - t) * Math.tanh(1.8) - t * 1.0;
-        s4 = distAtr >= 0 ? v : -v;
-        n4 = `VWAP: ${formatSmartNumber(vwap)} | Transición sobreextensión (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
-      } else {
-        // Mapeo continuo suave tanh que elimina el salto binario y el churn por ruido cerca de 0
-        s4 = Math.tanh(distAtr);
-        n4 = `VWAP: ${formatSmartNumber(vwap)} | Score continuo (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
-      }
+      // Mapeo continuo suave tanh que alinea el score estrictamente con la tendencia y flujo institucional
+      // (asintóticamente ±1.0, suave, monótono y sin singularidades ni inversiones de signo)
+      s4 = Math.tanh(distAtr);
+      n4 = `VWAP: ${formatSmartNumber(vwap)} | Score continuo (${s4 >= 0 ? '+' : ''}${s4.toFixed(2)})`;
     }
   } else if (cfg.useObv) {
     const obvLast = ctx.obvArr[i];
@@ -456,29 +443,20 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   if      (totalScore >=  threshold) signal = 'BUY';
   else if (totalScore <= -threshold) signal = 'SELL';
 
-  // Veto direccional de VWAP en régimen ordinario/tendencial (|distAtr| < 1.8 ATR):
-  // En intradía (5m y 1h), una estrategia tendencial no debe comprar por debajo de VWAP
-  // ni vender por encima de VWAP cuando el precio se encuentra en la zona ordinaria/tendencial.
-  // Sin embargo, cuando el precio entra en sobreextensión extrema (|distAtr| >= 1.8 ATR), la Capa 4
-  // invierte explícitamente su signo hacia la reversión a la media (captura de rebotes/pullbacks climáticos
-  // con confluencia de soporte/resistencia, velas y sobreventa/sobrecompra extrema), por lo que
-  // queda exenta de este veto.
+  // Veto direccional incondicional de VWAP:
+  // En intradía (5m y 1h), Scoring opera como un motor estrictamente tendencial y alineado
+  // con el flujo institucional: nunca compra por debajo de VWAP ni vende en corto por encima de VWAP.
   if (cfg.useVwap) {
     const isVwapReliable = ctx.vwapReliableSeries && ctx.vwapReliableSeries.length > i ? ctx.vwapReliableSeries[i] : true;
     if (isVwapReliable) {
       const vwap = ctx.vwapSeries[i];
-      const atr = ctx.atrSeries[i];
-      const distAtr = atr > 0 ? (closeVal - vwap) / atr : 0;
-      const absDist = Math.abs(distAtr);
 
-      if (absDist < 1.8) {
-        if (signal === 'BUY' && closeVal < vwap) {
-          signal = 'HOLD';
-          n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP (zona tendencial)';
-        } else if (signal === 'SELL' && closeVal > vwap) {
-          signal = 'HOLD';
-          n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP (zona tendencial)';
-        }
+      if (signal === 'BUY' && closeVal < vwap) {
+        signal = 'HOLD';
+        n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP (tendencia contraria)';
+      } else if (signal === 'SELL' && closeVal > vwap) {
+        signal = 'HOLD';
+        n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP (tendencia contraria)';
       }
     }
   }
