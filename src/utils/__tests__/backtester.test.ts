@@ -4441,10 +4441,6 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const res5m = evaluateScoringAt(ctx5m, 60);
     assert.strictEqual(res5m.threshold, 3.15, '5m Scoring threshold must equal 45% of true maxPossible (7.00 * 0.45 = 3.15)');
 
-    // Custom threshold ratio test (e.g. 0.50):
-    const ctx5m50 = buildScoringContext(synth5m, '5m', DEFAULT_WEIGHTS, 0.50);
-    assert.strictEqual(evaluateScoringAt(ctx5m50, 60).threshold, 3.50, 'Custom ratio 0.50 must equal 3.50');
-
     // 2. 1h context: emaMajor is 50, useVwap is true.
     // True mathematical max: trend 2.0 (1.5x = 3.0), volume 1.0 (1.5x = 1.5), rest 1.0 (4.0x)
     // maxPossible = 3.0 + 1.5 + 4.0 = 8.50

@@ -592,6 +592,13 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - La vela actual $i$ queda estrictamente excluida de su propia distribución histórica de referencia, unificando la política de percentiles libre de sesgos en toda la plataforma (junto a `calculateBollingerVolatilityStatus` y `calculateRevolutionVolatilityBand`).
   - **Suite de Pruebas Unitarias**:
     - **133/133 tests unitarios pasando** con el nuevo Test 133 que valida el enlace canónico estricto de `forwardWindow` con la estrategia y la ausencia de sesgo autorreferencial en el Oscilador Andino.
+- **Actualización v2026.09.03.11 — Blindaje de Paridad Backtest vs Live en Scoring (`DEFAULT_SCORING_THRESHOLD_RATIO`)**:
+  - **Eliminación de la Asimetría de Parámetro Libre (`thresholdRatio`)**:
+    - Se removió `thresholdRatio?: number` de `buildScoringContext`, `evaluateScoringAt`, `computeScoringSignalsSeries` y `backtestScoring`.
+    - `DEFAULT_SCORING_THRESHOLD_RATIO = 0.45` se convierte en la única fuente de verdad inmutable leída por `evaluateScoringAt` en todos los puntos de ejecución ($3.15$ en 5m, $3.83$ en 1h/1d).
+    - Se simplificó la clave de caché de `backtestScoring` (eliminando `ratioKey`), garantizando por construcción paridad matemática $1:1$ entre el Torneo, el Backtest y el Escáner/Radar/Panel en Vivo.
+  - **Suite de Pruebas Unitarias**:
+    - **133/133 tests unitarios pasando** con Test 121 actualizado para verificar la derivación canónica estricta del umbral de Scoring sin sobreescrituras de interfaz.
 
 ---
 

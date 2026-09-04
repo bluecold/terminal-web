@@ -176,7 +176,6 @@ export interface ScoringContext {
   klines: Kline[];
   interval: string;
   weights: ScoringWeights;
-  thresholdRatio?: number;
   cfg: typeof SCORING_CONFIG[string];
   closes: number[];
   emaFastArr: number[];
@@ -196,14 +195,13 @@ export interface ScoringContext {
 export function buildScoringContext(
   klines: Kline[],
   interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS,
-  thresholdRatio?: number
+  weights: ScoringWeights = DEFAULT_WEIGHTS
 ): ScoringContext {
   const length = klines ? klines.length : 0;
   const cfg = SCORING_CONFIG[interval] ?? SCORING_CONFIG['1h'];
   if (length === 0) {
     return {
-      klines: [], interval, weights, thresholdRatio, cfg, closes: [], emaFastArr: [], emaSlowArr: [], emaMajorArr: [],
+      klines: [], interval, weights, cfg, closes: [], emaFastArr: [], emaSlowArr: [], emaMajorArr: [],
       rsiSeries: [], bbSeries: [], vwapSeries: [], vwapReliableSeries: [], atrSeries: [], obvArr: [], obvEMAArr: [], volRollingArr: [], srCache: new Map()
     };
   }
@@ -247,7 +245,7 @@ export function buildScoringContext(
   }
 
   return {
-    klines, interval, weights, thresholdRatio, cfg, closes, emaFastArr, emaSlowArr, emaMajorArr,
+    klines, interval, weights, cfg, closes, emaFastArr, emaSlowArr, emaMajorArr,
     rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache
   };
 }
@@ -436,8 +434,7 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   const maxTrend = 1 + (cfg.emaMajor ? 1.0 : 0);
   const maxVolume = (cfg.useVwap || cfg.useObv) ? 1.0 : 0;
   const maxPossible = (maxTrend * w.trend) + w.rsi + w.bollinger + (maxVolume * w.volume) + w.candle + structureWeight;
-  const thresholdRatio = ctx.thresholdRatio ?? DEFAULT_SCORING_THRESHOLD_RATIO;
-  const threshold = Number((maxPossible * thresholdRatio).toFixed(2));
+  const threshold = Number((maxPossible * DEFAULT_SCORING_THRESHOLD_RATIO).toFixed(2));
 
   let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
   if      (totalScore >=  threshold) signal = 'BUY';
