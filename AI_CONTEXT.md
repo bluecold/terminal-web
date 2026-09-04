@@ -599,6 +599,17 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Se simplificó la clave de caché de `backtestScoring` (eliminando `ratioKey`), garantizando por construcción paridad matemática $1:1$ entre el Torneo, el Backtest y el Escáner/Radar/Panel en Vivo.
   - **Suite de Pruebas Unitarias**:
     - **133/133 tests unitarios pasando** con Test 121 actualizado para verificar la derivación canónica estricta del umbral de Scoring sin sobreescrituras de interfaz.
+- **Actualización v2026.09.03.12 — Función Canónica de Profit Factor y Paridad en Estados Vacíos (`null` en 0 Trades)**:
+  - **Eliminación del Falso Breakeven (`PF = 1.0` sin datos)**:
+    - Se corrigió la anomalía en `calculateSplitStats`, `calculateRiskMetrics` (`longPF`/`shortPF`), `backtestMultitemporal`, `runBacktestGenericOptimized` y `backtestMultifractalMTF` donde la ausencia total de operaciones (`totalSignals === 0` o `trades.length === 0`) devolvía `1.0` por defecto en lugar de `null`.
+    - Se creó y exportó el helper canónico `calculateProfitFactor(gainR, lossR, count)` que implementa la semántica estricta de métricas de rendimiento:
+      - `count === 0 \implies null` (sin datos / sin operaciones ejecutadas).
+      - `lossR > 0 \implies \text{round}_2(\text{gainR} / \text{lossR})`.
+      - `lossR === 0 \land \text{gainR} > 0 \implies null` (racha perfecta / PF infinito).
+      - `lossR === 0 \land \text{gainR} === 0 \land count > 0 \implies 1.0` (breakeven real con operaciones de scratch neto cero).
+    - Unifica la coherencia entre `createEmptySplitStats()`, `createFallbackBacktestResult()` y los resultados de backtest reales con 0 señales.
+  - **Suite de Pruebas Unitarias**:
+    - **133/133 tests unitarios pasando** con Test 105 enriquecido para verificar que `calculateProfitFactor`, `calculateSplitStats` y los motores de backtest con 0 señales devuelvan estrictamente `profitFactor === null`.
 
 ---
 

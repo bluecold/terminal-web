@@ -18,6 +18,7 @@ import {
   getStrategySignalWarmup,
   getStrategyAtrMultiplier,
   isExecutionAcrossSessionGap,
+  calculateProfitFactor,
   runBacktestGenericOptimized,
   type RecordedTrade
 } from '../backtester';
@@ -3455,7 +3456,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     );
   });
 
-  // Test 105: Consistent empty state returns (passed: false on empty WF, bestStrategy: 'NONE' on empty tournament)
+  // Test 105: Consistent empty state returns (passed: false on empty WF, bestStrategy: 'NONE' on empty tournament, null PF on 0 trades)
   test('empty states return consistent non-contradictory results across backtester and tournament', () => {
     // 1. Empty Walk-Forward Result must be passed: false
     const emptyWF = createEmptyWalkForwardResult(0, 0);
@@ -3467,6 +3468,22 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(emptyTourney.bestStrategy, 'NONE', 'Empty candidates must return NONE');
     assert.strictEqual(emptyTourney.strategyLabel, 'Sin Estrategia (Flat)');
     assert.strictEqual(emptyTourney.confidence, 'NONE');
+
+    // 3. Profit Factor with 0 trades must strictly be null (not 1.0 breakeven)
+    assert.strictEqual(calculateProfitFactor(0, 0, 0), null, 'PF with 0 trades must be null');
+    assert.strictEqual(calculateProfitFactor(5.0, 0, 1), null, 'PF with 0 losses and positive gains must be null (infinite)');
+    assert.strictEqual(calculateProfitFactor(0, 0, 1), 1.0, 'PF with 1 scratch trade (0 gain, 0 loss) must be 1.0 breakeven');
+    assert.strictEqual(calculateProfitFactor(6.0, 3.0, 2), 2.0, 'PF with 6R gains and 3R losses must be 2.00');
+
+    // 4. Backtest engines with 0 signals must output profitFactor: null
+    const emptySplit = calculateSplitStats([]);
+    assert.strictEqual(emptySplit.profitFactor, null, 'Empty split stats must have null PF');
+
+    const klines5m = generateSyntheticKlines(600, 300, 100, 0.01);
+    const zeroSignals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(600).fill('NEUTRAL');
+    const resGeneric = runBacktestGenericOptimized(klines5m, '5m', zeroSignals, 'standard');
+    assert.strictEqual(resGeneric.totalSignals, 0);
+    assert.strictEqual(resGeneric.profitFactor, null, 'Generic backtest with 0 signals must have null PF, not 1.0');
   });
 
   // Test 106: Walk-Forward adaptive OOS threshold derives strictly from In-Sample cycle time without OOS duration leakage

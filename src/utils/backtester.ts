@@ -207,6 +207,20 @@ export function createEmptyWalkForwardResult(isWindow: number = 0, oosWindow: nu
   };
 }
 
+/**
+ * Canonical calculation of Profit Factor based strictly on R-multiples:
+ * - count === 0: null (no trades / insufficient data to state an edge)
+ * - lossR > 0: totalGainR / totalLossR (finite ratio)
+ * - lossR === 0 && gainR > 0: null (infinite PF / zero losses)
+ * - lossR === 0 && gainR === 0 (and count > 0): 1.0 (exact breakeven with executed trades)
+ */
+export function calculateProfitFactor(gainR: number, lossR: number, count: number): number | null {
+  if (count === 0) return null;
+  if (lossR > 0) return Number((gainR / lossR).toFixed(2));
+  if (gainR > 0) return null;
+  return 1.0;
+}
+
 export function calculateSplitStats(
   trades: RecordedTrade[],
   candleHours: number = 5 / 60,
@@ -244,7 +258,7 @@ export function calculateSplitStats(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(2)) : 0;
   const expectancyR = trades.length > 0 ? Number((totalR / trades.length).toFixed(3)) : 0;
-  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
+  const profitFactor = calculateProfitFactor(totalGainR, totalLossR, trades.length);
   const avgCycleCandles = trades.length > 0 ? totalCycleCandles / trades.length : 0;
   const avgExposureHours = Number((avgCycleCandles * candleHours).toFixed(2));
 
@@ -556,12 +570,12 @@ export function calculateRiskMetrics(trades: RecordedTrade[]): RiskMetricsResult
   const longResolved = longWins + longLosses;
   const longWR = longResolved > 0 ? Number((longWins / longResolved).toFixed(2)) : 0;
   const longExpR = longSignals > 0 ? Number((longTotalR / longSignals).toFixed(3)) : 0;
-  const longPF = longLossR > 0 ? Number((longGainR / longLossR).toFixed(2)) : (longGainR > 0 ? null : 1.0);
+  const longPF = calculateProfitFactor(longGainR, longLossR, longSignals);
 
   const shortResolved = shortWins + shortLosses;
   const shortWR = shortResolved > 0 ? Number((shortWins / shortResolved).toFixed(2)) : 0;
   const shortExpR = shortSignals > 0 ? Number((shortTotalR / shortSignals).toFixed(3)) : 0;
-  const shortPF = shortLossR > 0 ? Number((shortGainR / shortLossR).toFixed(2)) : (shortGainR > 0 ? null : 1.0);
+  const shortPF = calculateProfitFactor(shortGainR, shortLossR, shortSignals);
 
   const trendResolved = trendWins + trendLosses;
   const trendWR = trendResolved > 0 ? Number((trendWins / trendResolved).toFixed(2)) : 0;
@@ -1242,7 +1256,7 @@ export function backtestMultitemporal(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
+  const profitFactor = calculateProfitFactor(totalGainR, totalLossR, totalSignals);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
@@ -1455,7 +1469,7 @@ export function runBacktestGenericOptimized(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
+  const profitFactor = calculateProfitFactor(totalGainR, totalLossR, totalSignals);
 
   const expectancy = totalSignals > 0 ? (totalGainPct - totalLossPct) / totalSignals : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
@@ -1705,7 +1719,7 @@ export function backtestMultifractalMTF(
   const resolved = wins + losses;
   const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
   const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
-  const profitFactor = totalLossR > 0 ? Number((totalGainR / totalLossR).toFixed(2)) : (totalGainR > 0 ? null : 1.0);
+  const profitFactor = calculateProfitFactor(totalGainR, totalLossR, totalSignals);
   const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
   const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
   const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
