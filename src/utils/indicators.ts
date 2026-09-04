@@ -2309,16 +2309,16 @@ export function calculateAndianOscillator(klines1D: Kline[], period: number = 14
   const orangeSeries = calculateEMA(rawOrange, 9);
   const results: AndianOscillatorResult[] = [];
 
-  // Calculate 20th percentiles for submerged checks over last 50 bars
+  // Calculate 20th percentiles for submerged checks over past 50 bars (strictly excluding current bar i)
   for (let i = 0; i < klines1D.length; i++) {
     const g = greenSeries[i];
     const r = redSeries[i];
     const o = orangeSeries[i];
 
-    const pastRed = redSeries.slice(Math.max(0, i - 50), i + 1).sort((a, b) => a - b);
+    const pastRed = redSeries.slice(Math.max(0, i - 50), i).sort((a, b) => a - b);
     const redP20 = pastRed.length > 0 ? pastRed[Math.floor(pastRed.length * 0.2)] : 20;
 
-    const pastGreen = greenSeries.slice(Math.max(0, i - 50), i + 1).sort((a, b) => a - b);
+    const pastGreen = greenSeries.slice(Math.max(0, i - 50), i).sort((a, b) => a - b);
     const greenP20 = pastGreen.length > 0 ? pastGreen[Math.floor(pastGreen.length * 0.2)] : 20;
 
     let bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';

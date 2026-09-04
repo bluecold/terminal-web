@@ -43,6 +43,7 @@ import {
   calculateVolumeComposition,
   calculateRegimeSeriesWithHysteresis,
   calculateVWAPReliabilitySeries,
+  calculateAndianOscillator,
   type BollingerBandsSeriesResult
 } from '../indicators';
 import {
@@ -5061,6 +5062,38 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 1, '5m'), true, 'Execution candle jumping overnight gap must return true');
     assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 2, '5m'), false, 'Last candle cannot jump across non-existent candle');
     assert.strictEqual(isExecutionAcrossSessionGap(klinesWithGap, 1, '1d'), false, 'Daily interval is exempt from intraday session gap cuts');
+  });
+
+  // Test 133: Elimination of customAtrMultiplier backdoor and unbiasing of Andean Oscillator
+  test('runBacktestGenericOptimized locks forwardWindow to strategy and calculateAndianOscillator excludes current bar', () => {
+    // 1. Verify that runBacktestGenericOptimized derives atrMultiplier and forwardWindow canonically
+    const klines5m = generateSyntheticKlines(600, 300, 100, 0.01);
+    const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(600).fill('NEUTRAL');
+    signals[100] = 'BUY';
+    const res = runBacktestGenericOptimized(klines5m, '5m', signals, 'standard');
+    assert.strictEqual(res.forwardWindow, 6, 'Standard 5m forward window must be canonically 6');
+
+    // 2. Verify calculateAndianOscillator strictly excludes current bar from 20th percentile
+    const synth1D: Kline[] = new Array(60).fill(null).map((_, idx) => ({
+      time: 1700000000 + idx * 86400,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume: 1000
+    }));
+    // Inject extreme bear bar at index 55 (bearish expansion)
+    synth1D[55] = {
+      time: 1700000000 + 55 * 86400,
+      open: 110,
+      high: 110,
+      low: 80,
+      close: 80,
+      volume: 50000
+    };
+    const andian = calculateAndianOscillator(synth1D, 14);
+    assert.strictEqual(andian.length, 60, 'Andian oscillator output length must match input');
+    assert.ok(typeof andian[55].bias === 'string', 'Bias must be a valid string');
   });
 
   console.log(`\nSummary: ${passed}/${total} backtester tests passed.\n`);

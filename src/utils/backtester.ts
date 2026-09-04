@@ -1299,14 +1299,13 @@ export function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
-  strategyKey: string = 'standard',
-  customAtrMultiplier?: number
+  strategyKey: string = 'standard'
 ): BacktestResult {
   // Canonical forwardWindow derived purely from getStrategyForwardWindow
   const forwardWindow = getStrategyForwardWindow(strategyKey, interval);
   const warmupFloor = getStrategySignalWarmup(strategyKey);
   const params = getParams(interval, klines.length, forwardWindow, warmupFloor);
-  const atrMultiplier = customAtrMultiplier ?? getStrategyAtrMultiplier(strategyKey, interval);
+  const atrMultiplier = getStrategyAtrMultiplier(strategyKey, interval);
   const { evalWindow, targetMultiplier, forwardLabel } = params;
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades

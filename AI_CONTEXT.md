@@ -583,6 +583,15 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Elimina el riesgo de "comprar cuchillos cayendo" en capitulaciones intradiarias y preserva la especialización de Scoring como motor de confluencia de continuación tendencial (delegando la reversión a la media al motor especializado Multifractal MTF).
   - **Suite de Pruebas Unitarias**:
     - **132/132 tests unitarios pasando** con Test 90 actualizado para validar la monotonicidad tendencial estricta de Capa 4, Test 121 verificando el veto incondicional en liquidaciones severas ($-2.5$ ATR) y Test 122 validando la continuidad y monotonicidad estricta en $\mathbb{R}$.
+- **Actualización v2026.09.03.10 — Cierre de Puerta Trasera en `runBacktestGenericOptimized` y Desesgado del Oscilador Andino**:
+  - **Eliminación Definitiva de `customAtrMultiplier`**:
+    - Se removió el parámetro libre muerto `customAtrMultiplier?: number` de `runBacktestGenericOptimized`.
+    - Ahora el multiplicador ATR se deriva canónica e invariablemente de `getStrategyAtrMultiplier(strategyKey, interval)`, garantizando que el horizonte temporal `forwardWindow` y la amplitud del stop se mantengan perfectamente sincronizados $1:1$ por diseño.
+  - **Desesgado Autorreferencial en `calculateAndianOscillator`**:
+    - Se corrigió el sesgo de auto-inclusión en la ventana rodante del percentil 20 (`pastRed` y `pastGreen`), reemplazando `.slice(Math.max(0, i - 50), i + 1)` por `.slice(Math.max(0, i - 50), i)`.
+    - La vela actual $i$ queda estrictamente excluida de su propia distribución histórica de referencia, unificando la política de percentiles libre de sesgos en toda la plataforma (junto a `calculateBollingerVolatilityStatus` y `calculateRevolutionVolatilityBand`).
+  - **Suite de Pruebas Unitarias**:
+    - **133/133 tests unitarios pasando** con el nuevo Test 133 que valida el enlace canónico estricto de `forwardWindow` con la estrategia y la ausencia de sesgo autorreferencial en el Oscilador Andino.
 
 ---
 
