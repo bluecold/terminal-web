@@ -1,3 +1,6 @@
+import { getKlineSnapshotTime, stampKlineSnapshot } from './marketDataSnapshot';
+import { isCryptoAsset } from '../utils/indicators';
+
 export interface Kline {
   time: number;
   open: number;
@@ -16,19 +19,36 @@ interface CacheEntry<T> {
 const apiCache = new Map<string, CacheEntry<unknown>>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
-const KLINE_TTL_MS = 25000; // 25s TTL for klines (prevents duplicates inside same 60s scan cycle)
+const KLINE_TTL_MS = 25000; // 25s default TTL for 5m intraday klines
 const TICKER_SUMMARY_TTL_MS = 30000; // 30s TTL for ticker summaries
 const NEWS_TTL_MS = 300000; // 5 min TTL for news
 const EXTRA_INFO_TTL_MS = 3600000; // 1 hour TTL for Zacks / Fundamental data
 
+export function getKlineTtlMs(interval: string): number {
+  if (interval === '1d' || interval === '1wk') return 600000; // 10 min TTL for daily/weekly klines
+  if (interval === '1h' || interval === '4h') return 120000; // 2 min TTL for hourly klines
+  return KLINE_TTL_MS; // 25s TTL for intraday 5m klines
+}
+
+/**
+ * Candle period after which a cached intraday kline snapshot is stale: a snapshot taken before a
+ * candle boundary still sees the just-closed candle as forming, so it must not be reused after it.
+ */
+export function getKlineCacheBoundaryMs(interval: string): number | undefined {
+  const match = /^(\d+)m$/.exec(interval);
+  return match ? Number(match[1]) * 60_000 : undefined;
+}
+
 async function fetchWithDeduplication<T>(
   cacheKey: string,
   ttlMs: number,
-  fetchFn: () => Promise<T>
+  fetchFn: () => Promise<T>,
+  boundaryMs?: number
 ): Promise<T> {
   const now = Date.now();
   const cached = apiCache.get(cacheKey);
-  if (cached && now - cached.timestamp < ttlMs) {
+  const samePeriod = !cached || !boundaryMs || Math.floor(cached.timestamp / boundaryMs) === Math.floor(now / boundaryMs);
+  if (cached && now - cached.timestamp < ttlMs && samePeriod) {
     return cached.data as T;
   }
 
@@ -105,9 +125,33 @@ export function sanitizeKlines(rawKlines: Kline[]): Kline[] {
   return valid;
 }
 
+export function resampleKlines(klines: Kline[], targetIntervalSec: number): Kline[] {
+  if (!klines || klines.length === 0) return [];
+  const buckets = new Map<number, Kline[]>();
+  for (const k of klines) {
+    const bucketTime = Math.floor(k.time / targetIntervalSec) * targetIntervalSec;
+    const list = buckets.get(bucketTime);
+    if (!list) buckets.set(bucketTime, [k]);
+    else list.push(k);
+  }
+  const result: Kline[] = [];
+  for (const [time, group] of buckets.entries()) {
+    result.push({
+      time,
+      open: group[0].open,
+      high: Math.max(...group.map(g => g.high)),
+      low: Math.min(...group.map(g => g.low)),
+      close: group[group.length - 1].close,
+      volume: group.reduce((acc, g) => acc + (g.volume || 0), 0)
+    });
+  }
+  return result.sort((a, b) => a.time - b.time);
+}
+
 export async function fetchBinanceKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   const cacheKey = `binance_klines_${symbol}_${interval}`;
-  return fetchWithDeduplication(cacheKey, KLINE_TTL_MS, async () => {
+  return fetchWithDeduplication(cacheKey, getKlineTtlMs(interval), async () => {
+    const snapshotTime = Date.now();
     try {
       // 1. Fetch primary batch of up to 1000 candles
       const url1 = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000`;
@@ -121,22 +165,25 @@ export async function fetchBinanceKlines(symbol: string, interval: string = '1h'
 
       let combinedRaw = data1;
 
-      // 2. For 5m intraday, paginate a 2nd batch (2000 candles total ~7 days 24/7)
-      // to ensure a statistically robust Out-Of-Sample (OOS) Walk-Forward sample (>= 5 trades)
+      // 2. For 5m intraday, paginate up to 4 batches (up to 4000 candles total ~14 days 24/7)
+      // to ensure sufficient statistical sample size for low-frequency models (VCME Sniper, Multifractal)
       if (interval === '5m' && data1.length >= 800) {
-        const oldestTimeMs = Number(data1[0][0]);
-        if (Number.isFinite(oldestTimeMs) && oldestTimeMs > 0) {
-          const url2 = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${oldestTimeMs - 1}`;
+        const maxPages = 4;
+        let oldestTimeMs = Number(combinedRaw[0][0]);
+        for (let page = 2; page <= maxPages; page++) {
+          if (!Number.isFinite(oldestTimeMs) || oldestTimeMs <= 0) break;
+          const urlPage = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${oldestTimeMs - 1}`;
           try {
-            const response2 = await fetch(url2);
-            if (response2.ok) {
-              const data2 = await response2.json() as Array<Array<string | number>>;
-              if (Array.isArray(data2) && data2.length > 0) {
-                combinedRaw = [...data2, ...data1];
-              }
-            }
-          } catch (err2) {
-            console.warn(`Could not fetch older 5m page for ${symbol}:`, err2);
+            const respPage = await fetch(urlPage);
+            if (!respPage.ok) break;
+            const dataPage = await respPage.json() as Array<Array<string | number>>;
+            if (!Array.isArray(dataPage) || dataPage.length === 0) break;
+            combinedRaw = [...dataPage, ...combinedRaw];
+            oldestTimeMs = Number(dataPage[0][0]);
+            if (dataPage.length < 800) break;
+          } catch (errPage) {
+            console.warn(`Could not fetch 5m page ${page} for ${symbol}:`, errPage);
+            break;
           }
         }
       }
@@ -150,25 +197,38 @@ export async function fetchBinanceKlines(symbol: string, interval: string = '1h'
         volume: parseFloat(item[5] as string)
       }));
 
-      return sanitizeKlines(rawKlines);
+      return stampKlineSnapshot(sanitizeKlines(rawKlines), snapshotTime);
     } catch (error) {
       console.error("Error fetching data from Binance", error);
       return [];
     }
-  });
+  }, getKlineCacheBoundaryMs(interval));
 }
 
 export async function fetchYahooKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
+  // Yahoo does not provide native 4h candles; construct from 1h candles
+  if (interval === '4h') {
+    const klines1h = await fetchYahooKlines(symbol, '1h');
+    return stampKlineSnapshot(resampleKlines(klines1h, 14400), getKlineSnapshotTime(klines1h));
+  }
+
   const cacheKey = `yahoo_klines_${symbol}_${interval}`;
-  return fetchWithDeduplication(cacheKey, KLINE_TTL_MS, async () => {
+  return fetchWithDeduplication(cacheKey, getKlineTtlMs(interval), async () => {
+    const snapshotTime = Date.now();
     try {
       // Convert interval to a valid range for Yahoo — wider ranges to support backtesting (300+ candles)
       let range = '730d'; // 1h default: up to 730 days (~3500 hourly candles for US stocks/crypto)
       if (interval === '1d') range = '2y';  // ~500 daily candles
       if (interval === '1wk') range = '5y';
-      if (interval === '5m') range = '60d';
+      if (interval === '5m' || interval === '15m' || interval === '30m' || interval === '90m') range = '60d';
       
-      const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+      let response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+      // Yahoo resolves range=730d for symbols listed less than ~730 trading days ago (e.g. IBIT) to their
+      // listing date, then rejects it with 422 because 1h data is capped at 730 calendar days. '2y' stays within the cap.
+      if (!response.ok && range === '730d') {
+        range = '2y';
+        response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+      }
       if (!response.ok) {
         console.error(`Yahoo Finance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
         return [];
@@ -217,16 +277,16 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
         });
       }
 
-      return klines;
+      return stampKlineSnapshot(klines, snapshotTime);
     } catch (error) {
       console.error("Error fetching data from Yahoo", error);
       return [];
     }
-  });
+  }, getKlineCacheBoundaryMs(interval));
 }
 
 export async function fetchKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
-  if (symbol.endsWith('USDT') || symbol.endsWith('BTC')) {
+  if (isCryptoAsset(symbol)) {
     return fetchBinanceKlines(symbol, interval);
   } else {
     return fetchYahooKlines(symbol, interval);
@@ -252,7 +312,7 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
   return fetchWithDeduplication(cacheKey, NEWS_TTL_MS, async () => {
     try {
       let searchSymbol = symbol;
-      if (symbol.endsWith('USDT')) searchSymbol = symbol.replace('USDT', '-USD');
+      if (isCryptoAsset(symbol)) searchSymbol = symbol.replace(/(USDT|BUSD|USDC|FDUSD)$/, '-USD');
       
       const response = await fetch(`/api/yahoo/v1/finance/search?q=${searchSymbol}`);
       const data = await response.json();
@@ -280,7 +340,7 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
 }
 
 export async function fetchEarningsDate(symbol: string): Promise<number | null> {
-  if (symbol.endsWith('USDT') || symbol.endsWith('BTC')) {
+  if (isCryptoAsset(symbol)) {
     return null; // Crypto doesn't have corporate earnings reports
   }
   const cacheKey = `earnings_${symbol}`;
@@ -424,7 +484,7 @@ export async function fetchZacksRank(symbol: string): Promise<StockExtraInfo | n
 }
 
 export async function fetchStockExtraInfo(symbol: string): Promise<StockExtraInfo | null> {
-  if (symbol.endsWith('USDT') || symbol.endsWith('BTC')) {
+  if (isCryptoAsset(symbol)) {
     return null;
   }
   const cacheKey = `stock_extra_${symbol}`;
@@ -516,4 +576,3 @@ export async function fetchCryptoFearAndGreed(): Promise<CryptoExtraInfo | null>
     }
   });
 }
-

@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"],
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/execution-tests.tsbuildinfo"
+  },
+  "include": ["src/utils/__tests__/execution.test.ts", "src/utils/__tests__/chartRecovery.test.ts", "src/utils/__tests__/trackingIntegrity.test.ts", "src/utils/__tests__/mfls.test.ts", "scripts/benchmark-execution.ts"],
+  "exclude": []
+}

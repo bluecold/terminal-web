@@ -1,0 +1,6 @@
+{
+  "extends": "../tsconfig.execution-tests.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../src/utils/__tests__/mfls.test.ts", "./audit-mfls.ts"],
+  "exclude": []
+}

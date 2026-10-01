@@ -1,5 +1,7 @@
 import type { Kline } from '../services/api';
 import { simulateTrade, type TradeLevels, type ExitReason } from './tradeSimulator';
+import { calculateAlertLevels, getStrategyAtrMultiplier, isTradeFrictionViable, validateScoringSRRoom, isCryptoAsset, DEFAULT_FRICTION_PCT } from './tradeLevels';
+export { getStrategyAtrMultiplier } from './tradeLevels';
 import {
   calculateATRSeries,
   calculateADXSeries,
@@ -15,7 +17,9 @@ import {
   buildVCMESniperContext,
   evaluateVCMESniperAt,
   buildMultifractalMTFContext,
-  evaluateMultifractalMTFAt
+  evaluateMultifractalMTFAt,
+  buildMFLSContext,
+  evaluateMFLSAt
 } from './indicators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
@@ -30,6 +34,7 @@ export interface DiscardBreakdown {
   volumeFilter: number;              // RVOL insuficiente (< 0.9x o < 1.1x)
   candleAnatomy: number;             // Anatomía desfavorable (Close Position / mechas)
   riskFilter: number;                // Riesgo fuera de bandas permitidas (minRisk / maxRisk)
+  frictionFilter: number;            // Micro-stop donde comisiones + slippage exceden 0.35R (<0.31%)
 }
 
 export function createEmptyDiscards(): DiscardBreakdown {
@@ -43,6 +48,7 @@ export function createEmptyDiscards(): DiscardBreakdown {
     volumeFilter: 0,
     candleAnatomy: 0,
     riskFilter: 0,
+    frictionFilter: 0,
   };
 }
 
@@ -355,15 +361,10 @@ export function calculateWalkForward(
     status = 'NO_OOS_TRADES';
     passed = false;
   } else if (oosTrades.length < effectiveMinOos) {
-    // If the few OOS trades are already net negative or below positive edge hurdle, mark as FAIL
-    if (outOfSample.expectancyR <= 0 || (outOfSample.profitFactor !== null && outOfSample.profitFactor < 1.0)) {
-      status = 'FAIL';
-      passed = false;
-    } else {
-      // Positive but sample size below threshold for full certification
-      status = 'INSUFFICIENT_OOS';
-      passed = false;
-    }
+    // Insufficient OOS sample size (< effectiveMinOos) to statistically certify (PASS) or disqualify (FAIL).
+    // Symmetrically marks INSUFFICIENT_OOS to prevent 1-2 trade Bernoulli noise from disqualifying strategies from LIMITED.
+    status = 'INSUFFICIENT_OOS';
+    passed = false;
   } else if (outOfSample.expectancyR >= 0.10 && (outOfSample.profitFactor === null || outOfSample.profitFactor >= 1.0)) {
     status = 'PASS';
     passed = true;
@@ -708,13 +709,23 @@ interface BacktestParams {
 
 /**
  * Canonical Strategy Cooldown in Candles:
- * - 5m Intraday: 12 candles (1 hour)
- * - 1H Swing: 4 candles (4 hours)
- * - 1D Position: 2 candles (2 days / 48 hours)
+ * - Anti-Revenge Full Cooldown on SL / Entry (default):
+ *   - 5m Intraday: 6 candles (30 min)
+ *   - 1H Swing: 4 candles (4 hours)
+ *   - 1D Position: 2 candles (2 days / 48 hours)
+ * - Minimum Grace Cooldown on TP / Timeout:
+ *   - 1 candle across all timeframes (prevents same-candle churn while unlocking pullbacks)
  */
-export function getStrategyCooldownCandles(interval: string, style: 'dayTrading' | 'swing' = 'dayTrading'): number {
+export function getStrategyCooldownCandles(
+  interval: string,
+  style: 'dayTrading' | 'swing' = 'dayTrading',
+  outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string
+): number {
+  if (outcome === 'TP' || outcome === 'TIMEOUT') {
+    return 1; // 1 single candle grace period for winning targets or flat timeouts
+  }
   if (interval === '5m') {
-    return style === 'swing' ? 48 : 12; // 12 candles of 5m = 1 hour
+    return style === 'swing' ? 48 : 6; // 6 candles of 5m = 30 min (calibrated for intraday equities)
   }
   if (interval === '1h') {
     return 4; // 4 candles of 1h = 4 hours
@@ -722,15 +733,26 @@ export function getStrategyCooldownCandles(interval: string, style: 'dayTrading'
   if (interval === '1d') {
     return 2; // 2 candles of 1d = 2 days (48 hours)
   }
-  return 12;
+  return 6;
 }
 
 /**
- * Canonical Strategy Cooldown in Milliseconds (for Live alert throttle in App.tsx)
+ * Canonical Strategy Cooldown in Milliseconds (for Live alert throttle in App.tsx):
+ * Supports asymmetric cooldowns: full anti-revenge period on SL/default, 1-candle grace period on TP/TIMEOUT.
  */
-export function getStrategyCooldownMs(interval: string, style: 'dayTrading' | 'swing' = 'dayTrading'): number {
+export function getStrategyCooldownMs(
+  interval: string,
+  style: 'dayTrading' | 'swing' = 'dayTrading',
+  outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string
+): number {
+  if (outcome === 'TP' || outcome === 'TIMEOUT') {
+    if (interval === '5m') return 5 * 60 * 1000;
+    if (interval === '1h') return 3600 * 1000;
+    if (interval === '1d') return 24 * 3600 * 1000;
+    return 5 * 60 * 1000;
+  }
   if (interval === '5m') {
-    return style === 'swing' ? 4 * 3600 * 1000 : 1 * 3600 * 1000; // 1 hour for 5m DayTrading
+    return style === 'swing' ? 4 * 3600 * 1000 : 30 * 60 * 1000; // 30 min for 5m DayTrading
   }
   if (interval === '1h') {
     return 4 * 3600 * 1000; // 4 hours for 1h Swing
@@ -738,37 +760,53 @@ export function getStrategyCooldownMs(interval: string, style: 'dayTrading' | 's
   if (interval === '1d') {
     return 48 * 3600 * 1000; // 48 hours for 1D Position
   }
-  return 1 * 3600 * 1000;
+  return 30 * 60 * 1000;
 }
 
 /**
  * Canonical Strategy Forward / Expiry Window in Candles:
  * Unifies the trade evaluation horizon between Backtesting, Tournament, and Live Alert Tracker.
  * - Multifractal MTF: 12 candles (5m = 1 hour)
- * - VCME Sniper: 72 candles (5m Day Trading = 6 hs) / 48 candles (1H Swing = 48 hs)
- * - Confluencia (2.0x ATR geometry): 10 candles (5m = 50 min), 7 candles (1h = 7 hs), 6 candles (1d = 6 días)
- * - Scoring (1.5x ATR geometry): 8 candles (5m = 40 min), 5 candles (1h = 5 hs), 5 candles (1d = 5 días)
- * - Standard (1.2x ATR geometry): 6 candles (5m = 30 min), 4 candles (1h = 4 hs), 3 candles (1d = 3 días)
+ * - VCME Sniper: 24 candles (5m Day Trading = 2 hs) / 48 candles (1H Swing = 48 hs)
+ * - Confluencia (2.0x ATR geometry): 20 candles (5m = 1h 40m), 7 candles (1h = 7 hs), 6 candles (1d = 6 días)
+ * - Scoring (1.5x ATR geometry): 16 candles (5m = 1h 20m), 5 candles (1h = 5 hs), 5 candles (1d = 5 días)
+ * - Standard (1.2x ATR crypto / 2.5x ATR equities): 12 candles (5m = 1h), 4 candles (1h = 4 hs), 3 candles (1d = 3 días)
  */
 export function getStrategyForwardWindow(
   strategy?: string,
   interval: string = '5m',
-  executionStyle?: 'dayTrading' | 'swing'
+  executionStyle?: 'dayTrading' | 'swing',
+  _symbolOrIsCrypto?: string | boolean
 ): number {
   const normStrategy = (strategy ?? '').toLowerCase();
   const normTf = (interval ?? '5m').toLowerCase();
+  const isCrypto = typeof _symbolOrIsCrypto === 'boolean'
+    ? _symbolOrIsCrypto
+    : (_symbolOrIsCrypto ? isCryptoAsset(_symbolOrIsCrypto) : true);
 
   if (normStrategy.includes('multifractal')) {
     return 12; // 12 candles 5m = 1 hour forward window
   }
 
+  if (normStrategy.includes('mfls')) {
+    return 24; // 24 candles 5m = 2.0 hours (allows liquidity sweep reversal to reach +0.37 ATR peak)
+  }
+
   if (normStrategy.includes('vcme') || normStrategy.includes('multitemporal')) {
     if (executionStyle === 'swing' || normTf === '1h') return 48; // 48 candles 1h = 48 hours
-    return 72; // 72 candles 5m = 6 hours (Intraday forward window)
+    return 24; // 24 candles 5m = 2 hours (Intraday forward window)
   }
 
   const baseAtrMult = normTf === '1d' ? 1.0 : 1.2;
   const baseForward = normTf === '5m' ? 6 : (normTf === '1h' ? 4 : 3);
+
+  // In 5m day trading (both equities and crypto), trades target a 1 to 3 hour holding period (12 to 36 candles),
+  // giving the structural stop (>=0.40%) and target (>=0.60%) room to resolve with strict 1:1 parity:
+  if (normTf === '5m') {
+    if (normStrategy.includes('confluencia')) return isCrypto ? 24 : 36; // 36 candles = 3h for equities (matches trader's 45m-3h holding profile and 3h breakeven/edge), 24 candles = 2h for crypto
+    if (normStrategy.includes('scoring')) return 16;     // 16 candles = 1h 20m
+    return 12;                                          // 12 candles = 1h (Standard)
+  }
 
   const isConfluencia = normStrategy.includes('confluencia');
   const isScoring = normStrategy.includes('scoring');
@@ -780,22 +818,9 @@ export function getStrategyForwardWindow(
 }
 
 /**
- * Canonical ATR risk multiplier per strategy:
- * - Confluencia: 2.0x ATR (wider swing stops for multi-EMA trend following)
- * - Scoring: 1.5x ATR (balanced structure & volatility stops)
- * - Standard / default: 1.2x on 5m/1h, 1.0x on 1d
- */
-export function getStrategyAtrMultiplier(strategyKey: string = 'standard', interval: string = '5m'): number {
-  const norm = strategyKey.toLowerCase();
-  if (norm.includes('confluencia')) return 2.0;
-  if (norm.includes('scoring')) return 1.5;
-  return interval.toLowerCase() === '1d' ? 1.0 : 1.2;
-}
-
-/**
  * Canonical warmup floor based on the earliest candle index where the strategy
  * produces valid, non-sterile signals and indicators (specifically ADX(14) which requires 29 bars):
- * - Standard Voting: index 34 (MACD 26, RSI 14, Supertrend)
+ * - Standard Voting: index 199 (EMA200 macro trend filter maturity)
  * - Confluencia: index 30 (signals start at 20, but ADX(14) regime convergence requires 30)
  * - Scoring: index 59 (EMA50, S/R, BB 20)
  * - Generic/Other: index 30 (universal indicator floor for ADX(14) convergence)
@@ -803,8 +828,9 @@ export function getStrategyAtrMultiplier(strategyKey: string = 'standard', inter
 export function getStrategySignalWarmup(strategy?: string): number {
   const norm = (strategy || '').toLowerCase();
   if (norm.includes('scoring')) return 59;
-  if (norm.includes('standard')) return 34;
+  if (norm.includes('standard')) return 199;
   if (norm.includes('confluencia')) return 30;
+  if (norm.includes('mfls')) return 30;
   return 30;
 }
 
@@ -819,9 +845,10 @@ function getParams(
   const warmup = warmupParam ?? 30;
   switch (interval) {
     case '5m': {
-      const evalWindow = totalCandles && totalCandles >= 1450
-        ? Math.min(1400, totalCandles - forwardWindow - warmup)
-        : (totalCandles ? Math.min(576, Math.max(0, totalCandles - forwardWindow - warmup)) : 576);
+      const available = totalCandles ? Math.max(0, totalCandles - forwardWindow - warmup) : 576;
+      const evalWindow = totalCandles && totalCandles <= 650
+        ? Math.min(576, available)
+        : Math.min(4680, Math.max(576, available));
       return {
         evalWindow,
         forwardWindow,
@@ -829,18 +856,17 @@ function getParams(
         fallbackThreshold: 0.008,
         atrMultiplier: 1.2,
         targetMultiplier: 1.5,
-        cooldownPeriod: getStrategyCooldownCandles('5m'), // 1 hour = 12 candles of 5m (unified across all engines & Live)
+        cooldownPeriod: getStrategyCooldownCandles('5m'), // 30 min = 6 candles of 5m (unified across all engines & Live)
       };
     }
     case '1d': {
-      const forwardWindow = 3;
       const evalWindow = totalCandles
-        ? Math.min(60, Math.max(0, totalCandles - forwardWindow - warmup))
+        ? Math.min(120, Math.max(0, totalCandles - forwardWindow - warmup))
         : 60;
       return {
         evalWindow,
         forwardWindow,
-        forwardLabel: '3 velas (3 días)',
+        forwardLabel: `${forwardWindow} velas (${forwardWindow} días)`,
         fallbackThreshold: 0.015,
         atrMultiplier: 1.0,
         targetMultiplier: 1.5,
@@ -877,7 +903,9 @@ function getAdaptiveThreshold(atr: number, close: number, atrMultiplier: number,
   const atrPct = atr / close;
   const threshold = atrPct * atrMultiplier;
 
-  // Clamp to sane bounds: 0.2% minimum, 8% maximum
+  // Clamp to sane bounds: 0.2% minimum, 8% maximum.
+  // Note: stops below getMinViableStopPct() (~0.314%) are pruned downstream
+  // by isTradeFrictionViable and recorded in discards.frictionFilter.
   return Math.max(0.002, Math.min(0.08, threshold));
 }
 
@@ -895,6 +923,37 @@ function hasSessionGaps(klines: Kline[], interval: string): boolean {
     if (gap > expectedGapSec * 3) return true; // Gap > 3× expected = session break
   }
   return false;
+}
+
+/**
+ * Canonical helper: determines the candle duration in seconds (stepSec) cleanly.
+ * Replaces fragile two-bar subtraction (klines[1].time - klines[0].time) which becomes
+ * artificially huge if the first two bars cross an overnight or weekend session gap.
+ */
+export function getRobustCandleStepSec(klines?: Kline[], interval?: string, style?: 'dayTrading' | 'swing'): number {
+  if (style === 'dayTrading' || interval === '5m') return 300;
+  if (interval === '1h') return 3600;
+  if (interval === '1d') return 86400;
+
+  // Fallback for custom/unspecified intervals: take the minimum positive delta across initial bars (gap-immune)
+  if (klines && klines.length > 1) {
+    const sampleSize = Math.min(10, klines.length - 1);
+    let minDiff = Infinity;
+    for (let i = 0; i < sampleSize; i++) {
+      const diff = klines[i + 1].time - klines[i].time;
+      if (diff > 0 && diff < minDiff) {
+        minDiff = diff;
+      }
+    }
+    if (minDiff < Infinity) {
+      if (minDiff <= 450) return 300;
+      if (minDiff <= 1200) return 900;
+      if (minDiff <= 5400) return 3600;
+      if (minDiff <= 100000) return 86400;
+    }
+  }
+
+  return style === 'swing' ? 3600 : 300;
 }
 
 /**
@@ -940,24 +999,17 @@ function evaluateOutcome(
   entryIdx: number,
   signal: 'BUY' | 'SELL',
   forwardWindow: number,
-  stopThreshold: number,
-  targetThreshold: number,
+  levels: TradeLevels,
   policyOptions?: {
     sessionGapCutoff?: boolean;
     stepSec?: number;
   }
 ): TradeOutcome {
-  const nextIdx = entryIdx + 1 < klines.length ? entryIdx + 1 : entryIdx;
-  const entry = klines[nextIdx].open || klines[entryIdx].close;
-  const levels: TradeLevels = {
-    entryPrice: entry,
-    stopLoss: signal === 'BUY' ? entry * (1 - stopThreshold) : entry * (1 + stopThreshold),
-    takeProfit1: signal === 'BUY' ? entry * (1 + targetThreshold) : entry * (1 - targetThreshold)
-  };
   const sim = simulateTrade(klines, entryIdx, signal, levels, {
     forwardWindow,
     enablePartials: false,
-    frictionPct: 0.08,
+    frictionPct: DEFAULT_FRICTION_PCT,
+    frictionModel: 'proportional',
     sessionGapCutoff: policyOptions?.sessionGapCutoff,
     stepSec: policyOptions?.stepSec
   });
@@ -974,40 +1026,8 @@ function evaluateOutcome(
 // ─── Cache Layer for Backtesting Performance ──────────────────────────────
 const backtestCache = new Map<string, { fingerprint: string; result: BacktestResult }>();
 
-export function getKlinesFingerprint(seriesList: (Kline[] | undefined)[]): string {
-  let fp = '';
-  for (let sIdx = 0; sIdx < seriesList.length; sIdx++) {
-    const s = seriesList[sIdx];
-    if (!s || s.length === 0) {
-      fp += '0:0|';
-      continue;
-    }
-    const len = s.length;
-    // FNV-1a 32-bit offset basis
-    let hash = 2166136261 >>> 0;
-    const startIdx = Math.max(0, len - 1500);
-
-    for (let i = startIdx; i < len; i++) {
-      const k = s[i];
-      hash = (hash ^ k.time) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-      hash = (hash ^ (Math.round(k.open * 100000) | 0)) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-      hash = (hash ^ (Math.round(k.high * 100000) | 0)) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-      hash = (hash ^ (Math.round(k.low * 100000) | 0)) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-      hash = (hash ^ (Math.round(k.close * 100000) | 0)) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-      hash = (hash ^ (Math.round(k.volume) | 0)) >>> 0;
-      hash = Math.imul(hash, 16777619) >>> 0;
-    }
-
-    const last = s[len - 1];
-    fp += `${len}:${last.time}:${hash.toString(16)}|`;
-  }
-  return fp;
-}
+import { getKlinesFingerprint } from './klineFingerprint';
+export { getKlinesFingerprint } from './klineFingerprint';
 
 function getBacktestCache(key: string, klines: Kline[], auxiliarySeries?: (Kline[] | undefined)[]): BacktestResult | null {
   if (!klines || klines.length === 0) return null;
@@ -1017,6 +1037,9 @@ function getBacktestCache(key: string, klines: Kline[], auxiliarySeries?: (Kline
   const allSeries = auxiliarySeries ? [klines, ...auxiliarySeries] : [klines];
   const fp = getKlinesFingerprint(allSeries);
   if (cached.fingerprint === fp) {
+    // LRU touch: re-insert key to mark as most recently used
+    backtestCache.delete(key);
+    backtestCache.set(key, cached);
     return cached.result;
   }
   return null;
@@ -1024,7 +1047,9 @@ function getBacktestCache(key: string, klines: Kline[], auxiliarySeries?: (Kline
 
 function setBacktestCache(key: string, klines: Kline[], result: BacktestResult, auxiliarySeries?: (Kline[] | undefined)[]): BacktestResult {
   if (klines && klines.length > 0 && result) {
-    if (backtestCache.size >= 250) {
+    if (backtestCache.has(key)) {
+      backtestCache.delete(key);
+    } else if (backtestCache.size >= 250) {
       const oldestKey = backtestCache.keys().next().value;
       if (oldestKey) backtestCache.delete(oldestKey);
     }
@@ -1042,7 +1067,7 @@ export function backtestStandard(klines: Kline[], interval: string, symbol?: str
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
   const signals = computeStandardSignalsSeries(klines);
-  const res = runBacktestGenericOptimized(klines, interval, signals, 'standard');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'standard', symbol);
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1050,9 +1075,9 @@ export function backtestConfluencia(klines: Kline[], interval: string, symbol?: 
   const cacheKey = `confluencia:${symbol || 'any'}:${interval}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
-  const signals = computeConfluenciaSignalsSeries(klines, interval);
+  const signals = computeConfluenciaSignalsSeries(klines, interval, symbol);
   // Confluencia is geometrically designed for stopLoss = close ± 2.0 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 'confluencia');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'confluencia', symbol);
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1067,9 +1092,9 @@ export function backtestScoring(
   const cacheKey = `scoring:${symbol || 'any'}:${interval}:${weightsKey}`;
   const cached = getBacktestCache(cacheKey, klines);
   if (cached) return cached;
-  const signals = computeScoringSignalsSeries(klines, interval, weights);
+  const signals = computeScoringSignalsSeries(klines, interval, weights, symbol);
   // Scoring evaluates and validates R:R against slDist = 1.5 * ATR
-  const res = runBacktestGenericOptimized(klines, interval, signals, 'scoring');
+  const res = runBacktestGenericOptimized(klines, interval, signals, 'scoring', symbol);
   return setBacktestCache(cacheKey, klines, res);
 }
 
@@ -1086,13 +1111,13 @@ export function backtestMultitemporal(
   const cached = getBacktestCache(cacheKey, klines5m, [klines1h, klines1d]);
   if (cached) return cached;
   const tf = style === 'swing' ? '1h' : '5m';
-  const stepSec = klines5m.length > 1 ? (klines5m[1].time - klines5m[0].time) : (style === 'swing' ? 3600 : 300);
+  const stepSec = getRobustCandleStepSec(klines5m, _interval, style);
   const forwardWindow = style === 'swing'
     ? (stepSec === 300 ? 576 : 48)  // 576 x 5m = 48h OR 48 x 1h = 48h
-    : 72;                            // 72 x 5m = 6h (Intradía)
+    : 24;                            // 24 x 5m = 2h (Intradía)
   const evalWindow = style === 'swing'
     ? (klines5m.length >= 550 ? Math.min(720, klines5m.length - forwardWindow - 30) : (klines5m.length >= 300 ? Math.min(350, klines5m.length - forwardWindow - 20) : 168))
-    : (klines5m.length >= 1450 ? Math.min(1400, klines5m.length - forwardWindow - 30) : 576);
+    : (klines5m.length <= 650 ? 576 : Math.min(4680, Math.max(576, klines5m.length - forwardWindow - 30)));
   const baseEvalWindow = style === 'swing' ? 168 : 576;
   const minRequiredCandles = baseEvalWindow + forwardWindow;
   const cooldownPeriod = getStrategyCooldownCandles(tf, style);
@@ -1111,7 +1136,7 @@ export function backtestMultitemporal(
     discards: createEmptyDiscards(),
     label: `datos insuficientes`,
     forwardWindow,
-    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '6 hs max (Intradía)',
+    forwardLabel: style === 'swing' ? '48 hs max (Swing)' : '2 hs max (Intradía)',
     threshold: 0,
     targetThreshold: 0,
     targetMultiplier: 1.5,
@@ -1175,8 +1200,6 @@ export function backtestMultitemporal(
       continue;
     }
 
-    totalSignals++;
-
     const levels: TradeLevels = {
       entryPrice,
       stopLoss: evalRes.stopLoss,
@@ -1185,11 +1208,19 @@ export function backtestMultitemporal(
       takeProfit3: evalRes.takeProfit3
     };
 
+    if (!isTradeFrictionViable(levels.entryPrice, levels.stopLoss)) {
+      discards.frictionFilter++;
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+
     const sim = simulateTrade(klines5m, i, evalRes.signal, levels, {
       forwardWindow,
       enablePartials: 'vcme-runner',
       moveSlToBreakevenOnTp1: true,
-      timeStopBars: evalRes.tradeType === 'DAY' ? 8 : 0,
+      timeStopBars: evalRes.tradeType === 'DAY' ? 18 : 0,
       trailingStop: 'chandelier',
       emergencyExitFn: (k, idx, dir) => {
         return dir === 'BUY'
@@ -1200,13 +1231,20 @@ export function backtestMultitemporal(
       stepSec,
       atrSeries: ctx.atrSeries5m,
       ema9Series: ctx.ema9_5m,
-      frictionPct: 0.08
+      frictionPct: DEFAULT_FRICTION_PCT,
+      frictionModel: 'proportional'
     });
 
     totalRealizedR += sim.realizedR;
     const tradeDuration = Math.max(1, sim.exitIdx - i);
     totalDurationCandles += tradeDuration;
-    totalCycleCandles += tradeDuration + cooldownPeriod;
+    const outcomeKey = sim.outcome === 'win' || sim.realizedR > 0
+      ? 'TP'
+      : sim.outcome === 'loss' || sim.realizedR < -0.05
+        ? 'SL'
+        : 'TIMEOUT';
+    const tradeCooldown = getStrategyCooldownCandles(tf, style, outcomeKey);
+    totalCycleCandles += tradeDuration + tradeCooldown;
 
     const adxVal = style === 'swing'
       ? (evalRes.adx1H > 0 ? evalRes.adx1H : undefined)
@@ -1248,7 +1286,7 @@ export function backtestMultitemporal(
       totalLossPct += Math.abs(sim.pnlPct);
     }
 
-    nextAllowedIdx = sim.exitIdx + cooldownPeriod;
+    nextAllowedIdx = sim.exitIdx + tradeCooldown;
   }
 
   const exitBreakdown = calculateExitBreakdown(recordedTrades);
@@ -1310,13 +1348,29 @@ export function runBacktestGenericOptimized(
   klines: Kline[],
   interval: string,
   signals: ('BUY' | 'SELL' | 'NEUTRAL')[],
-  strategyKey: string = 'standard'
+  strategyKey: string = 'standard',
+  atrMultiplierOrSymbol?: number | string | boolean,
+  symbolOrIsCryptoParam?: string | boolean
 ): BacktestResult {
+  let customAtrMultiplier: number | undefined;
+  let symbolOrIsCrypto: string | boolean | undefined;
+
+  if (typeof atrMultiplierOrSymbol === 'number') {
+    customAtrMultiplier = atrMultiplierOrSymbol;
+    symbolOrIsCrypto = symbolOrIsCryptoParam;
+  } else {
+    symbolOrIsCrypto = atrMultiplierOrSymbol;
+  }
+
+  const isCrypto = typeof symbolOrIsCrypto === 'boolean'
+    ? symbolOrIsCrypto
+    : isCryptoAsset(symbolOrIsCrypto);
+
   // Canonical forwardWindow derived purely from getStrategyForwardWindow
-  const forwardWindow = getStrategyForwardWindow(strategyKey, interval);
+  const forwardWindow = getStrategyForwardWindow(strategyKey, interval, undefined, isCrypto);
   const warmupFloor = getStrategySignalWarmup(strategyKey);
   const params = getParams(interval, klines.length, forwardWindow, warmupFloor);
-  const atrMultiplier = getStrategyAtrMultiplier(strategyKey, interval);
+  const atrMultiplier = customAtrMultiplier ?? getStrategyAtrMultiplier(strategyKey, interval, isCrypto);
   const { evalWindow, targetMultiplier, forwardLabel } = params;
 
   // Use the ATR available at each entry. Applying today's ATR to historical trades
@@ -1325,8 +1379,9 @@ export function runBacktestGenericOptimized(
   const latestAtr = atrSeries[atrSeries.length - 1];
   const threshold = getAdaptiveThreshold(latestAtr, klines[klines.length - 1].close, atrMultiplier, params.fallbackThreshold);
   const targetThreshold = threshold * targetMultiplier;
-  const baseEvalWindow = interval === '5m' ? 576 : interval === '1h' ? 168 : 60;
-  const minCandles = baseEvalWindow + forwardWindow;
+  const minCandles = interval === '5m'
+    ? (klines.length <= 650 ? 50 : 576 + forwardWindow)
+    : (interval === '1h' ? 172 : 60);
   if (klines.length < minCandles) {
     return {
       totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
@@ -1352,6 +1407,28 @@ export function runBacktestGenericOptimized(
   const isSessionBased = hasSessionGaps(klines, interval);
   const latestEvalIdx = klines.length - 1 - forwardWindow;
   const oldestEvalIdx = Math.max(warmupFloor, latestEvalIdx - evalWindow + 1);
+
+  if (interval === '1d' && (latestEvalIdx < oldestEvalIdx || evalWindow <= 0)) {
+    return {
+      totalSignals: 0, wins: 0, losses: 0, timeouts: 0,
+      winRate: 0, resolutionRate: 0, exitBreakdown: createEmptyExitBreakdown(), profitFactor: null, expectancy: 0,
+      expectancyR: 0, expectancyPerHour: 0, avgExposureHours: 0, avgDurationCandles: 0,
+      maxDrawdownR: 0, maxLossStreak: 0, sortinoRatio: null,
+      longStats: createEmptyDirectionalStats(),
+      shortStats: createEmptyDirectionalStats(),
+      regimeStats: createEmptyRegimeStats(),
+      walkForward: createEmptyWalkForwardResult(),
+      neutrals: 0,
+      discards: createEmptyDiscards(),
+      label: `datos insuficientes (${klines.length} velas para warmup ${warmupFloor})`,
+      forwardWindow,
+      forwardLabel,
+      threshold,
+      targetThreshold,
+      targetMultiplier,
+      insufficient: true,
+    };
+  }
 
   const adxSeries  = calculateADXSeries(klines, 14);
   const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);
@@ -1399,13 +1476,28 @@ export function runBacktestGenericOptimized(
       continue;
     }
 
-    const entryThreshold = getAdaptiveThreshold(
-      atrSeries[i],
-      klines[i].close,
-      atrMultiplier,
-      params.fallbackThreshold
-    );
-    const entryTargetThreshold = entryThreshold * targetMultiplier;
+    const entryPrice = klines[i + 1].open || klines[i].close;
+    // Same absolute ATR risk and clamps as live sizing, anchored to execution
+    // price. Only the ATR of the closed signal candle is available at entry.
+    const levels: TradeLevels = {
+      entryPrice,
+      ...calculateAlertLevels(signal, entryPrice, interval, atrSeries[i], strategyKey, { isCrypto }),
+    };
+
+    if (!isTradeFrictionViable(levels.entryPrice, levels.stopLoss)) {
+      discards.frictionFilter++;
+      neutrals++;
+      continue;
+    }
+
+    if (strategyKey === 'scoring') {
+      const srValidation = validateScoringSRRoom(klines, i, signal, entryPrice, levels.takeProfit1, levels.stopLoss);
+      if (!srValidation.viable) {
+        discards.riskFilter++;
+        neutrals++;
+        continue;
+      }
+    }
 
     totalSignals++;
     const stepSec = interval === '5m' ? 300 : interval === '1h' ? 3600 : 86400;
@@ -1414,8 +1506,7 @@ export function runBacktestGenericOptimized(
       i,
       signal,
       forwardWindow,
-      entryThreshold,
-      entryTargetThreshold,
+      levels,
       {
         sessionGapCutoff: isSessionBased && (interval === '5m' || interval === '1h'),
         stepSec
@@ -1424,7 +1515,13 @@ export function runBacktestGenericOptimized(
 
     totalRealizedR += outcome.realizedR;
     totalDurationCandles += outcome.durationCandles;
-    totalCycleCandles += outcome.durationCandles + params.cooldownPeriod;
+    const outcomeKey = outcome.result === 'win' || outcome.realizedR > 0
+      ? 'TP'
+      : outcome.result === 'loss' || outcome.realizedR < -0.05
+        ? 'SL'
+        : 'TIMEOUT';
+    const tradeCooldown = getStrategyCooldownCandles(interval, undefined, outcomeKey);
+    totalCycleCandles += outcome.durationCandles + tradeCooldown;
 
     const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
     const regimeVal = (i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined;
@@ -1461,7 +1558,7 @@ export function runBacktestGenericOptimized(
     }
 
     const exitIdx = i + outcome.durationCandles;
-    nextAllowedIdx = exitIdx + params.cooldownPeriod;
+    nextAllowedIdx = exitIdx + tradeCooldown;
   }
 
   const exitBreakdown = calculateExitBreakdown(recordedTrades);
@@ -1481,7 +1578,7 @@ export function runBacktestGenericOptimized(
 
   const actualWindow = latestEvalIdx - oldestEvalIdx + 1;
   const riskMetrics = calculateRiskMetrics(recordedTrades);
-  const minOosTrades = interval === '1h' ? 3 : interval === '1d' ? 2 : 5;
+  const minOosTrades = interval === '5m' ? 5 : 3;
   const nominalCycle = forwardWindow + params.cooldownPeriod;
   const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, nominalCycle, candleHours, params.cooldownPeriod);
 
@@ -1525,12 +1622,16 @@ export function computeStandardSignalsSeries(klines: Kline[]): ('BUY' | 'SELL' |
   return signals;
 }
 
-export function computeConfluenciaSignalsSeries(klines: Kline[], interval: string = '1h'): ('BUY' | 'SELL' | 'NEUTRAL')[] {
+export function computeConfluenciaSignalsSeries(
+  klines: Kline[],
+  interval: string = '1h',
+  symbolOrIsCrypto?: string | boolean
+): ('BUY' | 'SELL' | 'NEUTRAL')[] {
   const length = klines ? klines.length : 0;
   const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
   if (length < 21) return signals;
 
-  const ctx = buildConfluenciaContext(klines, interval);
+  const ctx = buildConfluenciaContext(klines, interval, symbolOrIsCrypto);
   for (let i = 20; i < length; i++) {
     signals[i] = evaluateConfluenciaAt(ctx, i).signal;
   }
@@ -1540,13 +1641,14 @@ export function computeConfluenciaSignalsSeries(klines: Kline[], interval: strin
 export function computeScoringSignalsSeries(
   klines: Kline[],
   interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS
+  weights: ScoringWeights = DEFAULT_WEIGHTS,
+  symbolOrIsCrypto?: string | boolean
 ): ('BUY' | 'SELL' | 'NEUTRAL')[] {
   const length = klines ? klines.length : 0;
   const signals: ('BUY' | 'SELL' | 'NEUTRAL')[] = new Array(length).fill('NEUTRAL');
   if (length < 60) return signals;
 
-  const ctx = buildScoringContext(klines, interval, weights);
+  const ctx = buildScoringContext(klines, interval, weights, symbolOrIsCrypto);
   for (let i = 59; i < length; i++) {
     const res = evaluateScoringAt(ctx, i);
     signals[i] = res.signal === 'HOLD' ? 'NEUTRAL' : res.signal;
@@ -1568,7 +1670,9 @@ export function backtestMultifractalMTF(
   if (cached) return cached;
   const forwardWindow = 12; // 12 candles in 5m = 1 hour forward window
   const cooldownPeriod = getStrategyCooldownCandles(_interval);
-  const evalWindow = klines5m.length >= 1450 ? Math.min(1400, klines5m.length - forwardWindow - 30) : 576;
+  const evalWindow = klines5m.length <= 650
+    ? Math.min(576, Math.max(0, klines5m.length - forwardWindow - 30))
+    : Math.min(4680, Math.max(576, klines5m.length - forwardWindow - 30));
   const minRequiredCandles = 576 + forwardWindow;
 
   const fallbackResult: BacktestResult = {
@@ -1649,8 +1753,6 @@ export function backtestMultifractalMTF(
       continue;
     }
 
-    totalSignals++;
-
     const risk = Math.abs(entryPrice - evalRes.stopLoss);
     const takeProfitPrice = evalRes.signal === 'BUY'
       ? entryPrice + risk * 1.5
@@ -1662,12 +1764,21 @@ export function backtestMultifractalMTF(
       takeProfit1: takeProfitPrice
     };
 
+    if (!isTradeFrictionViable(levels.entryPrice, levels.stopLoss)) {
+      discards.frictionFilter++;
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+
     const sim = simulateTrade(klines5m, i, evalRes.signal, levels, {
       forwardWindow: 12,
       enablePartials: false,
       earlyAdverseCutoffBars: 3,
       earlyAdverseCutoffR: 0.5,
-      frictionPct: 0.08,
+      frictionPct: DEFAULT_FRICTION_PCT,
+      frictionModel: 'proportional',
       sessionGapCutoff: isSessionBased,
       stepSec: 300
     });
@@ -1675,7 +1786,13 @@ export function backtestMultifractalMTF(
     totalRealizedR += sim.realizedR;
     const tradeDuration = Math.max(1, sim.exitIdx - i);
     totalDurationCandles += tradeDuration;
-    totalCycleCandles += tradeDuration + cooldownPeriod;
+    const outcomeKey = sim.outcome === 'win' || sim.realizedR > 0
+      ? 'TP'
+      : sim.outcome === 'loss' || sim.realizedR < -0.05
+        ? 'SL'
+        : 'TIMEOUT';
+    const tradeCooldown = getStrategyCooldownCandles(_interval, undefined, outcomeKey);
+    totalCycleCandles += tradeDuration + tradeCooldown;
 
     const adxVal = (i >= 0 && i < ctx.adxData5M.adx.length) ? ctx.adxData5M.adx[i] : undefined;
     const regimeVal = (i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined;
@@ -1711,7 +1828,7 @@ export function backtestMultifractalMTF(
       totalLossPct += Math.abs(sim.pnlPct);
     }
 
-    nextAllowedIdx = sim.exitIdx + cooldownPeriod;
+    nextAllowedIdx = sim.exitIdx + tradeCooldown;
   }
 
   const exitBreakdown = calculateExitBreakdown(recordedTrades);
@@ -1748,7 +1865,7 @@ export function backtestMultifractalMTF(
     walkForward,
     neutrals,
     discards,
-    label: `últimas ${evalWindow} velas (5m)`,
+    label: `últimas ${latestEvalIdx >= oldestEvalIdx ? (latestEvalIdx - oldestEvalIdx + 1) : evalWindow} velas (5m)`,
     forwardWindow,
     forwardLabel: '12 velas (1 hs max)',
     threshold: 0.01,
@@ -1759,3 +1876,209 @@ export function backtestMultifractalMTF(
 
   return setBacktestCache(cacheKey, klines5m, res, [klines1h, klines1d]);
 }
+
+/**
+ * Motor de Backtesting para Estrategia 6: MACD Failure & Liquidity Sweep (MFLS)
+ * Calibrada específicamente para acciones en 5m, horizonte de 18 velas (1.5 hs) y fricción del 0.11%.
+ */
+export function backtestMFLS(
+  klines5m: Kline[],
+  _interval: string = '5m',
+  _symbol: string = 'ASSET'
+): BacktestResult {
+  const isCrypto = isCryptoAsset(_symbol);
+  const cacheKey = `mfls:${_interval}:${_symbol}`;
+  const cached = getBacktestCache(cacheKey, klines5m);
+  if (cached) return cached;
+
+  const forwardWindow = getStrategyForwardWindow('mfls', _interval, 'dayTrading', _symbol);
+  const forwardLabel = `${forwardWindow} velas (${(forwardWindow * 5) / 60} hs max)`;
+  const warmup = 30;
+  const cooldownPeriod = getStrategyCooldownCandles('5m');
+  const evalWindow = klines5m.length <= 650
+    ? Math.min(576, Math.max(0, klines5m.length - forwardWindow - warmup))
+    : Math.min(4680, Math.max(576, klines5m.length - forwardWindow - warmup));
+  const minCandles = warmup + forwardWindow + 20;
+
+  if (klines5m.length < minCandles) {
+    const empty = createFallbackBacktestResult(`datos insuficientes (${klines5m.length} velas)`, forwardLabel, forwardWindow);
+    return setBacktestCache(cacheKey, klines5m, empty);
+  }
+
+  const isSessionBased = !isCrypto || hasSessionGaps(klines5m, '5m');
+  const discards = createEmptyDiscards();
+  const recordedTrades: RecordedTrade[] = [];
+
+  let totalSignals = 0;
+  let wins = 0;
+  let losses = 0;
+  let neutrals = 0;
+  let totalGainPct = 0;
+  let totalLossPct = 0;
+  let totalGainR = 0;
+  let totalLossR = 0;
+  let totalRealizedR = 0;
+  let totalDurationCandles = 0;
+  let totalCycleCandles = 0;
+  let nextAllowedIdx = 0;
+
+  const latestEvalIdx = klines5m.length - 1 - forwardWindow;
+  const oldestEvalIdx = Math.max(warmup, latestEvalIdx - evalWindow + 1);
+
+  const ctx = buildMFLSContext(klines5m, _symbol);
+  const adxSeries = calculateADXSeries(klines5m, 14);
+  const regimeSeries = calculateRegimeSeriesWithHysteresis(adxSeries.adx, 26.0, 22.0);
+
+  for (let i = oldestEvalIdx; i <= latestEvalIdx; i++) {
+    if (i < nextAllowedIdx) {
+      discards.cooldown++;
+      neutrals++;
+      continue;
+    }
+
+    const nextIdx = i + 1 < klines5m.length ? i + 1 : i;
+    const entryPrice = klines5m[nextIdx].open || klines5m[i].close;
+
+    const evalRes = evaluateMFLSAt(ctx, i, entryPrice);
+
+    if (evalRes.signal === 'NEUTRAL') {
+      if (evalRes.discardReason) {
+        discards[evalRes.discardReason]++;
+      } else {
+        discards.noSetup++;
+      }
+      neutrals++;
+      continue;
+    }
+
+    if (isSessionBased && isExecutionAcrossSessionGap(klines5m, i, '5m')) {
+      discards.sessionGap++;
+      neutrals++;
+      continue;
+    }
+
+    const levels: TradeLevels = {
+      entryPrice,
+      stopLoss: evalRes.stopLoss,
+      takeProfit1: evalRes.takeProfit1,
+      takeProfit2: evalRes.takeProfit2
+    };
+
+    // Frictional viability check (0.11% commission + 0.03% slippage = 0.14% total friction, min viable stop 0.40%)
+    if (!isTradeFrictionViable(levels.entryPrice, levels.stopLoss, DEFAULT_FRICTION_PCT)) {
+      discards.frictionFilter++;
+      neutrals++;
+      continue;
+    }
+
+    totalSignals++;
+
+    // Realistic trade simulation with 0.11% friction, two-tier targets, 24-bar window, 16-bar time-stop, and early adverse protection
+    const sim = simulateTrade(klines5m, i, evalRes.signal, levels, {
+      forwardWindow: getStrategyForwardWindow('mfls', _interval, 'dayTrading'),
+      enablePartials: 'two-tier',
+      earlyAdverseCutoffBars: 3,
+      earlyAdverseCutoffR: 0.5,
+      timeStopBars: 16,
+      timeStopMinR: 0.4,
+      frictionPct: DEFAULT_FRICTION_PCT,
+      frictionModel: 'proportional',
+      sessionGapCutoff: isSessionBased,
+      stepSec: 300
+    });
+
+    totalRealizedR += sim.realizedR;
+    const tradeDuration = Math.max(1, sim.exitIdx - i);
+    totalDurationCandles += tradeDuration;
+    const outcomeKey = sim.outcome === 'win' || sim.realizedR > 0
+      ? 'TP'
+      : sim.outcome === 'loss' || sim.realizedR < -0.05
+        ? 'SL'
+        : 'TIMEOUT';
+    const tradeCooldown = getStrategyCooldownCandles(_interval, undefined, outcomeKey);
+    totalCycleCandles += tradeDuration + tradeCooldown;
+
+    const adxVal = (i >= 0 && i < adxSeries.adx.length) ? adxSeries.adx[i] : undefined;
+    const regimeVal = (i >= 0 && i < regimeSeries.length) ? regimeSeries[i] : undefined;
+    recordedTrades.push({
+      dir: evalRes.signal as 'BUY' | 'SELL',
+      realizedR: sim.realizedR,
+      pnlPct: sim.pnlPct,
+      adxAtEntry: (adxVal !== undefined && !isNaN(adxVal)) ? adxVal : undefined,
+      regimeAtEntry: regimeVal,
+      outcome: sim.outcome,
+      exitReason: sim.exitReason,
+      entryIdx: i,
+      executionIdx: i + 1,
+      exitIdx: sim.exitIdx,
+      durationCandles: tradeDuration,
+    });
+
+    if (sim.outcome === 'win') {
+      wins++;
+    } else if (sim.outcome === 'loss') {
+      losses++;
+    }
+
+    if (sim.realizedR > 0) {
+      totalGainR += sim.realizedR;
+    } else if (sim.realizedR < 0) {
+      totalLossR += Math.abs(sim.realizedR);
+    }
+
+    if (sim.pnlPct > 0) {
+      totalGainPct += sim.pnlPct;
+    } else if (sim.pnlPct < 0) {
+      totalLossPct += Math.abs(sim.pnlPct);
+    }
+
+    nextAllowedIdx = sim.exitIdx + tradeCooldown;
+  }
+
+  const exitBreakdown = calculateExitBreakdown(recordedTrades);
+  const timeouts = exitBreakdown.expirations;
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? Number((wins / resolved).toFixed(3)) : 0;
+  const resolutionRate = totalSignals > 0 ? Number(((exitBreakdown.targetHits + exitBreakdown.stopLossHits) / totalSignals).toFixed(3)) : 0;
+  const profitFactor = calculateProfitFactor(totalGainR, totalLossR, totalSignals);
+  const expectancy = totalSignals > 0 ? Number(((totalGainPct - totalLossPct) / totalSignals).toFixed(3)) : 0;
+  const avgDurationCandles = totalSignals > 0 ? Number((totalDurationCandles / totalSignals).toFixed(2)) : 0;
+  const avgCycleCandles = totalSignals > 0 ? (totalCycleCandles / totalSignals) : 0;
+  const avgExposureHours = Number((avgCycleCandles * (5 / 60)).toFixed(2));
+  const expectancyR = totalSignals > 0 ? Number((totalRealizedR / totalSignals).toFixed(3)) : 0;
+  const expectancyPerHour = avgExposureHours > 0 ? Number((expectancyR / avgExposureHours).toFixed(3)) : 0;
+  const riskMetrics = calculateRiskMetrics(recordedTrades);
+  const nominalCycle = forwardWindow + cooldownPeriod;
+  const minOosTrades = 3;
+  const walkForward = calculateWalkForward(recordedTrades, oldestEvalIdx, latestEvalIdx, 0.70, minOosTrades, nominalCycle, 5 / 60, cooldownPeriod);
+
+  const res: BacktestResult = {
+    totalSignals,
+    wins,
+    losses,
+    timeouts,
+    winRate,
+    resolutionRate,
+    exitBreakdown,
+    profitFactor,
+    expectancy,
+    expectancyR,
+    expectancyPerHour,
+    avgExposureHours,
+    avgDurationCandles,
+    ...riskMetrics,
+    walkForward,
+    neutrals,
+    discards,
+    label: `últimas ${latestEvalIdx >= oldestEvalIdx ? (latestEvalIdx - oldestEvalIdx + 1) : evalWindow} velas (5m)`,
+    forwardWindow,
+    forwardLabel,
+    threshold: 0.004,
+    targetThreshold: 0.015,
+    targetMultiplier: 1.75,
+    insufficient: false
+  };
+
+  return setBacktestCache(cacheKey, klines5m, res);
+}
+

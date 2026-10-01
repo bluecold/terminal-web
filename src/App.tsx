@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './App.css';
 import { Search, LayoutGrid, LineChart } from 'lucide-react';
 import Chart from './components/Chart';
@@ -8,13 +8,17 @@ import MarketRadar from './components/MarketRadar';
 import { fetchKlines, fetchEarningsDate } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import HelpModal from './components/HelpModal';
+import AlertReportModal from './components/AlertReportModal';
 import type { Kline } from './services/api';
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateATRSeries, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
-import { getStrategyCooldownMs } from './utils/backtester';
-import { runQVESelection, sanitizeSignalWithDirectionalEdge } from './utils/tournament';
+import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, isNyseTradingSessionActive, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
+import { resolveOperationalTrade } from './utils/operationalTrade';
+import { isCryptoAsset } from './utils/tradeLevels';
+import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue, resolveCandidateCascade, resolveStandardExploratoryFallback } from './utils/tournament';
+import { evaluateAlertEmission } from './utils/alertEmission';
 import { APP_VERSION } from './version';
+import { getMsUntilNextAlignedScan } from './utils/scanSchedule';
+import { computeAlertLatencySec, computeExecutionCostR, loadAlertArchive, mergeIntoAlertArchive, saveAlertArchive, type ArchivedAlert } from './utils/alertReport';
 import {
-  calculateAlertLevels,
   updateAlertsOutcome,
   calculateSessionStats,
   isCandleAlertFired,
@@ -22,10 +26,34 @@ import {
   pruneFiredAlertsRegistry,
   clearFiredAlertsRegistry,
   generateCandleAlertKey,
+  trimAlertsPreservingActive,
+  detectClosedAlertTransitions,
+  getAlertCooldownKey,
+  getAlertExitTimestampMs,
   type AuditAlertItem
 } from './utils/alertTracker';
+import {
+  type LiveDiscardReason,
+  type LiveDiscardStats,
+  DISCARD_REASON_LABELS,
+  loadDiscardStats,
+  createInitialDiscardStats,
+  recordDiscardEvent,
+  clearDiscardStats,
+} from './utils/liveDiscards';
 import { formatSmartPrice } from './utils/formatters';
 import type { AlertOverlay } from './components/Chart';
+import type { AlertCooldownRecord } from './utils/radarFilters';
+
+function loadSavedAlertCooldowns(): Record<string, number | AlertCooldownRecord> {
+  try {
+    const saved = localStorage.getItem('terminal_alert_cooldowns');
+    if (saved) return JSON.parse(saved);
+  } catch (e) {
+    console.error('Error parsing alert cooldowns from local storage', e);
+  }
+  return {};
+}
 
 function App() {
   const [alertsLog, setAlertsLog] = useState<AuditAlertItem[]>(() => {
@@ -35,7 +63,10 @@ function App() {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
           const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-          return parsed.filter(item => item && typeof item.timestamp === 'number' && item.timestamp > sevenDaysAgo);
+          return parsed.filter(item => item && (
+            item.status === 'OPEN' || item.status === 'TP1_HIT' || item.status === 'TP2_HIT' ||
+            (typeof item.timestamp === 'number' && item.timestamp > sevenDaysAgo)
+          ));
         }
       } catch (e) {
         console.error('Error parsing alerts log from local storage', e);
@@ -48,6 +79,127 @@ function App() {
   useEffect(() => {
     alertsLogRef.current = alertsLog;
   }, [alertsLog]);
+
+  // Resolved alerts are archived (90 days) for the performance report, independent of the
+  // 100-entry / 7-day live log and of the LIMPIAR button.
+  useEffect(() => {
+    saveAlertArchive(mergeIntoAlertArchive(loadAlertArchive(), alertsLog));
+  }, [alertsLog]);
+
+  const recordUserFill = useCallback((alertId: string, price: number | undefined) => {
+    setAlertsLog(prev => {
+      const next = prev.map(a => a.id === alertId
+        ? { ...a, userFillPrice: price, userFillTime: price !== undefined ? Date.now() : undefined }
+        : a);
+      try {
+        localStorage.setItem('terminal_alerts_log', JSON.stringify(next));
+      } catch (e) {
+        console.error('Error saving terminal_alerts_log to local storage', e);
+      }
+      return next;
+    });
+  }, []);
+
+  const openAlertReport = () => {
+    setReportAlerts(mergeIntoAlertArchive(loadAlertArchive(), alertsLogRef.current));
+  };
+
+  const toggleInformationalAlerts = () => {
+    setLogInformationalAlerts(prev => {
+      localStorage.setItem('terminal_exploratory_alerts', prev ? 'false' : 'true');
+      return !prev;
+    });
+  };
+
+  const [discardStats, setDiscardStats] = useState<LiveDiscardStats>(() => loadDiscardStats());
+  const seenDiscardKeysRef = useRef<Set<string>>(new Set());
+  const discardStatsRef = useRef<LiveDiscardStats>(discardStats);
+  useEffect(() => {
+    discardStatsRef.current = discardStats;
+  }, [discardStats]);
+
+  const recordDiscard = (symbol: string, interval: string, candleTimestamp: number, reason: LiveDiscardReason) => {
+    const res = recordDiscardEvent(discardStatsRef.current, seenDiscardKeysRef.current, symbol, interval, candleTimestamp, reason);
+    if (res.recorded) {
+      discardStatsRef.current = res.stats;
+      setDiscardStats(res.stats);
+    }
+  };
+
+  // Cooldown for notifications/logging per symbol and timeframe (persisted in localStorage)
+  const alertCooldownsRef = useRef<Record<string, number | AlertCooldownRecord>>(loadSavedAlertCooldowns());
+  const [alertCooldowns, setAlertCooldownsState] = useState<Record<string, number | AlertCooldownRecord>>(loadSavedAlertCooldowns);
+
+  const setAlertCooldown = useCallback((key: string, timestamp: number, outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string) => {
+    alertCooldownsRef.current[key] = { timestamp, outcome };
+    try {
+      localStorage.setItem('terminal_alert_cooldowns', JSON.stringify(alertCooldownsRef.current));
+    } catch (e) {
+      console.error('Error saving alert cooldowns to local storage', e);
+    }
+    setAlertCooldownsState({ ...alertCooldownsRef.current });
+  }, []);
+
+  /**
+   * Centralized alert outcome evaluator and post-exit cooldown synchronizer.
+   * Ensures that any transition from active ('OPEN', 'TP1_HIT', 'TP2_HIT') to terminal
+   * ('SL_HIT', 'TP1_BE_CLOSED', 'TP3_HIT', etc.) triggers post-exit cooldown immediately,
+   * regardless of whether it was triggered by asset loading, symbol scan, or the global loop.
+   * Anchors cooldown start to the authentic candle exit timestamp (getAlertExitTimestampMs)
+   * eliminating artificial lockout after browser/app reconnections.
+   */
+  const syncAlertOutcomesAndCooldowns = useCallback((
+    prevAlerts: AuditAlertItem[],
+    klinesMap: Record<string, Kline[]>,
+    targetSymbol?: string
+  ): AuditAlertItem[] => {
+    const toUpdate = targetSymbol
+      ? prevAlerts.filter(a => a.symbol === targetSymbol)
+      : prevAlerts;
+    const updates = new Map(updateAlertsOutcome(toUpdate, klinesMap).map(a => [a.id, a]));
+    const updated = trimAlertsPreservingActive(prevAlerts.map(a => updates.get(a.id) ?? a), 100);
+
+    const newlyClosed = detectClosedAlertTransitions(prevAlerts, updates);
+    if (newlyClosed.length > 0) {
+      newlyClosed.forEach(closed => {
+        const exitKey = getAlertCooldownKey(closed);
+        const exitTimestamp = getAlertExitTimestampMs(closed);
+        const isLoss = closed.status === 'SL_HIT' || closed.realizedR < -0.05;
+        const isTimeout = closed.status === 'EXPIRED' || closed.executionState?.exit?.reason === 'TIMEOUT';
+        const outcome = isLoss ? 'SL' : isTimeout ? 'TIMEOUT' : 'TP';
+        setAlertCooldown(exitKey, exitTimestamp, outcome);
+      });
+    }
+
+    // In live day trading on session-based equities:
+    // If the regular NYSE trading session is closed for the day (!isNyseTradingSessionActive(Date.now()))
+    // and an alert is an intraday day trading equity position still marked OPEN or TP1_HIT:
+    // square it off cleanly as EXPIRED so that positions never remain open overnight or over the weekend.
+    const isNyseActive = isNyseTradingSessionActive(Date.now());
+    const finalAlerts = isNyseActive
+      ? updated
+      : updated.map(alert => {
+          const isCrypto = isCryptoAsset(alert.symbol);
+          const isDayTrade = alert.interval === '5m' || alert.interval === '1m' || alert.interval === '3m';
+          const isSwingVCME = (alert.strategyKey === 'multitemporal' || alert.strategy?.includes('VCME')) && alert.executionStyle === 'swing';
+          if (!isCrypto && isDayTrade && !isSwingVCME && (alert.status === 'OPEN' || alert.status === 'TP1_HIT')) {
+            return {
+              ...alert,
+              status: 'EXPIRED' as const,
+              executionWarning: 'Posición intradía cerrada al cierre de sesión regular (16:00 ET).'
+            };
+          }
+          return alert;
+        });
+
+    try {
+      localStorage.setItem('terminal_alerts_log', JSON.stringify(finalAlerts));
+    } catch (e) {
+      console.error('Error saving terminal_alerts_log to local storage', e);
+    }
+
+    return finalAlerts;
+  }, [setAlertCooldown]);
 
   const [mainView, setMainView] = useState<'chart' | 'radar'>('chart');
   const [currentAsset, setCurrentAsset] = useState(() => {
@@ -95,6 +247,10 @@ function App() {
   const [klines, setKlines] = useState<Kline[]>([]);
   const [loading, setLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [reportAlerts, setReportAlerts] = useState<ArchivedAlert[] | null>(null);
+  // Opt-in logging of informational/exploratory signals (tracked separately, never notified unless
+  // 'terminal_exploratory_notifications' is also enabled).
+  const [logInformationalAlerts, setLogInformationalAlerts] = useState(() => localStorage.getItem('terminal_exploratory_alerts') === 'true');
 
   const [executionStyle, setExecutionStyle] = useState<'dayTrading' | 'swing'>(() => {
     return (localStorage.getItem('terminal_execution_style') as 'dayTrading' | 'swing') || 'dayTrading';
@@ -160,35 +316,33 @@ function App() {
       scoringWeights,
     });
 
-    if (qve.bestStrategy === 'NONE') {
-      return 'NEUTRAL';
+    const triggerKlines = allData ? qve.triggerKlines : data;
+    const raw5m = allData ? (allData['5m'] || []) : (tf === '5m' ? data : []);
+    const triggerRaw = allData
+      ? (executionStyle === 'swing' ? (allData['1h'] || []) : raw5m)
+      : data;
+    const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, triggerKlines);
+    const mfEntryPrice = getEffectiveExecutionPrice(raw5m, qve.closed5m);
+    const actionable = selectActionableStrategy(qve, {
+      standard: calculateStandardVoting(triggerKlines).signal,
+      confluencia: calculateExperimentalSignal(triggerKlines, qve.targetInterval, currentAsset).signal,
+      scoring: calculateScoringSignal(triggerKlines, qve.targetInterval, scoringWeights, triggerEntryPrice, currentAsset).signal,
+      multitemporal: allData
+        ? calculateVCMESniperSignal(triggerKlines, qve.closed1h, qve.closed1d, currentAsset, qve.btMulti.winRate, qve.btMulti.profitFactor, executionStyle, triggerMode, triggerEntryPrice).signal
+        : 'NEUTRAL',
+      multifractal: allData
+        ? calculateMultifractalMTFSignal(qve.closed5m, qve.closed1h, qve.closed1d, currentAsset, mfEntryPrice).signal
+        : 'NEUTRAL',
+      mfls: allData
+        ? calculateMFLSSignal(qve.closed5m, currentAsset, mfEntryPrice).signal
+        : 'NEUTRAL',
+    });
+
+    if (actionable.signal !== 'NEUTRAL') {
+      return actionable.signal;
     }
-
-    let signal: string;
-    if (qve.bestStrategy === 'confluencia') {
-      const result = calculateExperimentalSignal(allData ? qve.triggerKlines : data, allData ? qve.targetInterval : tf);
-      signal = result.signal;
-    } else if (qve.bestStrategy === 'scoring') {
-      const result = calculateScoringSignal(allData ? qve.triggerKlines : data, allData ? qve.targetInterval : tf, scoringWeights);
-      signal = result.signal;
-    } else if (qve.bestStrategy === 'multitemporal' && allData) {
-      const triggerRaw = executionStyle === 'swing' ? (allData['1h'] || []) : (tf === '5m' ? data : (allData['5m'] || []));
-      const triggerEntryPrice = getEffectiveExecutionPrice(triggerRaw, qve.triggerKlines);
-
-      const result = calculateVCMESniperSignal(qve.triggerKlines, qve.closed1h, qve.closed1d, currentAsset, qve.winRate, qve.profitFactor, executionStyle, triggerMode, triggerEntryPrice);
-      signal = result.signal;
-    } else if (qve.bestStrategy === 'multifractal' && allData) {
-      const raw5m = tf === '5m' ? data : (allData['5m'] || []);
-      const mfEntryPrice = getEffectiveExecutionPrice(raw5m, qve.closed5m);
-
-      const result = calculateMultifractalMTFSignal(qve.closed5m, qve.closed1h, qve.closed1d, currentAsset, mfEntryPrice);
-      signal = result.signal;
-    } else {
-      const voting = calculateStandardVoting(allData ? qve.triggerKlines : data);
-      signal = voting.signal;
-    }
-
-    return signal;
+    const stdFallback = calculateStandardVoting(triggerKlines).signal;
+    return resolveStandardExploratoryFallback(qve, stdFallback);
   };
 
   const sessionStats = useMemo(() => calculateSessionStats(alertsLog), [alertsLog]);
@@ -203,7 +357,7 @@ function App() {
       setEarningsDate(null);
       setAllKlines({ '5m': [], '1h': [], '1d': [] });
 
-      if (!currentAsset.endsWith('USDT') && !currentAsset.endsWith('BTC')) {
+      if (!isCryptoAsset(currentAsset)) {
         fetchEarningsDate(currentAsset).then(date => {
           if (isMounted) setEarningsDate(date);
         });
@@ -232,7 +386,6 @@ function App() {
 
       // Update outcome for any open alerts using newly loaded klines with exact timeframe mapping
       const klinesMap: Record<string, Kline[]> = {
-        [currentAsset]: fetchedKlines[interval] || [],
         [`${currentAsset}:${interval}`]: fetchedKlines[interval] || [],
       };
       timeframes.forEach((tf) => {
@@ -240,7 +393,7 @@ function App() {
           klinesMap[`${currentAsset}:${tf}`] = fetchedKlines[tf];
         }
       });
-      setAlertsLog(prev => updateAlertsOutcome(prev, klinesMap));
+      setAlertsLog(prev => syncAlertOutcomesAndCooldowns(prev, klinesMap, currentAsset));
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -363,25 +516,6 @@ function App() {
   // Keep track of the last known signals for all scanned symbols (watchlist + active)
   const lastSignalsRef = useRef<Record<string, string>>({});
 
-  // Cooldown for notifications/logging per symbol and timeframe (persisted in localStorage)
-  const alertCooldownsRef = useRef<Record<string, number>>((() => {
-    try {
-      const saved = localStorage.getItem('terminal_alert_cooldowns');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error('Error parsing alert cooldowns from local storage', e);
-    }
-    return {};
-  })());
-
-  const setAlertCooldown = (key: string, timestamp: number) => {
-    alertCooldownsRef.current[key] = timestamp;
-    try {
-      localStorage.setItem('terminal_alert_cooldowns', JSON.stringify(alertCooldownsRef.current));
-    } catch (e) {
-      console.error('Error saving alert cooldowns to local storage', e);
-    }
-  };
 
   // Timestamp of the last completed scanner run (task #4)
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
@@ -389,13 +523,19 @@ function App() {
   // Avoid overlapping scans when a full watchlist pass takes longer than the
   // scheduler interval, and keep network concurrency below provider limits.
   const scannerRunningRef = useRef(false);
+  // A scan requested while another is running is replayed right after it, so a candle close
+  // is never skipped until the next minute.
+  const scanPendingRef = useRef(false);
   const maxConcurrentSymbolScans = 4;
 
   useEffect(() => {
     let isMounted = true;
 
     const checkAllSignals = async () => {
-      if (scannerRunningRef.current) return;
+      if (scannerRunningRef.current) {
+        scanPendingRef.current = true;
+        return;
+      }
 
       scannerRunningRef.current = true;
       try {
@@ -411,27 +551,31 @@ function App() {
         try {
           // MTF engines always require their native 5m, 1h and 1d inputs.
           // The active chart timeframe is fetched too when it is distinct.
-          const requestedTimeframes = Array.from(new Set([interval, '5m', '1h', '1d']));
+          const trackedIntervals = alertsLogRef.current
+            .filter(a => a.symbol === symbol && (a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT'))
+            .map(a => a.interval);
+          const requestedTimeframes = Array.from(new Set([interval, '5m', '1h', '1d', ...trackedIntervals]));
           const responses = await Promise.all(requestedTimeframes.map(async (timeframe) => [
             timeframe,
             await fetchKlines(symbol, timeframe)
           ] as const));
           const dataByTimeframe = Object.fromEntries(responses) as Record<string, Kline[]>;
-          const data = dataByTimeframe[interval] || [];
           const data5m = dataByTimeframe['5m'] || [];
           const data1h = dataByTimeframe['1h'] || [];
           const data1d = dataByTimeframe['1d'] || [];
 
+          const activeHorizon = executionStyle === 'swing' ? '1h' : '5m';
+          const scanTargetKlines = activeHorizon === '1h' ? data1h : data5m;
+
           if (!isMounted) return;
-          if (data.length < 35) return;
-          scannedKlinesMap[symbol] = data;
-          scannedKlinesMap[`${symbol}:${interval}`] = data;
-          if (data5m.length > 0) scannedKlinesMap[`${symbol}:5m`] = data5m;
-          if (data1h.length > 0) scannedKlinesMap[`${symbol}:1h`] = data1h;
-          if (data1d.length > 0) scannedKlinesMap[`${symbol}:1d`] = data1d;
+          for (const [timeframe, candles] of responses) {
+            if (candles.length > 0) scannedKlinesMap[`${symbol}:${timeframe}`] = candles;
+          }
+          if (scanTargetKlines.length < 35) return;
 
           // ── Determine best strategy using QVE (backed by fast FNV-1a backtest caching) ──
           const now = Date.now();
+          const isCrypto = isCryptoAsset(symbol);
           const qve = runQVESelection({
             symbol,
             data5m,
@@ -442,169 +586,172 @@ function App() {
             scoringWeights,
           });
 
-          const bestStrategy = qve.bestStrategy;
-          const strategyLabel = qve.strategyLabel;
-          const bestPF = qve.profitFactor;
-          const bestConfidence = qve.confidence;
+          let bestStrategy = qve.bestStrategy;
+          let strategyLabel = qve.strategyLabel;
+          let bestPF = qve.profitFactor;
+          let bestConfidence = qve.confidence;
           const btMulti = qve.btMulti;
 
-          // ── Calculate signal using the best strategy on CLOSED candles ──
-          let overallSignal = 'NEUTRAL';
-          let signalConfidence = '';
-          const closedData = getConfirmedClosedKlines(data, interval, symbol);
+          // ── Calculate signals using each engine's authentic native timeframe & data ──
           const closed5m = getConfirmedClosedKlines(data5m, '5m', symbol);
           const closed1h = getConfirmedClosedKlines(data1h, '1h', symbol);
           const closed1d = getConfirmedClosedKlines(data1d, '1d', symbol);
-          const activeHorizon = executionStyle === 'swing' ? '1h' : '5m';
-          const signalInterval = bestStrategy === 'multifractal'
-            ? '5m'
-            : (bestStrategy === 'multitemporal' || bestStrategy === 'standard' || bestStrategy === 'confluencia' || bestStrategy === 'scoring')
-              ? activeHorizon
-              : interval;
 
-          const triggerKlines = (signalInterval === '1h')
-            ? closed1h
-            : (signalInterval === '5m')
-              ? closed5m
-              : closedData;
-          let signalKlines = triggerKlines;
+          const entryPrice5m = getEffectiveExecutionPrice(data5m, closed5m);
+          const entryPrice1h = getEffectiveExecutionPrice(data1h, closed1h);
 
-          // Extract the causal execution price (live market quote in active session, Close_i when closed)
-          const targetKlines = dataByTimeframe[signalInterval] || data;
-          const entryPrice = getEffectiveExecutionPrice(targetKlines, signalKlines);
+          // Native horizon routing
+          const vcmeHorizon = executionStyle === 'swing' ? '1h' : '5m';
+          const vcmeClosedKlines = vcmeHorizon === '1h' ? closed1h : closed5m;
+          const vcmeEntryPrice = vcmeHorizon === '1h' ? entryPrice1h : entryPrice5m;
 
-          let vcmeResult: VCMESniperResult | null = null;
-          let mfResult: MultifractalMTFSignalResult | null = null;
+          const genericHorizon = activeHorizon; // '1h' for swing, '5m' for dayTrading
+          const genericClosedKlines = genericHorizon === '1h' ? closed1h : closed5m;
 
-          if (bestStrategy === 'NONE') {
-            overallSignal = 'NEUTRAL';
-          } else if (bestStrategy === 'confluencia') {
-            const result = calculateExperimentalSignal(triggerKlines, signalInterval);
-            overallSignal = result.signal;
-          } else if (bestStrategy === 'scoring') {
-            const result = calculateScoringSignal(triggerKlines, signalInterval, scoringWeights);
-            overallSignal = result.signal;
-          } else if (bestStrategy === 'multitemporal') {
-            vcmeResult = calculateVCMESniperSignal(
-              triggerKlines,
-              closed1h,
-              closed1d,
-              symbol,
-              btMulti.winRate,
-              btMulti.profitFactor,
-              executionStyle,
-              triggerMode,
-              entryPrice
-            );
-            overallSignal = vcmeResult.signal;
-            signalConfidence = vcmeResult.confidence;
-            signalKlines = triggerKlines;
-          } else if (bestStrategy === 'multifractal') {
-            mfResult = calculateMultifractalMTFSignal(
-              closed5m,
-              closed1h,
-              closed1d,
-              symbol,
-              entryPrice
-            );
-            overallSignal = mfResult.signal;
-            signalKlines = closed5m;
-          } else {
-            const voting = calculateStandardVoting(triggerKlines);
-            overallSignal = voting.signal;
+          // 1. Evaluate Multifractal (strictly native 5m execution with 1H and 1D context)
+          const allMfResult = calculateMultifractalMTFSignal(
+            closed5m,
+            closed1h,
+            closed1d,
+            symbol,
+            entryPrice5m
+          );
+
+          // 2. Evaluate MFLS (strictly native 5m execution)
+          const allMflsResult = calculateMFLSSignal(
+            closed5m,
+            symbol,
+            entryPrice5m
+          );
+
+          // 3. Evaluate VCME Sniper on its native horizon
+          const allVcmeResult = calculateVCMESniperSignal(
+            vcmeClosedKlines,
+            closed1h,
+            closed1d,
+            symbol,
+            btMulti.winRate,
+            btMulti.profitFactor,
+            executionStyle,
+            triggerMode,
+            vcmeEntryPrice
+          );
+
+          // 4. Evaluate Generic strategies on their native activeHorizon
+          const standardResult = calculateStandardVoting(genericClosedKlines);
+          const confluenciaResult = calculateExperimentalSignal(genericClosedKlines, genericHorizon, isCrypto);
+          const scoringResult = calculateScoringSignal(genericClosedKlines, genericHorizon, scoringWeights, isCrypto);
+
+          // 5. Multi-Strategy Actionable Selection & Cascade (shared with MarketRadar and SignalPanel)
+          const strategySignals = {
+            standard: standardResult.signal,
+            confluencia: confluenciaResult.signal,
+            scoring: scoringResult.signal,
+            multitemporal: allVcmeResult.signal,
+            multifractal: allMfResult.signal,
+            mfls: allMflsResult.signal,
+          };
+          const candidateQueue = buildStrategyCandidateQueue(qve, strategySignals);
+
+          // Iterate through candidates in strict order of statistical priority. A candidate that fails
+          // operational viability (friction > 0.35R, inverted geometry, no room to S/R) is recorded as a
+          // telemetry discard and the cascade moves on to the next one.
+          const cascade = resolveCandidateCascade(candidateQueue, candidate => resolveOperationalTrade({
+            strategy: candidate.strategy,
+            signal: candidate.signal,
+            executionStyle,
+            raw: { '5m': data5m, '1h': data1h },
+            closed: { '5m': closed5m, '1h': closed1h },
+            vcme: allVcmeResult,
+            multifractal: allMfResult,
+            mfls: allMflsResult,
+            isCrypto,
+          }));
+          for (const { plan } of cascade.rejected) {
+            const trigger = plan.signalKlines.length > 0 ? plan.signalKlines[plan.signalKlines.length - 1] : null;
+            recordDiscard(symbol, plan.interval, trigger ? trigger.time : 0, !plan.validGeometry ? 'geometry' : 'friction');
           }
 
-          // ── Validate directional expectancy (min 3 resolved trades) ──────
-          overallSignal = sanitizeSignalWithDirectionalEdge(
-            overallSignal,
-            qve.tournament.longStats,
-            qve.tournament.shortStats,
-            3
-          );
-
-          const signalKey = `${symbol}-${signalInterval}`;
-          const isActionableSignal = overallSignal.includes('BUY') || overallSignal.includes('SELL');
-
-          // Option A: Single position per symbol & timeframe
-          // Check if there is already an active (unresolved) position for this symbol + interval
-          const hasActiveTrade = alertsLogRef.current.some(
-            a => a.symbol === symbol && a.interval === signalInterval && (a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT')
-          );
-
-          if (hasActiveTrade) {
-            // Do not fire new notifications or burn candles while a position is already open.
-            lastSignalsRef.current[signalKey] = overallSignal;
+          if (!cascade.viable) {
+            // No operationally viable strategy found across all candidates
+            const defaultActionable = selectActionableStrategy(qve, strategySignals);
+            bestStrategy = 'NONE';
+            strategyLabel = defaultActionable.strategyLabel;
+            bestPF = null;
+            bestConfidence = 'NONE';
+            const defaultInterval = executionStyle === 'dayTrading' ? '5m' : '1h';
+            lastSignalsRef.current[`${symbol}-${defaultInterval}`] = 'NEUTRAL';
             return;
           }
 
-          // Identify closed trigger candle timestamp for persistent atomic deduplication
+          const viableCandidate = cascade.viable.candidate;
+          const tradePlan = cascade.viable.plan;
+          bestStrategy = viableCandidate.strategy;
+          strategyLabel = viableCandidate.strategyLabel;
+          bestPF = viableCandidate.profitFactor;
+          bestConfidence = viableCandidate.confidence;
+          const overallSignal = viableCandidate.signal;
+          const signalConfidence = bestStrategy === 'multitemporal' ? allVcmeResult.confidence : '';
+          const { interval: signalInterval, signalKlines, entryPrice, levels } = tradePlan;
+          const signalKey = `${symbol}-${signalInterval}`;
+
+          // Identify closed trigger candle timestamp for persistent atomic deduplication & telemetry
           const triggerCandle = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1] : null;
           const candleTimestamp = triggerCandle ? triggerCandle.time : 0;
 
-          // Atomic Candle Deduplication check:
-          // If this exact closed candle has already generated an alert under this strategy or direction, skip firing!
-          const alreadyFiredForCandle = candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal);
+          // Emission gates (shared pure logic): exploratory opt-in, open position, NYSE session,
+          // session-closing candle, atomic candle deduplication and persistent cooldown.
+          const emission = evaluateAlertEmission({
+            symbol,
+            interval: signalInterval,
+            signal: overallSignal,
+            strategyKey: bestStrategy,
+            strategyLabel,
+            confidence: bestConfidence,
+            executionStyle,
+            isCrypto,
+            candleTimestamp,
+            nowMs: now,
+            validGeometry: tradePlan.valid,
+            allowExploratoryAlerts: localStorage.getItem('terminal_exploratory_alerts') === 'true'
+              || localStorage.getItem('terminal_exploratory_notifications') === 'true',
+            activeAlerts: alertsLogRef.current,
+            alreadyFiredForCandle: candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal),
+            cooldowns: alertCooldownsRef.current,
+          });
+          emission.discards.forEach(reason => recordDiscard(symbol, signalInterval, candleTimestamp, reason));
+          const isExploratoryAlert = emission.isExploratory;
+          const cooldownKey = getAlertCooldownKey({ symbol, interval: signalInterval, alertType: isExploratoryAlert ? 'EXPLORATORY' : 'PRIMARY' });
 
-          const lastAlertTime = alertCooldownsRef.current[`${symbol}-${signalInterval}`] || 0;
-          const cooldownMs = getStrategyCooldownMs(signalInterval, executionStyle);
-          const isCooldownElapsed = lastAlertTime === 0 || (now - lastAlertTime) >= cooldownMs;
-
-          // Allow alert if:
-          // 1. Signal is actionable (BUY/SELL)
-          // 2. This closed candle has not already fired (atomic candle deduplication)
-          // 3. Persistent cooldown has elapsed (never bypassed by F5 reloads or NEUTRAL transitions)
-          if (isActionableSignal && !alreadyFiredForCandle && isCooldownElapsed) {
+          if (emission.emit) {
             // Set alert cooldown timestamp with persistence
-            setAlertCooldown(`${symbol}-${signalInterval}`, now);
-
-            const atrSeries = signalKlines.length >= 14 ? calculateATRSeries(signalKlines, 14) : [];
-            const currentATR = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : undefined;
-            let levels = calculateAlertLevels(overallSignal, entryPrice, signalInterval, currentATR, bestStrategy);
-
-            if (bestStrategy === 'multitemporal' && vcmeResult) {
-              const isBuySig = overallSignal.includes('BUY');
-              const isValidRisk = isBuySig ? vcmeResult.stopLoss < entryPrice : vcmeResult.stopLoss > entryPrice;
-              if (vcmeResult.stopLoss > 0 && isValidRisk) {
-                levels = {
-                  stopLoss: vcmeResult.stopLoss,
-                  takeProfit1: vcmeResult.takeProfit1,
-                  takeProfit2: vcmeResult.takeProfit2,
-                };
-              }
-            } else if (bestStrategy === 'multifractal' && mfResult) {
-              const isBuySig = overallSignal.includes('BUY');
-              if (mfResult.stopLoss > 0) {
-                const entryP = mfResult.triggerPrice || entryPrice;
-                const riskDist = Math.abs(entryP - mfResult.stopLoss);
-                const isValidRisk = isBuySig ? mfResult.stopLoss < entryP : mfResult.stopLoss > entryP;
-                if (isValidRisk && riskDist > 0) {
-                  const tpPrice = isBuySig ? entryP + 1.5 * riskDist : entryP - 1.5 * riskDist;
-                  levels = {
-                    stopLoss: mfResult.stopLoss,
-                    takeProfit1: tpPrice,
-                  };
-                }
-              }
-            }
+            setAlertCooldown(cooldownKey, now, 'ENTRY');
 
               const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
                 && ('Notification' in window) && Notification.permission === 'granted';
 
-              if (desktopNotificationsEnabled) {
-                const confidenceTag = bestConfidence === 'LIMITED'
-                  ? ' ⚠️ [Muestra Limitada]'
-                  : bestConfidence === 'NONE'
-                    ? ' 🛡️ [Sin Ventaja]'
-                    : '';
+              // Logging exploratory/informational alerts and notifying them are separate opt-ins
+              const allowExploratoryNotifications = localStorage.getItem('terminal_exploratory_notifications') === 'true';
+
+              if (desktopNotificationsEnabled && (!isExploratoryAlert || allowExploratoryNotifications)) {
+                const confidenceTag = isExploratoryAlert
+                  ? ' 🔬 [Exploratoria / Sin Ventaja]'
+                  : bestConfidence === 'LIMITED'
+                    ? ' ⚠️ [Muestra Limitada]'
+                    : ' 🎯 [Validada]';
                 const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
 
-                const hasDistinctTP2 = levels.takeProfit2 !== undefined && Math.abs(levels.takeProfit2 - levels.takeProfit1) > 0.000001;
+                const hasDistinctTP2 = levels.takeProfit2 !== undefined && levels.takeProfit2 !== levels.takeProfit1;
                 const levelInfo = hasDistinctTP2
                   ? `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`
                   : `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP: ${formatSmartPrice(levels.takeProfit1)} (+1.5R)`;
 
                 const pfNotice = bestPF !== null ? `PF ${bestPF.toFixed(1)}` : 'PF N/D';
-                new Notification(`🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`, {
+                const notifTitle = isExploratoryAlert
+                  ? `🔬 Exploratoria en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}`
+                  : `🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`;
+
+                new Notification(notifTitle, {
                   body: `${overallSignal} · vía ${strategyLabel} (${pfNotice})\n${levelInfo}`,
                   tag: `${symbol}-${signalInterval}`,
                 });
@@ -623,18 +770,22 @@ function App() {
               time: timeString,
               pf: bestPF,
               strategy: strategyLabel,
+              strategyKey: bestStrategy,
               executionStyle,
               confidence: bestConfidence,
               entryPrice,
               stopLoss: levels.stopLoss,
               takeProfit1: levels.takeProfit1,
               takeProfit2: levels.takeProfit2,
+              takeProfit3: levels.takeProfit3,
               status: 'OPEN',
               realizedR: 0,
               pnlPercent: 0,
               timestamp: now,
               candleTimestamp: candleTimestamp > 0 ? candleTimestamp : undefined,
               dedupKey,
+              alertType: isExploratoryAlert ? 'EXPLORATORY' : 'PRIMARY',
+              alertLatencySec: computeAlertLatencySec(candleTimestamp, signalInterval, now),
             };
 
             // Register in persistent atomic deduplication registry
@@ -644,24 +795,34 @@ function App() {
                 interval: signalInterval,
                 candleTimestamp,
                 strategy: strategyLabel,
+                strategyKey: bestStrategy,
                 signal: overallSignal,
                 firedAt: now,
               });
             }
 
             setAlertsLog(prev => {
-              const isDuplicate = prev.some(a => {
+              // If there is an existing alert on the same candle:
+              // If existing is EXPLORATORY and newAlert is PRIMARY, promote/replace it with the higher-conviction signal!
+              const existingIdx = prev.findIndex(a => {
                 if (a.dedupKey && newAlert.dedupKey && a.dedupKey === newAlert.dedupKey) return true;
                 if (a.symbol === symbol && a.interval === signalInterval && a.candleTimestamp && candleTimestamp > 0 && a.candleTimestamp === candleTimestamp) return true;
                 if (a.id === newAlert.id) return true;
                 return false;
               });
 
-              if (isDuplicate) return prev;
+              let filteredPrev = prev;
+              if (existingIdx !== -1) {
+                const existing = prev[existingIdx];
+                if (existing.alertType === 'EXPLORATORY' && newAlert.alertType === 'PRIMARY') {
+                  filteredPrev = prev.filter((_, idx) => idx !== existingIdx);
+                } else {
+                  return prev; // True duplicate
+                }
+              }
 
-              const updated = updateAlertsOutcome([newAlert, ...prev], scannedKlinesMap).slice(0, 100);
-              localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
-              return updated;
+              const nextAlerts = [newAlert, ...filteredPrev];
+              return syncAlertOutcomesAndCooldowns(nextAlerts, scannedKlinesMap, symbol);
             });
           }
 
@@ -675,29 +836,29 @@ function App() {
       // task #3: update last scan timestamp and alert outcomes after every full pass
       if (isMounted) {
         setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-        setAlertsLog(prev => {
-          const updated = updateAlertsOutcome(prev, scannedKlinesMap);
-          // Sync post-exit cooldown when active trades reach terminal status
-          const exitNow = Date.now();
-          prev.forEach(prevAlert => {
-            if (prevAlert.status === 'OPEN' || prevAlert.status === 'TP1_HIT' || prevAlert.status === 'TP2_HIT') {
-              const closed = updated.find(u => u.id === prevAlert.id);
-              if (closed && closed.status !== 'OPEN' && closed.status !== 'TP1_HIT' && closed.status !== 'TP2_HIT') {
-                setAlertCooldown(`${closed.symbol}-${closed.interval}`, exitNow);
-              }
-            }
-          });
-          localStorage.setItem('terminal_alerts_log', JSON.stringify(updated));
-          return updated;
-        });
+        setAlertsLog(prev => syncAlertOutcomesAndCooldowns(prev, scannedKlinesMap));
       }
       } finally {
         scannerRunningRef.current = false;
+        if (scanPendingRef.current && isMounted) {
+          scanPendingRef.current = false;
+          setTimeout(checkAllSignals, 0);
+        }
       }
     };
 
+    // Scan a few seconds after every minute boundary (aligned with candle closes) instead of a
+    // free-running 60s interval: a 5m close is evaluated within seconds, not up to a minute later.
     checkAllSignals();
-    const intervalId = setInterval(checkAllSignals, 60000);
+    let alignedTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleAlignedScan = () => {
+      alignedTimer = setTimeout(() => {
+        if (!isMounted) return;
+        checkAllSignals();
+        scheduleAlignedScan();
+      }, getMsUntilNextAlignedScan(Date.now()));
+    };
+    scheduleAlignedScan();
 
     // Fix 2: Throttling recovery — run scanner immediately when tab regains focus
     const handleVisibilityChange = () => {
@@ -710,11 +871,12 @@ function App() {
     return () => {
       isMounted = false;
       lastSignalsRef.current = {};
-      clearInterval(intervalId);
+      scanPendingRef.current = false;
+      if (alignedTimer) clearTimeout(alignedTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-    // Include executionStyle, triggerMode, and scoringWeights to avoid stale closures
-  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights]);
+    // Include executionStyle, triggerMode, scoringWeights, and memoized callbacks
+  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights, syncAlertOutcomesAndCooldowns, setAlertCooldown]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = useMemo(() => {
@@ -836,12 +998,53 @@ function App() {
                   </span>
                 )}
               </div>
-              {alertsLog.length > 0 && (
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <button
+                onClick={toggleInformationalAlerts}
+                title={logInformationalAlerts
+                  ? 'Registrando señales informativas (Estándar, Scoring, VCME, Multifractal, MFLS) sin notificarlas. Click para dejar de registrarlas.'
+                  : 'Registrar las señales informativas para evaluarlas con resultados reales (no notifican ni bloquean las alertas principales).'}
+                style={{
+                  background: logInformationalAlerts ? 'rgba(168, 85, 247, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+                  border: `1px solid ${logInformationalAlerts ? 'rgba(168, 85, 247, 0.4)' : 'var(--border-color)'}`,
+                  color: logInformationalAlerts ? '#c084fc' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: '9px',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  fontWeight: 'bold',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                🔬 {logInformationalAlerts ? 'ON' : 'OFF'}
+              </button>
+              <button
+                onClick={openAlertReport}
+                title="Informe de alertas reales por estrategia, franja horaria, demora y ejecución"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '9px',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontWeight: 'bold',
+                }}
+              >
+                INFORME
+              </button>
+              {(alertsLog.length > 0 || discardStats.total > 0) && (
                 <button
                   onClick={() => {
                     setAlertsLog([]);
                     localStorage.removeItem('terminal_alerts_log');
                     clearFiredAlertsRegistry();
+                    clearDiscardStats();
+                    const initial = createInitialDiscardStats();
+                    discardStatsRef.current = initial;
+                    setDiscardStats(initial);
+                    seenDiscardKeysRef.current.clear();
                   }}
                   style={{
                     background: 'rgba(255, 255, 255, 0.03)',
@@ -868,8 +1071,9 @@ function App() {
                   LIMPIAR
                 </button>
               )}
+              </div>
             </div>
-            
+
             <div style={{ 
               flex: 1, 
               overflowY: 'auto', 
@@ -880,111 +1084,270 @@ function App() {
               minHeight: 0 
             }}>
               {/* Session Performance Executive Summary */}
-              {alertsLog.length > 0 && (
+              {(alertsLog.length > 0 || discardStats.total > 0) && (
                 <div style={{
                   backgroundColor: 'rgba(255, 255, 255, 0.02)',
                   border: '1px solid var(--border-color)',
                   borderRadius: 'var(--border-radius-sm)',
-                  padding: '6px 10px',
+                  padding: '6px 8px',
                   display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  flexDirection: 'column',
+                  gap: '6px',
                   fontSize: '0.65rem',
                   position: 'relative'
                 }}>
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    {/* HOY badge with global strategy breakdown tooltip */}
-                    <div className="stats-badge-wrapper">
-                      <span style={{ color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>HOY</span>
-                      <div className="stats-tooltip" style={{ left: '0' }}>
-                        <div style={{ fontWeight: '800', color: '#fff', marginBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', fontSize: '0.62rem', display: 'flex', justifyContent: 'space-between' }}>
-                          <span>📊 RENDIMIENTO HOY</span>
-                          <span style={{ color: 'var(--accent-blue)' }}>{sessionStats.winRate}% WR</span>
-                        </div>
-                        {Object.keys(sessionStats.byStrategy || {}).length === 0 ? (
-                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin alertas hoy</div>
-                        ) : (
-                          Object.entries(sessionStats.byStrategy).map(([strat, data]) => (
-                            <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
-                              <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>{strat}</span>
-                              <div style={{ display: 'flex', gap: '6px', fontFamily: 'var(--font-mono)' }}>
-                                <span style={{ color: 'var(--accent-green)' }}>{data.wins} TP</span>
-                                <span style={{ color: 'var(--accent-red)' }}>{data.losses} SL</span>
-                                <span style={{ color: data.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: '700' }}>
-                                  {data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`}
-                                </span>
-                              </div>
+                  {/* Top row: Core operational performance */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', position: 'relative' }}>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      {/* HOY badge with global strategy breakdown tooltip */}
+                      <div className="stats-badge-wrapper">
+                        <span style={{ color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>HOY</span>
+                        <div className="stats-tooltip">
+                          <div style={{ fontWeight: '800', color: '#fff', marginBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', fontSize: '0.62rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>📊 RENDIMIENTO HOY</span>
+                            <span style={{ color: 'var(--accent-blue)' }}>{sessionStats.winRate}% WR</span>
+                          </div>
+                          {Object.keys(sessionStats.byStrategy || {}).length === 0 ? (
+                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin alertas validadas hoy</div>
+                          ) : (
+                            Object.entries(sessionStats.byStrategy).map(([strat, data]) => {
+                              const winDetail = (data.tpWins ?? 0) > 0 && (data.expWins ?? 0) > 0
+                                ? `${data.tpWins} TP · ${data.expWins} EXP+`
+                                : (data.expWins ?? 0) > 0
+                                  ? `${data.expWins} EXP+`
+                                  : `${data.wins} TP`;
+                              const lossDetail = (data.slLosses ?? 0) > 0 && (data.expLosses ?? 0) > 0
+                                ? `${data.slLosses} SL · ${data.expLosses} EXP-`
+                                : (data.expLosses ?? 0) > 0
+                                  ? `${data.expLosses} EXP-`
+                                  : `${data.losses} SL`;
+                              return (
+                                <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0', gap: '8px' }}>
+                                  <span style={{ color: 'var(--text-secondary)', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{strat}</span>
+                                  <div style={{ display: 'flex', gap: '6px', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                    <span style={{ color: 'var(--accent-green)' }}>{winDetail}</span>
+                                    <span style={{ color: 'var(--accent-red)' }}>{lossDetail}</span>
+                                    <span style={{ color: data.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: '700' }}>
+                                      {data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                          {sessionStats.exploratory && sessionStats.exploratory.total > 0 && (
+                            <div style={{ marginTop: '6px', paddingTop: '4px', borderTop: '1px dashed rgba(255,255,255,0.15)', fontSize: '0.58rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', gap: '6px' }}>
+                              <span style={{ whiteSpace: 'nowrap' }}>🔬 Exploratorias ({sessionStats.exploratory.total})</span>
+                              <span style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                {(sessionStats.exploratory.tpWins ?? 0) > 0 && (sessionStats.exploratory.expWins ?? 0) > 0
+                                  ? `${sessionStats.exploratory.tpWins} TP · ${sessionStats.exploratory.expWins} EXP+`
+                                  : (sessionStats.exploratory.expWins ?? 0) > 0
+                                    ? `${sessionStats.exploratory.expWins} EXP+`
+                                    : `${sessionStats.exploratory.wins} TP`} · {(sessionStats.exploratory.slLosses ?? 0) > 0 && (sessionStats.exploratory.expLosses ?? 0) > 0
+                                  ? `${sessionStats.exploratory.slLosses} SL · ${sessionStats.exploratory.expLosses} EXP-`
+                                  : (sessionStats.exploratory.expLosses ?? 0) > 0
+                                    ? `${sessionStats.exploratory.expLosses} EXP-`
+                                    : `${sessionStats.exploratory.losses} SL`} ({sessionStats.exploratory.totalR >= 0 ? `+${sessionStats.exploratory.totalR}` : sessionStats.exploratory.totalR}R)
+                              </span>
                             </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    {/* TP Badge with TP-only breakdown tooltip */}
-                    <div className="stats-badge-wrapper">
-                      <span style={{ color: 'var(--accent-green)', fontWeight: '700' }}>{sessionStats.wins} TP ✅</span>
-                      <div className="stats-tooltip" style={{ left: '-15px' }}>
-                        <div style={{ fontWeight: '800', color: 'var(--accent-green)', marginBottom: '6px', borderBottom: '1px solid rgba(16, 185, 129, 0.25)', paddingBottom: '4px', fontSize: '0.62rem' }}>
-                          🎯 ACIERTOS POR ESTRATEGIA (TP)
+                          )}
                         </div>
-                        {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.wins > 0).length === 0 ? (
-                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin aciertos hoy</div>
-                        ) : (
-                          Object.entries(sessionStats.byStrategy)
-                            .filter(([_, d]) => d.wins > 0)
-                            .map(([strat, data]) => (
-                              <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>{strat}</span>
-                                <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>
-                                  {data.wins} TP ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
-                                </span>
-                              </div>
-                            ))
-                        )}
                       </div>
-                    </div>
 
-                    {/* SL Badge with SL-only breakdown tooltip */}
-                    <div className="stats-badge-wrapper">
-                      <span style={{ color: 'var(--accent-red)', fontWeight: '700' }}>{sessionStats.losses} SL ❌</span>
-                      <div className="stats-tooltip" style={{ left: '-30px' }}>
-                        <div style={{ fontWeight: '800', color: 'var(--accent-red)', marginBottom: '6px', borderBottom: '1px solid rgba(244, 63, 94, 0.25)', paddingBottom: '4px', fontSize: '0.62rem' }}>
-                          ⚠️ FALLOS POR ESTRATEGIA (SL)
+                      {/* TP Badge with TP / EXP+ breakdown tooltip */}
+                      <div className="stats-badge-wrapper">
+                        <span style={{ color: 'var(--accent-green)', fontWeight: '700', whiteSpace: 'nowrap' }}>
+                          {(sessionStats.tpWins ?? 0) > 0 && (sessionStats.expWins ?? 0) > 0
+                            ? `${sessionStats.tpWins} TP · ${sessionStats.expWins} EXP+ ✅`
+                            : (sessionStats.expWins ?? 0) > 0
+                              ? `${sessionStats.expWins} EXP+ ✅`
+                              : `${sessionStats.wins} TP ✅`}
+                        </span>
+                        <div className="stats-tooltip">
+                          <div style={{ fontWeight: '800', color: 'var(--accent-green)', marginBottom: '6px', borderBottom: '1px solid rgba(16, 185, 129, 0.25)', paddingBottom: '4px', fontSize: '0.62rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>🎯 ACIERTOS POR ESTRATEGIA</span>
+                            <span style={{ fontSize: '0.55rem', opacity: 0.85, fontFamily: 'var(--font-mono)' }}>(TP / EXP+)</span>
+                          </div>
+                          {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.wins > 0).length === 0 ? (
+                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin aciertos hoy</div>
+                          ) : (
+                            Object.entries(sessionStats.byStrategy)
+                              .filter(([_, d]) => d.wins > 0)
+                              .map(([strat, data]) => {
+                                const detail = (data.tpWins ?? 0) > 0 && (data.expWins ?? 0) > 0
+                                  ? `${data.tpWins} TP · ${data.expWins} EXP+`
+                                  : (data.expWins ?? 0) > 0
+                                    ? `${data.expWins} EXP+`
+                                    : `${data.wins} TP`;
+                                return (
+                                  <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0', gap: '8px' }}>
+                                    <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{strat}</span>
+                                    <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                      {detail} ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
+                                    </span>
+                                  </div>
+                                );
+                              })
+                          )}
                         </div>
-                        {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.losses > 0).length === 0 ? (
-                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin fallos hoy</div>
-                        ) : (
-                          Object.entries(sessionStats.byStrategy)
-                            .filter(([_, d]) => d.losses > 0)
-                            .map(([strat, data]) => (
-                              <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0' }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>{strat}</span>
-                                <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>
-                                  {data.losses} SL ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
-                                </span>
-                              </div>
-                            ))
-                        )}
                       </div>
+
+                      {/* SL Badge with SL / EXP- breakdown tooltip */}
+                      <div className="stats-badge-wrapper">
+                        <span style={{ color: 'var(--accent-red)', fontWeight: '700', whiteSpace: 'nowrap' }}>
+                          {(sessionStats.slLosses ?? 0) > 0 && (sessionStats.expLosses ?? 0) > 0
+                            ? `${sessionStats.slLosses} SL · ${sessionStats.expLosses} EXP- ❌`
+                            : (sessionStats.expLosses ?? 0) > 0
+                              ? `${sessionStats.expLosses} EXP- ❌`
+                              : `${sessionStats.losses} SL ❌`}
+                        </span>
+                        <div className="stats-tooltip">
+                          <div style={{ fontWeight: '800', color: 'var(--accent-red)', marginBottom: '6px', borderBottom: '1px solid rgba(244, 63, 94, 0.25)', paddingBottom: '4px', fontSize: '0.62rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>⚠️ FALLOS POR ESTRATEGIA</span>
+                            <span style={{ fontSize: '0.55rem', opacity: 0.85, fontFamily: 'var(--font-mono)' }}>(SL / EXP-)</span>
+                          </div>
+                          {Object.entries(sessionStats.byStrategy || {}).filter(([_, d]) => d.losses > 0).length === 0 ? (
+                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.58rem' }}>Sin fallos hoy</div>
+                          ) : (
+                            Object.entries(sessionStats.byStrategy)
+                              .filter(([_, d]) => d.losses > 0)
+                              .map(([strat, data]) => {
+                                const detail = (data.slLosses ?? 0) > 0 && (data.expLosses ?? 0) > 0
+                                  ? `${data.slLosses} SL · ${data.expLosses} EXP-`
+                                  : (data.expLosses ?? 0) > 0
+                                    ? `${data.expLosses} EXP-`
+                                    : `${data.losses} SL`;
+                                return (
+                                  <div key={strat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.58rem', padding: '2px 0', gap: '8px' }}>
+                                    <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{strat}</span>
+                                    <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                      {detail} ({data.totalR >= 0 ? `+${data.totalR}R` : `${data.totalR}R`})
+                                    </span>
+                                  </div>
+                                );
+                              })
+                          )}
+                        </div>
+                      </div>
+
+                      {sessionStats.openCount > 0 && (
+                        <span style={{ color: 'var(--accent-blue)', fontWeight: '700', whiteSpace: 'nowrap' }}>{sessionStats.openCount} ⏳</span>
+                      )}
                     </div>
 
-                    {sessionStats.openCount > 0 && (
-                      <span style={{ color: 'var(--accent-blue)', fontWeight: '700' }}>{sessionStats.openCount} ⏳</span>
-                    )}
+                    <div style={{ display: 'flex', gap: '5px', alignItems: 'center', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>WR <strong style={{ color: '#fff' }}>{sessionStats.winRate}%</strong></span>
+                      <span style={{
+                        color: sessionStats.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                        fontWeight: '800',
+                        backgroundColor: sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
+                        border: `1px solid ${sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
+                        padding: '1px 4px',
+                        borderRadius: '4px'
+                      }}>
+                        {sessionStats.totalR >= 0 ? `+${sessionStats.totalR}R` : `${sessionStats.totalR}R`}
+                      </span>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontFamily: 'var(--font-mono)' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>WR <strong style={{ color: '#fff' }}>{sessionStats.winRate}%</strong></span>
-                    <span style={{
-                      color: sessionStats.totalR >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
-                      fontWeight: '800',
-                      backgroundColor: sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
-                      border: `1px solid ${sessionStats.totalR >= 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
-                      padding: '1px 5px',
-                      borderRadius: '4px'
+
+                  {/* Bottom row: Live Telemetry Discards Pill with inline counts & full dropdown tooltip */}
+                  {discardStats.total > 0 && (
+                    <div style={{
+                      borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+                      paddingTop: '4px',
+                      width: '100%',
+                      position: 'relative'
                     }}>
-                      {sessionStats.totalR >= 0 ? `+${sessionStats.totalR}R` : `${sessionStats.totalR}R`}
-                    </span>
-                  </div>
+                      <div className="stats-badge-wrapper" style={{ width: '100%' }}>
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          width: '100%',
+                          padding: '3px 6px',
+                          borderRadius: '4px',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          border: '1px solid rgba(245, 158, 11, 0.22)',
+                          color: '#fbbf24',
+                          fontSize: '0.62rem',
+                          cursor: 'pointer',
+                          boxSizing: 'border-box'
+                        }}>
+                          <span style={{ fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>
+                            🛡️ {discardStats.total} descartes
+                          </span>
+                          <span style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '0.58rem',
+                            color: 'rgba(255, 255, 255, 0.75)',
+                            display: 'inline-flex',
+                            gap: '4px',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {discardStats.friction > 0 && <span title="Fricción comisiones">⚡{discardStats.friction}</span>}
+                            {discardStats.marketHours > 0 && <span title="Horario / Sesión">🕒{discardStats.marketHours}</span>}
+                            {discardStats.cooldown > 0 && <span title="Cooldown">⏱️{discardStats.cooldown}</span>}
+                            {discardStats.activeTrade > 0 && <span title="Posición ya abierta">⏳{discardStats.activeTrade}</span>}
+                            {discardStats.geometry > 0 && <span title="Geometría">📐{discardStats.geometry}</span>}
+                          </span>
+                        </div>
+
+                        {/* Tooltip positioned inside container bounds */}
+                        <div className="stats-tooltip">
+                          <div style={{
+                            fontWeight: '800',
+                            color: '#fbbf24',
+                            marginBottom: '6px',
+                            borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
+                            paddingBottom: '4px',
+                            fontSize: '0.62rem',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}>
+                            <span>🛡️ SEÑALES FILTRADAS HOY</span>
+                            <span style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{discardStats.total} total</span>
+                          </div>
+                          {(['friction', 'marketHours', 'cooldown', 'activeTrade', 'geometry', 'confidence'] as LiveDiscardReason[]).map(reason => {
+                            const count = discardStats[reason];
+                            const meta = DISCARD_REASON_LABELS[reason];
+                            return (
+                              <div
+                                key={reason}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  fontSize: '0.58rem',
+                                  padding: '2px 0',
+                                  opacity: count > 0 ? 1 : 0.4
+                                }}
+                              >
+                                <span style={{ color: 'var(--text-secondary)' }}>{meta.icon} {meta.short}</span>
+                                <span style={{
+                                  color: count > 0 ? '#fff' : 'var(--text-muted)',
+                                  fontWeight: count > 0 ? '800' : '500',
+                                  fontFamily: 'var(--font-mono)'
+                                }}>
+                                  {count}
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <div style={{
+                            marginTop: '6px',
+                            paddingTop: '4px',
+                            borderTop: '1px dashed rgba(255,255,255,0.15)',
+                            fontSize: '0.52rem',
+                            color: 'var(--text-muted)',
+                            lineHeight: '1.25'
+                          }}>
+                            Filtros de protección: descartan señales con riesgo menor a 0.314% (fricción &gt; 35%), fuera de horario, cooldown o posición abierta.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -994,9 +1357,17 @@ function App() {
                   color: 'var(--text-muted)', 
                   textAlign: 'center', 
                   marginTop: '24px', 
-                  fontStyle: 'italic' 
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px'
                 }}>
-                  Sin alertas recientes.
+                  <span style={{ fontStyle: 'italic' }}>Sin alertas recientes.</span>
+                  {discardStats.total > 0 && (
+                    <span style={{ fontSize: '0.64rem', color: 'var(--text-secondary)', maxWidth: '280px' }}>
+                      🛡️ <strong>{discardStats.total}</strong> señales técnicas filtradas hoy por control de riesgo y fricción.
+                    </span>
+                  )}
                 </div>
               ) : (
                 alertsLog.map((alert) => {
@@ -1042,9 +1413,20 @@ function App() {
                     statusColor = 'var(--accent-red)';
                   } else if (alert.status === 'EXPIRED') {
                     const rVal = alert.realizedR || 0;
-                    statusLabel = `EXP (${rVal >= 0 ? '+' : ''}${rVal}R)`;
-                    statusBg = 'rgba(255, 255, 255, 0.06)';
-                    statusColor = 'var(--text-muted)';
+                    const rFormatted = `${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)}R`;
+                    if (rVal > 0.05) {
+                      statusLabel = `EXP (${rFormatted}) ⏱️`;
+                      statusBg = 'rgba(16, 185, 129, 0.15)';
+                      statusColor = 'var(--accent-green)';
+                    } else if (rVal < -0.05) {
+                      statusLabel = `EXP (${rFormatted}) ⏱️`;
+                      statusBg = 'rgba(244, 63, 94, 0.15)';
+                      statusColor = 'var(--accent-red)';
+                    } else {
+                      statusLabel = `EXP (${rFormatted})`;
+                      statusBg = 'rgba(255, 255, 255, 0.06)';
+                      statusColor = 'var(--text-muted)';
+                    }
                   } else {
                     const pnl = alert.pnlPercent ?? 0;
                     const pnlText = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%`;
@@ -1069,6 +1451,7 @@ function App() {
                             stopLoss: alert.stopLoss,
                             takeProfit1: alert.takeProfit1,
                             takeProfit2: alert.takeProfit2,
+                            takeProfit3: alert.takeProfit3,
                             signal: alert.signal || 'BUY',
                           });
                         }
@@ -1137,6 +1520,11 @@ function App() {
                       </div>
                       
                       {/* Entry, SL and TP Targets */}
+                      {(alert.executionWarning || alert.dataWarning) && (
+                        <div role="note" style={{ color: '#eab308', fontSize: '0.65rem', marginTop: '4px' }}>
+                          {[alert.executionWarning, alert.dataWarning].filter(Boolean).join(' ')}
+                        </div>
+                      )}
                       {alert.entryPrice > 0 && (
                         <div style={{
                           display: 'flex',
@@ -1150,7 +1538,7 @@ function App() {
                         }}>
                           <span>In: <strong style={{ color: '#fff' }}>{formatSmartPrice(alert.entryPrice)}</strong></span>
                           <span>SL: <span style={{ color: 'var(--accent-red)' }}>{formatSmartPrice(alert.stopLoss)}</span></span>
-                          {alert.takeProfit2 !== undefined && Math.abs(alert.takeProfit2 - alert.takeProfit1) > 0.000001 ? (
+                          {alert.takeProfit2 !== undefined && alert.takeProfit2 !== alert.takeProfit1 ? (
                             <>
                               <span>TP1: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit1)}</span></span>
                               <span>TP2: <span style={{ color: 'var(--accent-green)' }}>{formatSmartPrice(alert.takeProfit2)}</span></span>
@@ -1160,6 +1548,45 @@ function App() {
                           )}
                         </div>
                       )}
+                      {alert.entryPrice > 0 && (alert.alertType ?? 'PRIMARY') === 'PRIMARY' && (() => {
+                        const costR = computeExecutionCostR(alert);
+                        return (
+                          <div
+                            onClick={e => e.stopPropagation()}
+                            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}
+                          >
+                            <span title="Precio al que ejecutaste esta alerta, para medir el costo real de ejecución en el informe">Mi entrada:</span>
+                            <input
+                              key={`${alert.id}-${alert.userFillPrice ?? ''}`}
+                              type="number"
+                              step="any"
+                              min="0"
+                              defaultValue={alert.userFillPrice ?? ''}
+                              placeholder={formatSmartPrice(alert.entryPrice)}
+                              onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                              onBlur={e => {
+                                const value = parseFloat(e.currentTarget.value);
+                                const next = Number.isFinite(value) && value > 0 ? value : undefined;
+                                if (next !== alert.userFillPrice) recordUserFill(alert.id, next);
+                              }}
+                              style={{
+                                width: '74px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)',
+                                borderRadius: '3px', color: '#fff', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', padding: '1px 4px',
+                              }}
+                            />
+                            {alert.alertLatencySec !== undefined && (
+                              <span title="Segundos entre el cierre de la vela y la emisión de la alerta" style={{ color: alert.alertLatencySec > 60 ? '#eab308' : 'var(--text-muted)' }}>
+                                ⏱ {alert.alertLatencySec}s
+                              </span>
+                            )}
+                            {costR !== undefined && (
+                              <span style={{ color: costR > 0 ? 'var(--accent-red)' : 'var(--accent-green)', fontWeight: 700 }}>
+                                {costR > 0 ? `−${costR.toFixed(2)}R ejec.` : `+${Math.abs(costR).toFixed(2)}R ejec.`}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })
@@ -1262,9 +1689,11 @@ function App() {
                   setMainView('chart');
                 }}
                 activeSignals={activeSignals}
+                alertCooldowns={alertCooldowns}
                 executionStyle={executionStyle}
                 triggerMode={triggerMode}
                 scoringWeights={scoringWeights}
+                allowExploratory={logInformationalAlerts || localStorage.getItem('terminal_exploratory_notifications') === 'true'}
               />
             )}
           </div>
@@ -1296,6 +1725,7 @@ function App() {
 
       {/* ── Help Modal ─────────────────────────────── */}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {reportAlerts && <AlertReportModal alerts={reportAlerts} onClose={() => setReportAlerts(null)} />}
     </div>
   );
 }

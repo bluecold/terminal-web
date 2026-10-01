@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api/yahoo': {
-        target: 'https://query2.finance.yahoo.com', // Probamos con query2 que suele ser más estable
+        target: 'https://query1.finance.yahoo.com', // query1 es mucho más rápido y confiable (3s vs 48s de query2)
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/yahoo/, ''),
         headers: {

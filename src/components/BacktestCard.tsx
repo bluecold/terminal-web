@@ -68,7 +68,8 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
     result.discards.noSetup > 0 ? `Sin Setup: ${result.discards.noSetup}` : null,
     result.discards.volumeFilter > 0 ? `Volumen: ${result.discards.volumeFilter}` : null,
     result.discards.candleAnatomy > 0 ? `Anatomía: ${result.discards.candleAnatomy}` : null,
-    result.discards.riskFilter > 0 ? `Riesgo: ${result.discards.riskFilter}` : null,
+    result.discards.riskFilter > 0 ? `Riesgo excesivo: ${result.discards.riskFilter}` : null,
+    result.discards.frictionFilter > 0 ? `Micro-stop (<0.31% comisiones): ${result.discards.frictionFilter}` : null,
     result.discards.cooldown > 0 ? `Cooldown: ${result.discards.cooldown}` : null,
     result.discards.sessionGap > 0 ? `Sesión/Apertura: ${result.discards.sessionGap}` : null,
     result.discards.insufficientData > 0 ? `Datos: ${result.discards.insufficientData}` : null,
@@ -234,55 +235,62 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
               )}
 
               {/* Walk-Forward Validation Badge */}
-              {walkForward && (
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  fontSize: '0.60rem',
-                  fontFamily: 'var(--font-mono)',
-                  padding: '3px 8px',
-                  borderRadius: '4px',
-                  background: walkForward.status === 'PASS'
-                    ? 'rgba(16, 185, 129, 0.08)'
-                    : walkForward.status === 'FAIL'
-                    ? 'rgba(244, 63, 94, 0.08)'
-                    : walkForward.status === 'INSUFFICIENT_OOS'
-                    ? 'rgba(245, 158, 11, 0.08)'
-                    : 'rgba(255, 255, 255, 0.02)',
-                  border: `1px solid ${
-                    walkForward.status === 'PASS'
-                      ? 'rgba(16, 185, 129, 0.2)'
+              {walkForward && (() => {
+                const oosN = walkForward.outOfSample.signals;
+                const oosExpR = walkForward.outOfSample.expectancyR;
+                const oosShrink = oosN > 0 && oosExpR > 0 ? oosN / (oosN + 4) : 1.0;
+                const shrunkExpR = oosExpR > 0 ? oosExpR * oosShrink : oosExpR;
+
+                return (
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '0.60rem',
+                    fontFamily: 'var(--font-mono)',
+                    padding: '3px 8px',
+                    borderRadius: '4px',
+                    background: walkForward.status === 'PASS'
+                      ? 'rgba(16, 185, 129, 0.08)'
                       : walkForward.status === 'FAIL'
-                      ? 'rgba(244, 63, 94, 0.2)'
+                      ? 'rgba(244, 63, 94, 0.08)'
                       : walkForward.status === 'INSUFFICIENT_OOS'
-                      ? 'rgba(245, 158, 11, 0.2)'
-                      : 'rgba(255, 255, 255, 0.05)'
-                  }`,
-                }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>
-                    Walk-Forward (70/30):
-                  </span>
-                  <span style={{
-                    fontWeight: '700',
-                    color: walkForward.status === 'PASS'
-                      ? 'var(--accent-green)'
-                      : walkForward.status === 'FAIL'
-                      ? 'var(--accent-red)'
-                      : walkForward.status === 'INSUFFICIENT_OOS'
-                      ? 'var(--accent-yellow)'
-                      : 'var(--text-muted)'
-                  }} title={`In-Sample (70%): ${walkForward.inSample.signals} trades (E[R] ${walkForward.inSample.expectancyR > 0 ? '+' : ''}${walkForward.inSample.expectancyR.toFixed(2)}R) · Out-of-Sample (30%): ${walkForward.outOfSample.signals} trades (E[R] ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R)`}>
-                    {walkForward.status === 'PASS'
-                      ? `✓ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
-                      : walkForward.status === 'FAIL'
-                      ? `✗ OOS ${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
-                      : walkForward.status === 'INSUFFICIENT_OOS'
-                      ? `~ OOS ${walkForward.outOfSample.expectancyR > 0 ? '+' : ''}${walkForward.outOfSample.expectancyR.toFixed(2)}R (${walkForward.outOfSample.signals} ${walkForward.outOfSample.signals === 1 ? 'trade' : 'trades'})`
-                      : '~ Sin trades OOS'}
-                  </span>
-                </div>
-              )}
+                      ? 'rgba(245, 158, 11, 0.08)'
+                      : 'rgba(255, 255, 255, 0.02)',
+                    border: `1px solid ${
+                      walkForward.status === 'PASS'
+                        ? 'rgba(16, 185, 129, 0.2)'
+                        : walkForward.status === 'FAIL'
+                        ? 'rgba(244, 63, 94, 0.2)'
+                        : walkForward.status === 'INSUFFICIENT_OOS'
+                        ? 'rgba(245, 158, 11, 0.2)'
+                        : 'rgba(255, 255, 255, 0.05)'
+                    }`,
+                  }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      Validación Reciente (70/30):
+                    </span>
+                    <span style={{
+                      fontWeight: '700',
+                      color: walkForward.status === 'PASS'
+                        ? 'var(--accent-green)'
+                        : walkForward.status === 'FAIL'
+                        ? 'var(--accent-red)'
+                        : walkForward.status === 'INSUFFICIENT_OOS'
+                        ? 'var(--accent-yellow)'
+                        : 'var(--text-muted)'
+                    }} title={`Validación en tramo reciente (último 30% / ~2-3 sesiones):\n• Muestra observada: ${oosN} trades, E[R] ${oosExpR > 0 ? '+' : ''}${oosExpR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L, PF ${walkForward.outOfSample.profitFactor !== null && Number.isFinite(walkForward.outOfSample.profitFactor) ? walkForward.outOfSample.profitFactor.toFixed(2) : 'N/D'})\n• Expectativa realista deflactada: ${shrunkExpR > 0 ? '+' : ''}${shrunkExpR.toFixed(2)}R (ajustada por selección competitiva de 5 modelos)\n• In-Sample histórico (70%): ${walkForward.inSample.signals} trades, E[R] ${walkForward.inSample.expectancyR > 0 ? '+' : ''}${walkForward.inSample.expectancyR.toFixed(2)}R`}>
+                      {walkForward.status === 'PASS'
+                        ? `✓ OOS ${oosExpR > 0 ? '+' : ''}${oosExpR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
+                        : walkForward.status === 'FAIL'
+                        ? `✗ OOS ${oosExpR.toFixed(2)}R (${walkForward.outOfSample.wins}W/${walkForward.outOfSample.losses}L)`
+                        : walkForward.status === 'INSUFFICIENT_OOS'
+                        ? `~ OOS ${oosExpR > 0 ? '+' : ''}${oosExpR.toFixed(2)}R (${oosN} ${oosN === 1 ? 'trade' : 'trades'})`
+                        : '~ Sin trades OOS'}
+                    </span>
+                  </div>
+                );
+              })()}
             </>
           )}
 
@@ -297,7 +305,7 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
               border: '1px solid rgba(245, 158, 11, 0.1)',
               borderRadius: '4px'
             }}>
-              ⚠ Pocas señales — baja confianza estadística
+              ⚠ Pocas señales ({resolved} resueltas{(result?.discards?.frictionFilter ?? 0) > 0 ? `, ${result!.discards.frictionFilter} descartadas por micro-stop < 0.31%` : ''})
             </div>
           )}
 
@@ -305,15 +313,17 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
           {totalSignals === 0 && !isInsufficient && (
             <div style={{ 
               fontSize: '0.62rem', 
-              color: 'var(--text-muted)', 
+              color: (result?.discards?.frictionFilter ?? 0) > 0 ? '#eab308' : 'var(--text-muted)', 
               marginTop: '2px',
               padding: '4px 8px',
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--border-color)',
+              background: (result?.discards?.frictionFilter ?? 0) > 0 ? 'rgba(234, 179, 8, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+              border: `1px solid ${(result?.discards?.frictionFilter ?? 0) > 0 ? 'rgba(234, 179, 8, 0.25)' : 'var(--border-color)'}`,
               borderRadius: '4px',
               fontFamily: 'var(--font-mono)'
             }} title={discardsTooltip}>
-              0 señales {discardsTooltip ? `(${discardsTooltip})` : ''}
+              {(result?.discards?.frictionFilter ?? 0) > 0
+                ? `⚠️ ${result!.discards.frictionFilter} señales descartadas por micro-stop (<0.31% comisiones)`
+                : `0 señales ${discardsTooltip ? `(${discardsTooltip})` : ''}`}
             </div>
           )}
 

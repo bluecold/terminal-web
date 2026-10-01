@@ -26,3 +26,6 @@ dist-ssr
 .vercel
 tsc_output.txt
 mi-sesion.json
+
+# Local research data and one-off analysis scripts
+scratch/

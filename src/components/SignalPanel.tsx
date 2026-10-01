@@ -1,12 +1,14 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
-import { runQVESelection, sanitizeSignalWithDirectionalEdge } from '../utils/tournament';
+import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type MFLSEvaluationResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue, resolveCandidateCascade, resolveTournamentLeader, isInformationalStrategy } from '../utils/tournament';
 import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
 import type { NewsItem, Kline } from '../services/api';
 import { Bell, BellOff } from 'lucide-react';
 import BacktestCard from './BacktestCard';
 import { formatSmartPrice, formatSmartNumber } from '../utils/formatters';
 import { APP_VERSION } from '../version';
+import { resolveOperationalTrade } from '../utils/operationalTrade';
+import { isCryptoAsset } from '../utils/tradeLevels';
 
 interface SignalPanelProps {
   symbol: string;
@@ -27,6 +29,25 @@ interface SignalPanelProps {
   setWeights: React.Dispatch<React.SetStateAction<ScoringWeights>>;
 }
 
+function InformationalBadge() {
+  return (
+    <span
+      title="Sin ventaja neta validada en acciones 5m (60 días, 21 papeles): se muestra para que la evalúes, pero no compite en el torneo ni genera alertas principales. Activá 🔬 en el historial para registrar sus señales."
+      style={{
+        background: 'rgba(168, 85, 247, 0.12)',
+        color: '#c084fc',
+        fontSize: '0.55rem',
+        padding: '1px 6px',
+        borderRadius: '4px',
+        fontWeight: '800',
+        border: '1px solid rgba(168, 85, 247, 0.3)',
+      }}
+    >
+      INFORMATIVA
+    </span>
+  );
+}
+
 export default function SignalPanel({ 
   symbol, 
   closes, 
@@ -44,6 +65,7 @@ export default function SignalPanel({
   weights,
   setWeights,
 }: SignalPanelProps) {
+  const isCrypto = useMemo(() => isCryptoAsset(symbol), [symbol]);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loadingNews, setLoadingNews] = useState(false);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
@@ -72,7 +94,7 @@ export default function SignalPanel({
     let isMounted = true;
     const cacheKey = `terminal_extra_info_${symbol}`;
     const cachedData = localStorage.getItem(cacheKey);
-    const isCryptoSymbol = symbol.endsWith('USDT') || symbol.endsWith('BTC');
+    const isCryptoSymbol = isCrypto;
 
     if (cachedData) {
       try {
@@ -140,7 +162,7 @@ export default function SignalPanel({
     return () => {
       isMounted = false;
     };
-  }, [symbol]);
+  }, [symbol, isCrypto]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Navigation & Accordion States ──────────────────────────────────────────
@@ -264,8 +286,10 @@ export default function SignalPanel({
     });
   }, [symbol, klines5m, klines1h, klines1d, executionStyle, triggerMode, weights]);
 
-  const tournamentResult = qveResult.tournament;
-  const bestStrategy = qveResult.bestStrategy;
+  // Leader consistent with what the scanner can alert (Confluencia on 5m equities, tournament winner elsewhere)
+  const leader = useMemo(() => resolveTournamentLeader(qveResult), [qveResult]);
+  const bestStrategy = leader.strategyKey;
+  const isInfo = (strategyKey: string) => isInformationalStrategy(strategyKey, qveResult.targetInterval, isCrypto);
 
   // ── Unified Backtest Results (Sourced directly from QVE Tournament SSOT) ─────────────
   const btStandard      = qveResult.btStd;
@@ -273,6 +297,7 @@ export default function SignalPanel({
   const btScoring       = qveResult.btScore;
   const btMultitemporal = qveResult.btMulti;
   const btMultifractal  = qveResult.btMF;
+  const btMFLS          = qveResult.btMFLS;
 
   // ── Visual Technical Indicators (For current chart timeframe view) ────────────────────
   const votingVisual = useMemo(() => calculateStandardVoting(closedKlines), [closedKlines]);
@@ -281,8 +306,8 @@ export default function SignalPanel({
   // ── Operational Strategy Signals (Evaluated on QVE trigger klines and target interval) ──
   const votingStrategy = useMemo(() => calculateStandardVoting(qveResult.triggerKlines), [qveResult.triggerKlines]);
   const rawSignal      = votingStrategy.rawSignal;
-  const exp            = useMemo(() => calculateExperimentalSignal(qveResult.triggerKlines, qveResult.targetInterval), [qveResult.triggerKlines, qveResult.targetInterval]);
-  const score          = useMemo(() => calculateScoringSignal(qveResult.triggerKlines, qveResult.targetInterval, weights), [qveResult.triggerKlines, qveResult.targetInterval, weights]);
+  const exp            = useMemo(() => calculateExperimentalSignal(qveResult.triggerKlines, qveResult.targetInterval, isCrypto), [qveResult.triggerKlines, qveResult.targetInterval, isCrypto]);
+  const score          = useMemo(() => calculateScoringSignal(qveResult.triggerKlines, qveResult.targetInterval, weights, isCrypto), [qveResult.triggerKlines, qveResult.targetInterval, weights, isCrypto]);
   
   const multi: VCMESniperResult = useMemo(() => {
     const liveKlines = executionStyle === 'swing' ? klines1h : klines5m;
@@ -305,6 +330,24 @@ export default function SignalPanel({
     return calculateMultifractalMTFSignal(closedKlines5m, closedKlines1h, closedKlines1d, symbol, execPrice);
   }, [closedKlines5m, closedKlines1h, closedKlines1d, klines5m, symbol]);
 
+  const mfls: MFLSEvaluationResult = useMemo(() => {
+    const execPrice = getEffectiveExecutionPrice(klines5m, closedKlines5m);
+    return calculateMFLSSignal(closedKlines5m, symbol, execPrice);
+  }, [closedKlines5m, klines5m, symbol]);
+
+  const confluenciaPlan = useMemo(() => {
+    const sig = exp.signal;
+    if (!sig || sig === 'NEUTRAL') return null;
+    return resolveOperationalTrade({
+      strategy: 'confluencia',
+      signal: sig,
+      executionStyle,
+      raw: { '5m': klines5m, '1h': klines1h },
+      closed: { '5m': closedKlines5m, '1h': closedKlines1h },
+      isCrypto,
+    });
+  }, [exp.signal, executionStyle, klines5m, klines1h, closedKlines5m, closedKlines1h, isCrypto]);
+
   // Synchronize expanded strategy with the best strategy when it changes
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync: expandedStrategy tracks the auto-selected best strategy */
   useEffect(() => {
@@ -314,23 +357,77 @@ export default function SignalPanel({
   }, [bestStrategy]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const rawOverallSignal = useMemo(() => {
-    if (bestStrategy === 'NONE') return 'NEUTRAL';
-    if (bestStrategy === 'confluencia') return exp.signal;
-    if (bestStrategy === 'scoring') return score.signal;
-    if (bestStrategy === 'multitemporal') return multi.signal;
-    if (bestStrategy === 'multifractal') return multifractal.signal;
-    return votingStrategy.signal;
-  }, [bestStrategy, exp.signal, score.signal, multi.signal, multifractal.signal, votingStrategy.signal]);
+  const { operationalStrategy, overallSignal, displayedConfidence, displayedReasoning } = useMemo(() => {
+    const strategySignals = {
+      standard: votingStrategy.signal,
+      confluencia: exp.signal,
+      scoring: score.signal,
+      multitemporal: multi.signal,
+      multifractal: multifractal.signal,
+      mfls: mfls.signal,
+    };
+    // Same candidate queue and cascade as the App scanner (shared helpers in tournament.ts)
+    const cascade = resolveCandidateCascade(buildStrategyCandidateQueue(qveResult, strategySignals), candidate => resolveOperationalTrade({
+      strategy: candidate.strategy,
+      signal: candidate.signal,
+      executionStyle,
+      raw: { '5m': klines5m, '1h': klines1h },
+      closed: { '5m': closedKlines5m, '1h': closedKlines1h },
+      vcme: multi,
+      multifractal,
+      mfls,
+      isCrypto,
+    }));
+    const viable = cascade.viable?.candidate ?? null;
+    const firstRejected = cascade.firstRejected?.candidate ?? null;
 
-  const overallSignal = useMemo(() => {
-    return sanitizeSignalWithDirectionalEdge(
-      rawOverallSignal,
-      tournamentResult.longStats,
-      tournamentResult.shortStats,
-      3
-    );
-  }, [rawOverallSignal, tournamentResult.longStats, tournamentResult.shortStats]);
+    if (viable) {
+      return {
+        actionableSelection: viable,
+        operationalStrategy: viable.strategy,
+        overallSignal: viable.signal,
+        displayedConfidence: viable.confidence,
+        displayedReasoning: viable.reasoning,
+      };
+    }
+
+    if (firstRejected) {
+      return {
+        actionableSelection: firstRejected,
+        operationalStrategy: firstRejected.strategy,
+        overallSignal: firstRejected.signal,
+        displayedConfidence: firstRejected.confidence,
+        displayedReasoning: firstRejected.reasoning,
+      };
+    }
+
+    const defaultActionable = selectActionableStrategy(qveResult, strategySignals);
+
+    return {
+      actionableSelection: defaultActionable,
+      operationalStrategy: bestStrategy,
+      overallSignal: 'NEUTRAL' as const,
+      displayedConfidence: leader.confidence,
+      displayedReasoning: leader.reasoning,
+    };
+  }, [
+    qveResult,
+    votingStrategy.signal,
+    exp.signal,
+    score.signal,
+    multi,
+    multifractal,
+    mfls,
+    executionStyle,
+    klines5m,
+    klines1h,
+    closedKlines5m,
+    closedKlines1h,
+    isCrypto,
+    bestStrategy,
+    leader.confidence,
+    leader.reasoning,
+  ]);
 
   let overallColor = 'var(--text-primary)';
   if (overallSignal.includes('BUY')) {
@@ -368,41 +465,25 @@ export default function SignalPanel({
     return () => clearTimeout(timer);
   }, [overallSignal]);
 
-  const isCrypto = symbol.endsWith('USDT') || symbol.endsWith('BTC');
-  const liveCandle = klines.length > 0 ? klines[klines.length - 1] : null;
-  const entryPrice = (liveCandle && liveCandle.open > 0) ? liveCandle.open : (closes.length > 0 ? closes[closes.length - 1] : 0);
-
-  // Calculate stop/target percentage based on active backtest thresholds, fallback to default if not calculated yet
-  const activeSlPct = btStandard ? btStandard.threshold : 0.015;
-  const activeTpPct = btStandard ? btStandard.targetThreshold : 0.0225;
-
-  let slPrice = 0;
-  let tpPrice = 0;
-
-  if (bestStrategy === 'multitemporal' && multi.stopLoss > 0 && multi.signal === calcDirection) {
-    slPrice = multi.stopLoss;
-    tpPrice = multi.takeProfit1;
-  } else if (bestStrategy === 'multifractal' && multifractal.stopLoss > 0 && multifractal.signal === calcDirection) {
-    const riskDist = Math.abs(entryPrice - multifractal.stopLoss);
-    slPrice = multifractal.stopLoss;
-    tpPrice = calcDirection === 'BUY' ? entryPrice + 1.5 * riskDist : entryPrice - 1.5 * riskDist;
-  } else {
-    slPrice = calcDirection === 'BUY' ? entryPrice * (1 - activeSlPct) : entryPrice * (1 + activeSlPct);
-    tpPrice = calcDirection === 'BUY' ? entryPrice * (1 + activeTpPct) : entryPrice * (1 - activeTpPct);
-  }
-
-  const slPct = entryPrice > 0 ? Math.abs(entryPrice - slPrice) / entryPrice : activeSlPct;
-  const tpPct = entryPrice > 0 ? Math.abs(entryPrice - tpPrice) / entryPrice : activeTpPct;
-
-  // Position Sizing multipliers based on score, volatility, drawdown and correlation
+  const calculatorPlan = useMemo(() => resolveOperationalTrade({
+    strategy: operationalStrategy, signal: calcDirection, executionStyle,
+    raw: { '5m': klines5m, '1h': klines1h },
+    closed: { '5m': closedKlines5m, '1h': closedKlines1h },
+    vcme: multi, multifractal, mfls,
+    isCrypto,
+  }), [operationalStrategy, calcDirection, executionStyle, klines5m, klines1h, closedKlines5m, closedKlines1h, multi, multifractal, mfls, isCrypto]);
+  const entryPrice = calculatorPlan.entryPrice;
+  const slPrice = calculatorPlan.valid ? calculatorPlan.levels.stopLoss : 0;
+  const tpPrice = calculatorPlan.valid ? calculatorPlan.levels.takeProfit1 : 0;
+  const slPct = calculatorPlan.riskDistance;
+  const tpPct = calculatorPlan.valid ? Math.abs(tpPrice - entryPrice) / entryPrice : 0;
   const maxRiskPerTrade = capital * (riskPercent / 100);
-  const priceDiff = Math.abs(entryPrice - slPrice);
-  const riskDistance = entryPrice > 0 ? priceDiff / entryPrice : 0.015;
-  const basePositionUSD = riskDistance > 0 ? maxRiskPerTrade / riskDistance : 0;
+  const riskDistance = calculatorPlan.riskDistance;
+  const basePositionUSD = calculatorPlan.valid && riskDistance > 0 ? maxRiskPerTrade / riskDistance : 0;
 
   let confidenceMultiplier = 1.0;
   let scoreTier = 'N/A';
-  if (bestStrategy === 'multitemporal') {
+  if (operationalStrategy === 'multitemporal') {
     const score = multi.score;
     if (score >= 90) { confidenceMultiplier = 1.65; scoreTier = 'ELITE'; }
     else if (score >= 82) { confidenceMultiplier = 1.35; scoreTier = 'HIGH'; }
@@ -412,7 +493,7 @@ export default function SignalPanel({
   }
 
   let volatilityMultiplier = 1.0;
-  if (bestStrategy === 'multitemporal') {
+  if (operationalStrategy === 'multitemporal') {
     const atrPct = multi.atrPercent;
     if (atrPct > 3.0) volatilityMultiplier = 0.70;
     else if (atrPct > 2.0) volatilityMultiplier = 0.85;
@@ -491,7 +572,7 @@ export default function SignalPanel({
         }}>
           {closes.length === 0 ? 'WAITING...' : overallSignal}
         </div>
-        {closes.length > 0 && tournamentResult.reasoning && (
+        {closes.length > 0 && displayedReasoning && (
           <div style={{
             marginTop: '8px',
             display: 'inline-flex',
@@ -501,12 +582,12 @@ export default function SignalPanel({
             borderRadius: '12px',
             fontSize: '0.62rem',
             fontWeight: '700',
-            background: tournamentResult.confidence === 'HIGH' ? 'rgba(34, 197, 94, 0.12)' : tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.12)' : 'rgba(255, 255, 255, 0.05)',
-            border: `1px solid ${tournamentResult.confidence === 'HIGH' ? 'rgba(34, 197, 94, 0.3)' : tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
-            color: tournamentResult.confidence === 'HIGH' ? 'var(--accent-green)' : tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--text-muted)'
+            background: displayedConfidence === 'HIGH' ? 'rgba(34, 197, 94, 0.12)' : displayedConfidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+            border: `1px solid ${displayedConfidence === 'HIGH' ? 'rgba(34, 197, 94, 0.3)' : displayedConfidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
+            color: displayedConfidence === 'HIGH' ? 'var(--accent-green)' : displayedConfidence === 'LIMITED' ? '#eab308' : 'var(--text-muted)'
           }}>
-            <span>{tournamentResult.confidence === 'HIGH' ? '✅ Confianza Alta' : tournamentResult.confidence === 'LIMITED' ? '⚠️ Muestra Limitada' : '🛡️ Sin Ventaja Estadística'}</span>
-            <span style={{ opacity: 0.85, fontWeight: '500' }}>· {tournamentResult.reasoning}</span>
+            <span>{displayedConfidence === 'HIGH' ? '✅ Confianza Alta' : displayedConfidence === 'LIMITED' ? '⚠️ Alternativa Validada' : '🛡️ Sin Ventaja Estadística'}</span>
+            <span style={{ opacity: 0.85, fontWeight: '500' }}>· {displayedReasoning}</span>
           </div>
         )}
         {bestStrategy === 'standard' && votingStrategy.rawSignal !== 'NEUTRAL' && votingStrategy.signal === 'NEUTRAL' && (
@@ -702,18 +783,19 @@ export default function SignalPanel({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Estándar</span>
+                    {isInfo('standard') && <InformationalBadge />}
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(RSI+MACD+BB)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
-                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        background: leader.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: leader.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: leader.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                        {leader.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -821,15 +903,15 @@ export default function SignalPanel({
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(EMA+VWAP+Velas)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
-                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        background: leader.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: leader.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: leader.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                        {leader.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -875,9 +957,19 @@ export default function SignalPanel({
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Stop Loss Recomendado:</span>
                             <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
-                              {exp.stopLoss > 0 ? formatSmartPrice(exp.stopLoss) : '-'}
+                              {confluenciaPlan && confluenciaPlan.levels.stopLoss > 0
+                                ? formatSmartPrice(confluenciaPlan.levels.stopLoss)
+                                : (exp.stopLoss > 0 ? formatSmartPrice(exp.stopLoss) : '-')}
                             </span>
                           </div>
+                          {confluenciaPlan && confluenciaPlan.levels.takeProfit1 > 0 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Target Profit (1.5R):</span>
+                              <span style={{ color: 'var(--accent-green)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: '600' }}>
+                                {formatSmartPrice(confluenciaPlan.levels.takeProfit1)}
+                              </span>
+                            </div>
+                          )}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Filtro de Volumen:</span>
                             <span style={{ 
@@ -940,18 +1032,19 @@ export default function SignalPanel({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Scoring</span>
+                    {isInfo('scoring') && <InformationalBadge />}
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(5 Capas)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
-                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        background: leader.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: leader.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: leader.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                        {leader.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -1150,7 +1243,7 @@ export default function SignalPanel({
             const winRateText = btMultitemporal && !btMultitemporal.insufficient && resolvedCount > 0 
               ? `${Math.round(btMultitemporal.winRate * 100)}% WR` 
               : '— WR';
-            const modeLabel = multi.mode === 'BREAKOUT' ? '🔥 RUPTURA' : multi.mode === 'REVERSAL' ? '🔄 REVERSIÓN' : '';
+            const modeLabel = multi.mode === 'BREAKOUT' ? '🔥 RUPTURA' : multi.mode === 'PULLBACK' ? '🎯 PULLBACK' : '';
             
             const biasColor = multi.bias1D === 'ALCISTA' ? 'var(--accent-green)' : multi.bias1D === 'BAJISTA' ? 'var(--accent-red)' : 'var(--text-muted)';
             const momColor = multi.momentum1H === 'ALCISTA' ? 'var(--accent-green)' : multi.momentum1H === 'BAJISTA' ? 'var(--accent-red)' : 'var(--text-muted)';
@@ -1163,17 +1256,18 @@ export default function SignalPanel({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>VCME Sniper</span>
+                    {isInfo('multitemporal') && <InformationalBadge />}
                     {isRecommended && (
                       <span style={{ 
-                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
-                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        background: leader.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: leader.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: leader.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                        {leader.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -1310,13 +1404,13 @@ export default function SignalPanel({
                           </div>
                           {/* Layer 3: Gatillo */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Gatillo {executionStyle === 'swing' ? '1H' : '5m'} (Ruptura/Reversión):</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Gatillo {executionStyle === 'swing' ? '1H' : '5m'} (Pullback/Ruptura):</span>
                             <span style={{ 
                               color: multi.mode !== 'NONE' ? sigColor : 'var(--text-muted)', 
                               fontWeight: '700', fontSize: '0.7rem',
                               maxWidth: '55%', textAlign: 'right'
                             }}>
-                              {multi.mode === 'BREAKOUT' ? '🔥 RUPTURA' : multi.mode === 'REVERSAL' ? '🔄 REVERSIÓN' : '— Esperando'}
+                              {multi.mode === 'BREAKOUT' ? '🔥 RUPTURA' : multi.mode === 'PULLBACK' ? '🎯 PULLBACK' : '— Esperando'}
                             </span>
                           </div>
                           {/* Trigger Detail */}
@@ -1393,18 +1487,19 @@ export default function SignalPanel({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fff' }}>Multifractal MTF</span>
+                    {isInfo('multifractal') && <InformationalBadge />}
                     <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(1D+1H+5M)</span>
                     {isRecommended && (
                       <span style={{ 
-                        background: tournamentResult.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
-                        color: tournamentResult.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
+                        background: leader.confidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.15)' : 'var(--accent-blue-bg)', 
+                        color: leader.confidence === 'LIMITED' ? '#eab308' : 'var(--accent-blue)', 
                         fontSize: '0.55rem', 
                         padding: '1px 6px', 
                         borderRadius: '4px', 
                         fontWeight: '800', 
-                        border: tournamentResult.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
+                        border: leader.confidence === 'LIMITED' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid rgba(59, 130, 246, 0.2)' 
                       }}>
-                        {tournamentResult.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
+                        {leader.confidence === 'LIMITED' ? 'LÍDER ⚠️' : 'LÍDER'}
                       </span>
                     )}
                   </div>
@@ -1615,6 +1710,215 @@ export default function SignalPanel({
               </div>
             );
           })()}
+
+          {/* 6. Estrategia MACD Failure & Liquidity Sweep (MFLS) */}
+          {(() => {
+            const isBest = bestStrategy === 'mfls';
+            const cardSignal = mfls.signal;
+            const sigColor = cardSignal === 'BUY' ? 'var(--accent-green)' : cardSignal === 'SELL' ? 'var(--accent-red)' : 'var(--text-secondary)';
+            const isExpanded = expandedStrategy === 'mfls';
+
+            return (
+              <div style={{
+                border: isBest ? '1px solid var(--accent-blue)' : '1px solid var(--border-color)',
+                borderRadius: '8px',
+                backgroundColor: 'var(--card-bg, rgba(255, 255, 255, 0.02))',
+                overflow: 'hidden'
+              }}>
+                <div
+                  onClick={() => setExpandedStrategy(isExpanded ? null : 'mfls')}
+                  style={{
+                    padding: '12px 14px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    background: isBest ? 'rgba(0, 229, 255, 0.05)' : 'transparent'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '0.9rem' }}>🎯</span>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: '700', fontSize: '0.85rem' }}>MFLS (Reversión)</span>
+                        {isInfo('mfls') && <InformationalBadge />}
+                        {isBest && (
+                          <span style={{
+                            fontSize: '0.6rem',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            background: 'var(--accent-blue)',
+                            color: '#000',
+                            fontWeight: '800'
+                          }}>
+                            LÍDER
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        Barrido de Liquidez &amp; Fallo de MACD (5m)
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{
+                      fontWeight: '800',
+                      fontSize: '0.75rem',
+                      color: sigColor,
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      background: cardSignal !== 'NEUTRAL' ? (cardSignal === 'BUY' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(244, 63, 94, 0.1)') : 'rgba(255, 255, 255, 0.05)'
+                    }}>
+                      {cardSignal}
+                    </span>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      {isExpanded ? '▲' : '▼'}
+                    </span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {btMFLS && (
+                      <BacktestCard
+                        name="Signal 6 · MACD Failure & Liquidity Sweep (MFLS)"
+                        result={btMFLS}
+                      />
+                    )}
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {/* Sub-indicadores de MFLS */}
+                      <div style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}>
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>ESTRUCTURA &amp; TRAMPA DE LIQUIDEZ</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Nivel Barrido:</span>
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                            {mfls.pivotReference > 0 ? `$${formatSmartPrice(mfls.pivotReference)}` : 'Buscando pivote...'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Penetración / Reclaim:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            color: mfls.isReclaim
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? 'var(--text-muted)'
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL' ? 'var(--accent-red)' : 'var(--accent-green)'))
+                              : 'var(--text-muted)'
+                          }}>
+                            {mfls.isReclaim
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? `Reclaim descartado (${(mfls.setupSide ?? mfls.signal) === 'SELL' ? '+' : '-'}${mfls.penetrationPct}%)`
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL'
+                                  ? `⚡ Reclaim confirmado (+${mfls.penetrationPct}%)`
+                                  : `⚡ Reclaim confirmado (-${mfls.penetrationPct}%)`))
+                              : 'Normal'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Fallo MACD:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            color: mfls.macdDivergence
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? 'var(--text-muted)'
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL' ? 'var(--accent-red)' : 'var(--accent-green)'))
+                              : 'var(--text-muted)'
+                          }}>
+                            {mfls.macdDivergence
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? 'Giro (Descartado)'
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL' ? '▼ GIRO BAJISTA CONFIRMADO' : '▲ GIRO ALCISTA CONFIRMADO'))
+                              : 'Inactivo'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Divergencia RSI:</span>
+                          <span style={{
+                            fontWeight: '700',
+                            color: mfls.rsiDivergence
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? 'var(--text-muted)'
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL' ? 'var(--accent-red)' : 'var(--accent-green)'))
+                              : 'var(--text-muted)'
+                          }}>
+                            {mfls.rsiDivergence
+                              ? (mfls.signal === 'NEUTRAL'
+                                ? 'Divergencia (Descartada)'
+                                : ((mfls.setupSide ?? mfls.signal) === 'SELL' ? '▼ DIVERGENCIA BAJISTA ACTIVA' : '▲ DIVERGENCIA ACTIVA'))
+                              : 'Sincronizado'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Niveles de Riesgo */}
+                      {mfls.signal !== 'NEUTRAL' && (
+                        <div style={{
+                          backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '6px',
+                          padding: '10px 12px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px'
+                        }}>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>GESTIÓN DE RIESGO (0.11% COMISIÓN)</div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
+                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.stopLoss)}</span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 (50% Ineficiencia / 1.75R):</span>
+                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit1)}</span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 (Runner 3.0R):</span>
+                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit2)}</span>
+                          </div>
+                          <div style={{
+                            fontSize: '0.65rem',
+                            color: 'var(--text-secondary)',
+                            fontStyle: 'italic',
+                            lineHeight: '1.3',
+                            padding: '6px 8px',
+                            background: 'rgba(56, 189, 248, 0.04)',
+                            border: '1px solid rgba(56, 189, 248, 0.1)',
+                            borderRadius: '4px',
+                            marginTop: '2px'
+                          }}>
+                            💡 {mfls.reasoning}
+                          </div>
+                        </div>
+                      )}
+
+                      {mfls.signal === 'NEUTRAL' && (
+                        <div style={{
+                          fontSize: '0.7rem',
+                          color: 'var(--text-muted)',
+                          fontStyle: 'italic',
+                          padding: '8px 10px',
+                          background: 'rgba(0,0,0,0.1)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '6px',
+                          lineHeight: '1.3'
+                        }}>
+                          {mfls.reasoning}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1670,7 +1974,7 @@ export default function SignalPanel({
                 </button>
               </div>
               <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-                Gestión Dinámica: {bestStrategy === 'multitemporal' ? 'VCME Sniper v2' : 'Estándar'}
+                Gestión Dinámica: {operationalStrategy === 'multitemporal' ? 'VCME Sniper v2' : 'Estándar'}
               </span>
             </div>
 
@@ -1808,6 +2112,11 @@ export default function SignalPanel({
             </div>
 
             {/* Price Plan (SL & TP Levels) */}
+            <div style={{ fontSize: '0.75rem', color: calculatorPlan.valid ? 'var(--text-muted)' : '#eab308' }} role="status">
+              {calculatorPlan.valid
+                ? `${overallSignal.includes(calcDirection) ? 'Plan operativo' : 'Escenario manual (no es una alerta)'} ${calculatorPlan.interval.toUpperCase()} · precio de ejecución actual`
+                : `${calculatorPlan.reason} Dimensionamiento desactivado.`}
+            </div>
             <div style={{ 
               display: 'flex', 
               justifyContent: 'space-between', 
@@ -1850,7 +2159,7 @@ export default function SignalPanel({
             </div>
 
             {/* Sizing Multipliers Breakdown */}
-            {bestStrategy === 'multitemporal' && (
+            {operationalStrategy === 'multitemporal' && (
               <div style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -1946,7 +2255,7 @@ export default function SignalPanel({
               );
             }
 
-            const isCryptoSymbol = symbol.endsWith('USDT') || symbol.endsWith('BTC');
+            const isCryptoSymbol = isCrypto;
 
             if (isCryptoSymbol && cryptoInfo) {
               const value = cryptoInfo.value;

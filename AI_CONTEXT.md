@@ -1,17 +1,78 @@
 # FinceptTerminal - Web App Context
 
+## Estrategia #6: MACD Failure & Liquidity Sweep (MFLS) y Calibración Intradiaria — 2026-09-21 (Revisión 5)
+
+- **Motor Cuantitativo MFLS (`indicators.ts` / `strategyEvaluators.ts`):** Estrategia cuantitativa de reversión institucional por barrido de liquidez y fallo de momentum.
+  - **Pivotes Fractales ($O(N)$ sin lookahead):** `calculateFractalPivotsSeries` detecta máximos y mínimos de 5 barras con confirmación estricta de 2 velas hacia adelante ($p \le i - 2$), sin sesgo de anticipación ni repintado. Retorna `null` ante caídas libres monótonas continuas sin inventar soportes artificiales.
+  - **Barrido Estructural y Reabsorción (Sweep & Reclaim):** Detecta perforaciones de mínimos previos (BUY) o máximos previos (SELL) acotadas rígidamente a $1.8 \times \text{ATR}$, exigiendo confirmación de cierre dentro del rango ($C > \text{Pivot Low}$ o $C < \text{Pivot High}$).
+  - **Fallo de MACD Puro & Divergencias:** Detección de curvatura y divergencia evaluada estrictamente sobre la línea MACD principal (`currMacd > prevMacd && currMacd > pivotMacd`), con confirmación opcional de divergencia RSI.
+  - **Filtro de Desequilibrio Previo Genuino:** Exige expansión real en las 4 velas anteriores (`wideBars >= 2 || priceDropAtr >= 1.6`).
+  - **Volumen Climático y Absorción:** Permite $\text{RVOL}$ entre $6.0\text{x}$ y $8.0\text{x}$ si existe absorción manifiesta con mecha de rechazo $\ge 40\%$ del rango. Veto duro únicamente en $\ge 8.0\text{x}$.
+  - **Calibración Intradiaria (5m, 45m-2h):** Forward window fijada en 18 velas (90 min), Time-Stop a las 8 velas (40 min) si $\text{PnL} < 0.4R$. Filtro de sesión regular NYSE (09:45-15:30 EST) evaluando timestamp de ejecución efectiva.
+  - **Piso Anti-Fricción sin Zona Muerta para Large Caps:** Stop Loss en $\min(\text{Low}) - \max(0.8 \times \text{ATR}_{5m}, \text{entryPrice} \times 0.0040)$, garantizando un stop mínimo de $0.40\%$ que desacopla el techo de volatilidad para mega caps (AAPL, MSFT, etc.). La fricción unificada al $0.08\%$ ($0.11\%$ total) consume $0.275R \le 0.35R$ del riesgo.
+  - **Objetivos de Rebalanceo:** TP1 a $1.75R$ (rebalanceo del 50% de ineficiencia), TP2 a $3.0R$ (expansión estructural), sin phantom TP3 ni desalineación entre backtest y tracker en vivo.
+  - **Ventana de Evaluación Expandida a 1.950 Velas:** `backtestMFLS` escala hasta 1.950 velas en 5m (alineado con Multifractal y VCME), generando $\approx 10$ trades en historiales reales para certificar Walk-Forward OOS ($\text{minOosTrades} = 3$) y superar el umbral de $\ge 4$ trades In-Sample para `HIGH`.
+- **Integración en Torneo QVE y Canales de Ejecución:**
+  - Torneo QVE ampliado a 6 estrategias cuantitativas (`candidates.length = 6`). Clasificado como motor sniper ($N_0 = 4$ en 5m).
+  - Integración en `resolveOperationalTrade`, `MarketRadar.tsx` y `App.tsx` (escáner en background, deduplicación atómica y propagación canónica de `strategyKey: 'mfls'`).
+  - Renderizado direccional preciso en `SignalPanel.tsx` con soporte de `setupSide` para descartes bajistas en rojo.
+  - Modulación OOS en `tournament.ts` para snipers de baja frecuencia con In-Sample rentable (`oosMultiplier = 0.85` ante cero operaciones en OOS).
+- **Suite de Pruebas Automatizadas:** 103 pruebas unitarias en `npm test` (100% aprobadas), validación de causalidad y paridad en `scripts/audit-mfls.ts` (0 pendientes, 70 prefijos idénticos), chequeo estático estricto en `npm run test:types` y `audit-mfls.types.json`, linter limpio (`npm run lint`) y compilación exitosa (`npm run build`).
+
+## Optimización MTF, Cooldown Centralizado y Sincronización Radar — 2026-09-17
+
+- **Memoización LRU de Contextos MTF (`indicators.ts` / `klineFingerprint.ts`):** `calculateVCMESniperSignal` y `calculateMultifractalMTFSignal` ahora utilizan caché LRU en memoria (máx. 100 entradas) validada mediante huella digital FNV-1a de series de velas (`getKlinesFingerprint`). Reduce el tiempo de reevaluación por variaciones del precio en vivo de ~56 ms a ~0.04 ms sin reconstrucciones redundantes mientras las velas cerradas no cambien.
+- **Sincronización Centralizada de Salidas y Cooldowns (`App.tsx`):** Unificación de la detección de transiciones de alertas activas a terminales (`detectClosedAlertTransitions`) en todas las rutas (`loadExtraData` por activo, escaneo individual y fin de ciclo). Evita la omisión del cooldown post-salida ante cargas manuales y bloquea operaciones de revancha inmediatas.
+- **Paridad Operativa y Horario NYSE en MarketRadar (`MarketRadar.tsx` / `radarFilters.ts`):**
+  - Se integró la validación operativa `resolveOperationalTrade` en las filas del radar para excluir de "Señales Activas" aquellas candidatas con fricción excesiva (> 0.35R), colisiones con soportes/resistencias o geometría inválida.
+  - Se incorporó el calendario bursátil oficial `isNyseTradingSessionActive` para acciones, distinguiendo entre nuevas señales candidatas (bloqueadas fuera de horario de sesión) y posiciones abiertas en cartera (`activeSignals`, preservadas para su gestión).
+- **Acumulador Atómico de Telemetría de Descartes (`App.tsx` / `liveDiscards.ts`):** Sincronización atómica e inmediata de `discardStatsRef.current` antes de los renders diferidos de React, previniendo la pérdida de eventos cuando múltiples activos son descartados en una misma ráfaga de escaneo.
+- **Suite de Pruebas:** 322 pruebas automatizadas (194 de backtester + 128 de ejecución, gráficos, telemetría, integración end-to-end, MFLS, Confluencia, política de acciones 5m y emisión de alertas), con validación estricta de TypeScript (`npm run test:types`) y linter (`npm run lint`).
+
+## Integridad del seguimiento y riesgo histórico — 2026-09-10
+
+- El tracker conserva `entryBarObservation` (timestamp y extremos brutos observados). En la vela de entrada excluye extremos previos desconocidos y admite extensiones posteriores observadas, incluso después de recargar JSON. Los parciales ya registrados no se vuelven a ejecutar.
+- `services/marketDataSnapshot.ts` conserva la hora de adquisición de cada dataset mediante WeakMap. Binance/Yahoo la fijan antes de la petición; reutilizar la caché no la actualiza. El tracker y la selección de velas cerradas consultan esa hora, evitando confirmar OHLC provisionales solo porque avanzó el reloj. Los datasets externos sin metadatos se consideran nuevos únicamente en su primera entrega; si se transforman o copian, deben preservar la hora de origen mediante `stampKlineSnapshot`.
+- El seguimiento exige la clave exacta `símbolo:intervalo`, sin fallback por símbolo. Si falta, conserva la operación y muestra `dataWarning`. El scanner también descarga los intervalos de alertas activas, aunque difieran del perfil actual. Las actualizaciones parciales de un símbolo no marcan los demás como faltantes.
+- Standard, Confluencia y Scoring comparten `calculateAlertLevels` entre backtester y plan operativo: ATR de la vela de señal, precio de ejecución efectivo y los mismos límites de riesgo. `getStrategyAtrMultiplier` vive en `tradeLevels.ts` y sigue reexportado por `backtester.ts` por compatibilidad.
+- Validación: **211 pruebas** (191 anteriores + 20 nuevas), incluyendo BUY/SELL, parciales, recarga JSON, descarga/caché de Binance y Yahoo con respuestas simuladas, aislamiento de timeframe y paridad de riesgo tras gaps para los tres motores genéricos.
+- No se borran datos ni se recalculan alertas terminales guardadas anteriormente. Las métricas históricas del backtest sí pueden cambiar al corregir la geometría. No es posible reconstruir ticks no observados ni garantizar la frescura de una respuesta errónea del proveedor.
+
+## Corrección del gráfico y recuperación sin borrado — 2026-09-10
+
+- Se corrigió `isChartDataIncremental`: la vela que era la última debe conservar su timestamp y una nueva vela debe ser estrictamente posterior. Una inserción histórica o cambio de timestamp utiliza la rama existente `setData`, no `update`.
+- Esto resuelve el caso reproducido `Cannot update oldest data` en `Chart.tsx`, que antes mostraba un diagnóstico incorrecto de caché antigua.
+- El manejador se extrajo a `components/ErrorBoundary.tsx`; muestra el error real y ofrece **Recargar sin borrar datos**. No accede al almacenamiento local ni elimina watchlist, alertas o preferencias.
+- Suite actual: 191 pruebas (157 base, 24 de ejecución/planes y 10 de gráfico/recuperación). Las nuevas pruebas cubren inserciones con 200 tamaños de historial, cambios de timestamps, duplicados, actualizaciones válidas y la recuperación sin acceso a localStorage.
+- Esta corrección no cambia la integración de Yahoo ni sus errores HTTP 401/404, que son independientes del fallo del gráfico.
+
+## Implementación posterior a auditoría 6 — 2026-09-10
+
+Esta sección y el código actual sustituyen las descripciones históricas de `candleActiveSL` y las garantías generales de paridad o latencia fija del registro de cambios inferior.
+
+- `operationalTrade.ts` resuelve el plan nativo para scanner y calculadora; `tradeLevels.ts` valida dirección y objetivos usando el multiplicador ATR canónico del backtester. El overlay recibe los niveles persistidos de la alerta, incluido TP3.
+- El tracker persiste `executionState` versión 1: fills, remanente, stop y cursor. Una revisión histórica finalizada no rehace fills previamente observados. Los snapshots de velas en formación procesan únicamente el recorrido nuevo observable.
+- Las alertas antiguas con parciales importados llevan `executionWarning`; no se inventan fechas de fills. Los resultados antiguos terminales permanecen congelados.
+- Validación: 181 pruebas (157 existentes + 24 nuevas), tipos de pruebas/benchmark, build y lint. Benchmark reproducible: `npx tsx scripts/benchmark-execution.ts`. Mide solo el motor; no es una medición de GPU ni de latencia integral.
+
+
 ## Descripción General
 FinceptTerminal es una aplicación web enfocada en proporcionar señales de trading en el corto plazo (intradía, operaciones que duran un día o como máximo una semana). Su objetivo principal es analizar activos altamente volátiles para capturar subidas (o bajadas) mediante umbrales y estrategias basadas en indicadores técnicos.
 
 ## Arquitectura y Estructura
 La aplicación separa claramente las responsabilidades:
 - **`src/services/api.ts`**: Encargado de la obtención de datos (klines/velas Binance y Yahoo Finance), resúmenes de tickers, earnings y noticias con capa de deduplicación in-memory y colapso de peticiones en vuelo.
-- **`src/utils/strategyEvaluators.ts`**: **Single Source of Truth (SSOT)** que encapsula el 100% de la lógica de evaluación pura de las 5 estrategias (`evaluateConfluenciaAt`, `evaluateScoringAt`, `evaluateStandardVotingAt`, `evaluateVCMESniperAt`, `evaluateMultifractalMTFAt`) en tiempo $O(1)$ con precomputación de series.
-- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator) y delega la toma de decisiones al evaluador SSOT.
-- **`src/utils/tradeSimulator.ts`**: Motor puro y centralizado de simulación de operaciones (`simulateTrade`). Gestiona ejecuciones multi-nivel (TP1/TP2/TP3), trailing Chandelier, time-stops, emergency exit, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y fricción ($0.08\%$).
-- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento de las 5 estrategias con partición Walk-Forward (70/30), métricas de riesgo ($MDD_R$, Sortino, rachas) y helpers canónicos de cooldown (`getStrategyCooldownCandles`, `getStrategyCooldownMs`).
-- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que rankea estrategias con normalización temporal $\sqrt{t}$, regularización Bayesiana de PF ($\max(0, c.resolved) \times 0.4$), penalización por drawdown, gating Walk-Forward y estado FLAT (`bestStrategy: 'NONE'`) cuando ningún motor demuestra edge positivo.
-- **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas, deduplicación persistente atómica por vela (`dedupKey`), auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_CLOSED`, `TP1_BE_CLOSED`, `TP2_HIT`, `TP2_CLOSED`, `SL_HIT`, `EXPIRED`) y cálculo de estadísticas netas de sesión.
+- **`src/utils/strategyEvaluators.ts`**: **Single Source of Truth (SSOT)** que encapsula el 100% de la lógica de evaluación pura de las 6 estrategias (`evaluateConfluenciaAt`, `evaluateScoringAt`, `evaluateStandardVotingAt`, `evaluateVCMESniperAt`, `evaluateMultifractalMTFAt`, `evaluateMFLSAt`) en tiempo $O(1)$ con precomputación de series.
+- **`src/utils/indicators.ts`**: Contiene toda la lógica matemática de los indicadores técnicos (RMA RSI, MACD, VWAP, Bollinger Bands, ATR, Supertrend, StochRSI, S/R, Volume Composition, Andian Oscillator, Fractal Pivots) y delega la toma de decisiones al evaluador SSOT.
+- **`src/utils/tradeSimulator.ts` / `executionEngine.ts`**: Contratos públicos y motor puro compartido de ejecución. `executionState` conserva fills, remanente, stop, cursor y observación en vivo; reanuda sin aplicar el estado final al pasado. TP3 explícito y trailing configurable.
+- **`src/utils/operationalTrade.ts` / `tradeLevels.ts`**: Vinculación atómica de timeframe, klines, cotización de entrada y niveles de riesgo (`stopLoss`, `takeProfit1`, `takeProfit2`). Validación estricta de geometría y viabilidad frente a fricción contable (micro-stops con riesgo < 0.314% en 5m o piso < 0.70% en MFLS).
+- **`src/utils/radarFilters.ts`**: Tipos de radar y función pura `isRadarRowActive` que filtra señales activas según la confianza operativa de la señal (`signalConfidence`) desacoplada del torneo, preservando Fast Refresh de Vite.
+- **`src/utils/liveDiscards.ts`**: Telemetría de señales filtradas/descartadas en tiempo real categorizadas por motivo (`friction`, `marketHours`, `cooldown`, `activeTrade`, `geometry`) con deduplicación atómica por vela, persistencia y reseteo unificado.
+- **`src/utils/backtester.ts`**: Lógica de simulación histórica y backtesting pre-indexado $O(N)$ para evaluar el rendimiento de las 6 estrategias con partición Walk-Forward (70/30), métricas de riesgo ($MDD_R$, Sortino, rachas) y helpers canónicos de cooldown (`getStrategyCooldownCandles`, `getStrategyCooldownMs`).
+- **`src/utils/tournament.ts`**: Torneo de ventaja estadística QVE (Quantitative Value Edge) que rankea las 6 estrategias con normalización temporal $\sqrt{t}$, regularización Bayesiana de PF ($\max(0, c.resolved) \times 0.4$), penalización por drawdown, gating Walk-Forward y estado FLAT (`bestStrategy: 'NONE'`) cuando ningún motor demuestra edge positivo.
+- **`src/utils/alertTracker.ts`**: Motor de tracking en vivo de alertas con delegación unificada a `simulateTrade`, deduplicación persistente atómica por vela (`dedupKey`), reanudación mediante checkpoint persistido (`executionState`) y migración advertida de parciales antiguos, memoización por perfil de los indicadores requeridos únicamente por VCME y auditoría de estados (`OPEN`, `TP1_HIT`, `TP1_CLOSED`, `TP1_BE_CLOSED`, `TP2_HIT`, `TP2_CLOSED`, `SL_HIT`, `EXPIRED`).
+- **`src/utils/chartHelpers.ts`**: Helper puro de reconciliación incremental de series de datos en el gráfico de TradingView (`isChartDataIncremental`).
+- **`src/utils/klineFingerprint.ts`**: Módulo desacoplado de huella digital FNV-1a para series de velas OHLCV, consumido por indicadores y backtester sin dependencias circulares.
 - **`src/components/`**: Componentes de React para la UI (`MarketRadar`, `Chart`, `SignalPanel`, `Watchlist`, `MarketTicker`, `HelpModal`).
 - **`src/App.tsx`**: Contenedor principal que maneja el estado global, escaneo en background cada 60s con throttling sincronizado, alertas del sistema operativo y selector de vistas (Gráfico / Radar).
 
@@ -23,11 +84,11 @@ Recientemente se han realizado optimizaciones críticas en la matemática y lóg
 4. **EMA 200 y EMA 50 (Filtro de Tendencia Macro)**: Integrados en la escala diaria (1D) y horaria (1H) para establecer el bias direccional. Evitan operar en contra de la tendencia principal.
 5. **ADX (14) con Suavizado Wilder (RMA)**: Indicador de fuerza de tendencia implementado en 1H para asegurar que solo operamos en momentum de expansión de volatilidad (ADX > 20).
 6. **Bollinger Bands (20,2)**: Utilizado en la escala de gatillo (5m) para identificar expansiones (Ruptura/Breakout) o rechazos (Reversión/Pullback).
-7. **Soportes y Resistencias (S/R)**: Detecta dinámicamente pivot highs/lows del precio y los consolida mediante clustering para mapear los niveles estructurales de soporte y resistencia más relevantes y cercanos.
+7. **Soportes y Resistencias (S/R) & Pivotes Fractales**: Detecta dinámicamente pivot highs/lows del precio y pivotes fractales de 5 velas confirmados sin lookahead ($p \le i - 2$) para mapear niveles estructurales de liquidez y zonas de barrido.
 8. **Calidad de Vela (`Body Ratio`, `Close Position`)**: Permite determinar la decisión del impulso en velas de 5m antes del gatillo de ruptura o reversión.
 
 ## Sistemas de Señales (Grupos)
-Actualmente existen 5 agrupaciones principales de señales:
+Actualmente existen 6 agrupaciones principales de señales:
 1. **Experimental Signal (Signal 1)**: Evalúa cruces de EMA, el VWAP y el RSI para determinar puntos de entrada.
 2. **Scoring Multicapa (Signal 2)**: Un modelo de puntaje ponderado que agrupa RSI, MACD, Bandas de Bollinger, VWAP y la capa de **Estructura S/R (Layer 6)**. Valida de forma estricta que el ratio **R:R mínimo sea >= 1.5:1** antes de confirmar una señal. Los pesos son ajustables por el usuario.
 3. **Standard Voting**: Agrupa las lecturas de RSI, MACD, Bollinger Bands, Supertrend y Stochastic RSI. Para emitir una señal "Fuerte", se requiere un consenso de 3 o más votos en una dirección, integrando el filtro de la EMA 200 y volumen confirmatorio.
@@ -63,14 +124,22 @@ Actualmente existen 5 agrupaciones principales de señales:
      - *🔄 Reversión a la Media*: Divergencia alcista/bajista en Dread Blitz + absorción pasiva en mechas. No requiere compresión 1H.
    - **Gestión de Riesgo**: Stop Loss estructural acotado entre $0.8 \times ATR$ y $2.0 \times ATR$ (máximo $2.5\%$ de riesgo relativo). Invalidación automática si sufre un retroceso adverso $> 0.5R$ en las primeras 3 velas. Target Profit único de 1.5R.
    - **Filtro NYSE Opening**: Exige multiplicador de volumen ≥ 2.5x en la ventana 09:30-09:45 EST para filtrar el ruido de apertura.
+6. **MACD Failure & Liquidity Sweep (MFLS) (Signal 6)**: Motor cuantitativo de reversión táctica institucional y captura de liquidez en 5m:
+   - **Barrido Estructural (Sweep)**: Perforación de un pivot fractal confirmado (swing high o swing low) por mecha sin continuidad de ruptura (profundidad $\le 0.35\%$ o $1.8 \times \text{ATR}$).
+   - **Reabsorción al Cierre (Reclaim)**: Cierre de vela dentro del rango estructural previo ($C > \text{Pivot Low}$ en compra, $C < \text{Pivot High}$ en venta).
+   - **Fallo de MACD & Divergencias**: Amago de corte bajista o profundización donde la línea o histograma de MACD se curva al alza formando un suelo creciente frente a un nuevo mínimo en el precio (divergencia regular o fallo de continuación), confirmado con divergencia RSI.
+   - **Filtro de Horario y Noticias**: Exclusivo para la sesión líquida NYSE/NASDAQ (09:45 - 15:30 EST) y volumen no anómalo ($\text{RVOL} < 6.0\text{x}$).
+   - **Piso Anti-Fricción (0.11% comisiones)**: Stop Loss estructural bajo el mínimo del barrido protegido con suelo $\ge \max(0.8 \times \text{ATR}, \text{entry} \times 0.007)$ ($\ge 0.70\%$), garantizando que la comisión round-trip ($0.22\%$) nunca supere $0.31R$.
+   - **Objetivos**: TP1 a $1.75R$ (50% de ineficiencia / imbalance), TP2 a $3.0R$ (expansión a pivotes mayores). Time-Stop a las 8 velas (40 min) si $\text{PnL} < 0.4R$, y forwardWindow de 18 velas (90 min).
 
 ## Sistema de Backtesting (Simulación Histórica)
 El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y evitar distorsiones estadísticas:
-- **Simulador Unificado (`src/utils/tradeSimulator.ts`)**: Consumido por los 5 motores y por el tracker de alertas en vivo para garantizar paridad matemática 1:1 en la ejecución de órdenes, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y costes ($0.08\%$).
+- **Simulador Unificado (`src/utils/tradeSimulator.ts`)**: Consumido por los 6 motores y por el tracker de alertas en vivo para garantizar paridad matemática 1:1 en la ejecución de órdenes, cálculo de $R$ neto uniforme ($R_{\text{net}} = \frac{\text{netPnlPct}/100}{\text{initialRiskPct}}$) y costes.
 - **Simulación Multitemporal VCME Sniper v3**: Realiza backtesting simulando las 3 capas, el score de confluencia técnica, y las salidas complejas (Time Stop, Emergency Exit y Chandelier Trailing).
 - **Simulación Multifractal MTF**: Backtester dedicado que replica el flujo de compuertas 1D → 1H → 5M con cooldown de 12 velas (≥ forwardWindow), forward window de 12 velas (1 hora), invalidación temprana en 3 velas ante retrocesos $> 0.5R$ y target profit único de 1.5R.
+- **Simulación MFLS**: Backtester dedicado `backtestMFLS` con forward window de 18 velas (90 min), Time-Stop de 8 velas (40 min), modelo de comisiones del 0.11% ($0.22\%$ roundtrip), ratio Sortino, $R/\text{hora}$ y validación Walk-Forward (70/30).
 - **Control de Sesiones y Gaps**: El backtester detecta si el activo opera 24/7 (Cripto) o en horarios fijos (Acciones) y descarta señales que cruzarían el cierre de mercado.
-- **Cooldown de Señales Unificado (SSOT)**: Estandarizado en $O(1)$ a través de `getStrategyCooldownCandles` y `getStrategyCooldownMs` (1 hora / 12 velas en 5m, 4 horas en 1H, 48 horas en 1D) garantizando paridad exacta 1:1 entre Live (`App.tsx`) y los 5 motores del Backtest, eliminando cualquier sesgo en la métrica $R/\text{hora}$ del torneo.
+- **Cooldown de Señales Unificado (SSOT)**: Estandarizado en $O(1)$ a través de `getStrategyCooldownCandles` y `getStrategyCooldownMs` (1 hora / 12 velas en 5m, 4 horas en 1H, 48 horas en 1D) garantizando paridad exacta 1:1 entre Live (`App.tsx`) y los 6 motores del Backtest, eliminando cualquier sesgo en la métrica $R/\text{hora}$ del torneo.
 
 ## Optimizaciones de Rendimiento y Usabilidad Realizadas
 - **Actualización v2026.07.21.1**:
@@ -271,7 +340,7 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
 
 - **Actualización v2026.08.27.4 — Escalado de Ventana Swing (720h) y Cuota OOS Adaptativa a la Capacidad de Ciclo**:
   - **Escalado de `evalWindow` en Swing (1H) a 720 velas**:
-    - `getParams` y `backtestMultitemporal` escalan la ventana de 1H a `720` velas cuando hay $\ge 550$ barras disponibles (aprovechando las 1000 barras de Binance 1H y las 3500 barras de Yahoo Finance 1H con `range=730d`).
+    - `getParams` y `backtestMultitemporal` escalan la ventana de 1H a `720` velas cuando hay $\ge 550$ barras disponibles (aprovechando las 1000 barras de Binance 1H y las 3500 barras de Yahoo Finance 1H con `range=730d`; si Yahoo lo rechaza, como pasa con IBIT por su fecha de cotización, `fetchYahooKlines` reintenta con `range=2y`).
     - Tramo Out-Of-Sample (30%) ampliado a **216 velas horarias** ($\approx 9\,\text{días}$ 24/7 o $33\,\text{días}$ bursátiles), permitiendo entre 4 y 8 operaciones Swing completas.
   - **Capacidad OOS Adaptativa (`effectiveMinOosTrades`)**:
     - `calculateWalkForward` calcula la capacidad física de la ventana OOS en función del tiempo de ciclo medio: $\text{oosCapacity} = \lfloor W_{\text{OOS}} / \text{cycleTime} \rfloor$.
@@ -610,6 +679,57 @@ El módulo de backtesting ha sido refactorizado para garantizar alta fidelidad y
     - Unifica la coherencia entre `createEmptySplitStats()`, `createFallbackBacktestResult()` y los resultados de backtest reales con 0 señales.
   - **Suite de Pruebas Unitarias**:
     - **133/133 tests unitarios pasando** con Test 105 enriquecido para verificar que `calculateProfitFactor`, `calculateSplitStats` y los motores de backtest con 0 señales devuelvan estrictamente `profitFactor === null`.
+- **Actualización v2026.09.10.1 — Unificación de Ejecución en Tracker, Stops Causales, FNV-1a Bit-Exacto y Suite de 157 Tests**:
+  - **Unificación Completa del Motor de Ejecución en `alertTracker.ts` vía `simulateTrade`**:
+    - Se erradicó por completo el bucle manual duplicado de tracking en `updateAlertsOutcome`.
+    - El seguimiento de alertas activas en tiempo real ahora delega directamente en `simulateTrade` (`src/utils/tradeSimulator.ts`), garantizando equivalencia matemática $1:1$ estricta con el Backtester (slippage adverso en salidas a mercado, fricción contable de $0.08\%$, salidas multi-tier y stops de emergencia).
+  - **Resolución Causal y No Retrógrada de Stops (`candleActiveSL`)**:
+    - En `simulateTrade`, el nivel de stop loss efectivo que protege la posición durante la vela $i$ queda congelado al inicio de la barra (`candleActiveSL = currentSL`) antes de evaluar los niveles intrabarra.
+    - Se elimina el artefacto de retroactividad donde alcanzar TP1 subía inmediatamente el SL a Breakeven dentro de la misma vela y ejecutaba un stop simultáneo sobre la mecha inferior de esa misma vela.
+    - Preservación fiel de marcas de tiempo de hit parcial (`tp1Time`, `tp2Time`) en lugar de sobreescribirlas con el timestamp de cierre final.
+  - **Huella de Caché FNV-1a de Serie Completa Bit-Exacta**:
+    - Se rediseñó `computeKlinesFingerprint` para procesar la totalidad de las velas ($0..N-1$) serializando los bytes IEEE 754 de timestamp, open, high, low, close y volume mediante buffers binarios (`Float64Array` + `Int32Array`).
+    - Cero submuestreos aleatorios o fijos, erradicando colisiones de caché y garantizando la detección inmediata de revisiones o correcciones históricas en el feed.
+  - **Compuerta Macro de EMA200 en Standard Voting**:
+    - Se incorporó la validación estricta de convergencia macro (`ema200Series[i] != null`) antes de emitir votos activos `BUY` o `SELL`.
+    - En barras de warmup o series de datos cortas donde la EMA200 no esté disponible, la señal se neutraliza a `HOLD`, previniendo órdenes espurias sin filtro de tendencia institucional.
+  - **Memoización de Indicadores en Live Tracking (`indicatorCache`)**:
+    - Se integró un mapa de memoización `${symbol}:${interval}:${executionStyle}` en `alertTracker.ts` que memoriza y reutiliza los contextos de indicadores precomputados durante el ciclo de escaneo.
+    - Evita el recálculo masivo y repetitivo de series de indicadores en segundo plano, optimizando el uso de CPU.
+  - **Helper Puro de Reconciliación Incremental de Gráfico (`isChartDataIncremental`)**:
+    - Se modularizó en `src/utils/chartHelpers.ts` la función pura `isChartDataIncremental(prevData, nextData)` consumida por `Chart.tsx`.
+    - Desacopla la lógica algorítmica de reconciliación de series temporales de la capa visual de React y permite cobertura de pruebas unitarias directas.
+  - **Alineación de Presentación Multifractal MTF (TP2)**:
+    - Normalización canónica de los objetivos TP1 y TP2 para Multifractal MTF, asegurando consistencia matemática entre las tarjetas del historial de alertas y las líneas proyectadas en TradingView.
+  - **Suite de Pruebas Unitarias Robustecida**:
+    - **157/157 tests unitarios pasando** distribuidos en 9 suites automatizadas que blindan toda la plataforma contra regresiones.
+- **Actualización v2026.09.15.1 — Auditoría 6, Filtros de Confianza en Radar, Sincronización Horaria y Telemetría de Descartes en Vivo**:
+  - **Auditoría 6 (Revision 6)**:
+    - Normalización de umbral de fricción `MAX_VIABLE_FRICTION_R` a $0.35R$ (rechazo estricto de stops menores a $0.314\%$ en 5m por comisiones del $0.11\%$).
+    - Floor de seguridad de $1.5$ ATR en stops de VCME y dynamic SELL risk hasta $1.8$ ATR.
+    - Simetría de Walk-Forward: clasificación rigurosa de $N < \text{effectiveMinOos}$ como `INSUFFICIENT_OOS`.
+    - Validación de R:R en Scoring con clamp de `calculateAlertLevels` y caché S/R (`scoringSRCache`).
+    - Veto direccional en fallback Standard (`resolveStandardExploratoryFallback`).
+    - Hurdle 1 deflatedQualityExpR midiendo R/trade genuino sin inflación espuria.
+    - 1D Standard y MTF adaptando evalWindow a velas reales disponibles.
+  - **Desacoplamiento de Confianza Operativa en Radar (`src/utils/radarFilters.ts` y `MarketRadar.tsx`)**:
+    - Se diferenció `signalConfidence` (confianza real de la señal operativa del activo) de `qveConfidence` (confianza de la líder del torneo).
+    - El filtro "Señales Activas" filtra estrictamente por `signalConfidence !== 'NONE'` (o señales activas en sesión), permitiendo que aparezcan estrategias alternativas validadas (`LIMITED`/`HIGH`) cuando el torneo general está `NONE`, y evitando que se cuelen señales exploratorias `NONE` cuando la líder del torneo está en reposo (`NEUTRAL`).
+    - Función pura `isRadarRowActive` modularizada en `radarFilters.ts` para cumplir Fast Refresh de Vite y posibilitar pruebas unitarias aisladas.
+  - **Sincronización de Zona Horaria Local en Eje Temporal del Gráfico (`formatLocalTickMark`)**:
+    - Función pura `formatLocalTickMark` en TradingView Lightweight Charts: proyecta las marcas horarias del eje temporal (`tickMarkFormatter`) respetando la zona horaria local del usuario/navegador en lugar de proyectar UTC puro, alineando la hora visible al mover el cursor con las leyendas del eje horizontal.
+  - **Telemetría y Contador Visible de Señales Descartadas en Vivo (`src/utils/liveDiscards.ts` y `src/App.tsx`)**:
+    - Módulo puro `liveDiscards.ts` con tipado de los 5 motivos de descarte operativo:
+      - `friction`: riesgo insuficiente frente a comisiones (fricción consume > 35% del stop en 5m).
+      - `marketHours`: fuera de horario regular NYSE o vela final de sesión en acciones EEUU.
+      - `cooldown`: tiempo mínimo entre alertas no transcurrido.
+      - `activeTrade`: posición ya abierta en el activo e intervalo.
+      - `geometry`: stop loss o take profit nulo, invertido o geométricamente inconsistente.
+    - Deduplicación atómica por vela para evitar conteo redundante durante el escaneo repetitivo.
+    - Resumen ejecutivo de sesión en 2 niveles (nivel 1: `HOY`, `TP`, `SL`, `WR`, `+R` con `whiteSpace: nowrap`; nivel 2: píldora de descartes con visualización inmediata de cantidades `⚡4 · 🕒2 · ⏱️1` y tooltip de desglose completo auto-ajustable sin recortes).
+    - Persistencia local y reseteo en sincronía con el botón `LIMPIAR`.
+  - **Suite Total de Pruebas Automatizadas**:
+    - **241/241 tests unitarios pasando** (182 backtester + 59 tracking integrity / fast refresh / telemetry).
 
 ---
 
@@ -633,14 +753,28 @@ En caso de requerir independencia total del plan gratuito de Vercel (1.000.000 E
 - **Integración**: Reemplazar en `vercel.json` la propiedad `destination` para apuntar a la URL de Cloudflare Worker (`https://tu-proxy.workers.dev/$1`).
 - **Ventajas**: Sin mantenimiento de hardware, acceso universal desde cualquier dispositivo.
 
+## Perfil acciones 5m: Confluencia única estrategia de alertas (2026-10-01)
+
+Medido sobre la watchlist de 21 papeles, 60 días de velas de 5m, neto de 0,11% de comisión + 0,03% de deslizamiento:
+- **Confluencia solo alerta de 09:35 a 11:00 ET** (`evaluateConfluenciaAt`). Se eliminó la ventana de tarde con ADX ≥ 25 (90 señales a −0,23R). Resultado: +0,061R por alerta, 0,85 alertas/papel/día, positiva en ambas mitades. Un filtro "a favor de la apertura del día" se probó y se descartó: dentro de la mañana no mejora (+0,054R).
+- **Estándar, Scoring, VCME, Multifractal y MFLS son informativas** en acciones 5m (`isInformationalStrategy` en `tournament.ts`): se calculan, se backtestean y se muestran con la etiqueta INFORMATIVA, pero no ganan el torneo ni emiten alertas principales. `getInformationalStrategyCandidates` las agrega al final de la cola en App, Radar y SignalPanel con confianza `NONE` y etiqueta "(Informativa)"; sólo se registran si el usuario activa 🔬 en el historial (`terminal_exploratory_alerts`) y sólo se notifican con `terminal_exploratory_notifications`. En cripto, 1h y 1d no cambia nada.
+- **Sin veto por papel para Confluencia** (`getEquity5mActionableCandidates`): la ventaja se valida sobre el conjunto de la lista; sólo bloquea un historial claramente tóxico del papel en esa dirección (≥ 8 operaciones, E[R] encogido ≤ −0,18R o PF < 0,40).
+- **Escáner alineado al cierre de vela** (`scanSchedule.ts`): corre 8 s después de cada minuto; la caché de velas intradía vence al cruzar el límite de la vela (`getKlineCacheBoundaryMs`). Motivo: entrar 2–3 minutos tarde cuesta 0,05–0,08R y 5 minutos borra la ventaja de Confluencia.
+- **Lógica del escáner compartida y testeada**: `buildStrategyCandidateQueue` y `resolveCandidateCascade` (`tournament.ts`) arman la cola de candidatas y eligen la primera con plan operativo válido en App, MarketRadar y SignalPanel; `evaluateAlertEmission` (`alertEmission.ts`) decide si se emite la alerta (registro de informativas, posición abierta, sesión NYSE, vela de cierre, deduplicación y cooldown). Tests en `scannerPipeline.test.ts`; las reglas de Confluencia, en `confluencia.test.ts`.
+- **Radar coherente con las alertas**: la columna líder usa `resolveTournamentLeader` (Confluencia en acciones 5m salvo veto por historia tóxica; ganador del torneo en el resto), igual que el badge LÍDER de SignalPanel. La matriz 5m·1h·1d del radar se calcula con Standard Voting: se renombró a "Alineación Estándar" (antes "Confluencia MTF") y se atenúa como informativa en acciones 5m. El radar se refresca con `getMsUntilNextAlignedScan` y recibe el estado de 🔬 por prop (`allowExploratory`).
+- **Informe de alertas reales** (`alertReport.ts`, `AlertReportModal.tsx`, botón INFORME): archivo de alertas cerradas de 90 días (`terminal_alert_archive`) con R por estrategia, franja horaria, primera alerta del día, demora de emisión (`alertLatencySec`) y costo de ejecución contra el precio cargado por el usuario (`userFillPrice`).
+
 ## Cuestiones Pendientes y Futuras Mejoras
 
 - [x] **Deduplicación persistente por vela**: Usar la clave `símbolo + timeframe + timestamp de vela cerrada + configuración`, en lugar de depender sólo del cooldown temporal y de memoria. (Completado v2026.08.21.1)
 - [x] **Radar / Screener Multi-Activo en Tiempo Real**: Escáner multiactivo con filtros de confluencia 3/3, Squeeze BB, RVOL y presets de mercado con 1-click chart navigation. (Completado v2026.08.21.1)
 - [x] **Costes, Métricas de Riesgo y Validación Walk-Forward**: Fricción contable unificada en `simulateTrade`, Max Drawdown en R, Sortino sobre R, streaks, desglose ADX y partición ciega 70/30 en Torneo. (Completado v2026.08.26.2)
+- [x] **Paridad Unificada Live/Backtest y Resolución Causal de Stops**: Delegación total de tracking a `simulateTrade`, congelación causal de SL intrabarra (`candleActiveSL`), hashing FNV-1a bit-exacto de serie completa y memoización de indicadores. (Completado v2026.09.10.1)
+- [x] **Telemetría de Descartes en Vivo y Desacoplamiento de Confianza en Radar**: Contador visible de señales filtradas por motivo (fricción, horario, cooldown, posición abierta, geometría) y filtrado de señales activas por confianza de señal. (Completado v2026.09.15.1)
 - [ ] **Alertas Push/Webhooks (Telegram / Discord)**: Notificaciones push directas en dispositivos móviles cuando ocurran señales de alta confluencia o confirmación QVE.
 - [ ] **Overlays e Indicadores en Gráfico (VWAP / EMAs / S&R)**: Toggles interactivos en la cabecera para proyectar VWAP intradía, EMAs 20/50/200 y niveles estructurales de S/R sobre TradingView.
 - [ ] **Paper Trading / Diario de Operaciones**: Simulador de ejecución con 1 clic y seguimiento de órdenes abiertas/cerradas.
+- [ ] **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 - [ ] **Backtesting en la Nube / Historial Extendido**: Permitir realizar simulaciones en ventanas de tiempo de años mediante un microservicio servidor.
 
 Este archivo es una guía central para cualquier asistente de IA que retome el proyecto, asegurando que comprenda la estructura actual del motor de señales y backtesting.

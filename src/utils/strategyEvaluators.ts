@@ -15,6 +15,7 @@ import {
   calculateATRSeries,
   calculateADXSeries,
   calculateSupportResistance,
+  calculateRawPivotLevels,
   calculateChandelierExit,
   calculateRevolutionVolatilityBand,
   calculateVolumeComposition,
@@ -30,19 +31,26 @@ import {
   detectEmaCrossoverFromSeries,
   getOpeningRange,
   isNyseOpeningWindow,
-  checkBullishDivergence,
-  checkBearishDivergence,
   calculateRollingVolumeAvg,
   type ScoringWeights,
+  type ScoringConfig,
   DEFAULT_WEIGHTS,
   SCORING_CONFIG,
   type ScoringResult,
   type StandardVotingResult,
   type VCMESniperResult,
   type MultifractalMTFSignalResult,
-  type EmaCrossover
+  type EmaCrossover,
+  calculateFractalPivotsSeries,
+  type FractalPivotsSeries,
+  isMFLSSessionWindow,
+  isNyseMiddayChop,
+  isNearNyseSessionClose,
+  isNyseOpeningHour,
+  isNyseOpeningCross
 } from './indicators';
 import { formatSmartPrice, formatSmartNumber } from './formatters';
+import { calculateAlertLevels, isCryptoAsset } from './tradeLevels';
 import type { DiscardBreakdown } from './backtester';
 
 // ==========================================
@@ -59,6 +67,8 @@ export interface ConfluenciaContext {
   vwapReliable?: boolean[];
   atr: number[];
   volSMA: number[];
+  adx?: ReturnType<typeof calculateADXSeries>;
+  isCrypto?: boolean;
 }
 
 export interface ConfluenciaEvaluationResult {
@@ -68,10 +78,15 @@ export interface ConfluenciaEvaluationResult {
   emaCrossover: EmaCrossover;
 }
 
-export function buildConfluenciaContext(klines: Kline[], interval: string = '1h'): ConfluenciaContext {
+export function buildConfluenciaContext(
+  klines: Kline[],
+  interval: string = '1h',
+  symbolOrIsCrypto?: string | boolean
+): ConfluenciaContext {
+  const isCrypto = typeof symbolOrIsCrypto === 'boolean' ? symbolOrIsCrypto : isCryptoAsset(symbolOrIsCrypto);
   const length = klines ? klines.length : 0;
   if (length === 0) {
-    return { klines: [], interval, closes: [], ema9: [], ema20: [], vwap: [], vwapReliable: [], atr: [], volSMA: [] };
+    return { klines: [], interval, closes: [], ema9: [], ema20: [], vwap: [], vwapReliable: [], atr: [], volSMA: [], isCrypto };
   }
 
   const closes = klines.map(k => k.close);
@@ -92,7 +107,9 @@ export function buildConfluenciaContext(klines: Kline[], interval: string = '1h'
     sumVol = sumVol - klines[i - 20].volume + klines[i].volume;
   }
 
-  return { klines, interval, closes, ema9, ema20, vwap, vwapReliable, atr, volSMA };
+  const adx = calculateADXSeries(klines, 14);
+
+  return { klines, interval, closes, ema9, ema20, vwap, vwapReliable, atr, volSMA, adx, isCrypto };
 }
 
 export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): ConfluenciaEvaluationResult {
@@ -128,25 +145,44 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
 
   const strongBullish = curr.close > curr.open && bRatio >= 0.4 && curr.close > e9;
   const strongBearish = curr.close < curr.open && bRatio >= 0.4 && curr.close < e9;
-  const bullish_candle = hammer || engulf === 1 || strongBullish;
-  const bearish_candle = shootingStar || engulf === -1 || strongBearish;
+  const validBullishCandle = hammer || (engulf === 1 && bRatio >= 0.3) || strongBullish;
+  const validBearishCandle = shootingStar || (engulf === -1 && bRatio >= 0.3) || strongBearish;
 
   // Symmetrical VWAP gate: in the first 2 bars of a session, VWAP is degenerate (HLC3 coin flip)
   // Neutralize the VWAP gate during session opening to eliminate systematic false positives
   const vwapBuyOk = isVwapReliable ? curr.close > vw : true;
   const vwapSellOk = isVwapReliable ? curr.close < vw : true;
 
-  const is_buy = vwapBuyOk && e9 > e20 && curr.volume >= vAvg * 0.8
-                  && bullish_candle && bRatio >= 0.3 && isNotOverextended && cp >= 0.50;
-  const is_sell = vwapSellOk && e9 < e20 && curr.volume >= vAvg * 0.8
-                  && bearish_candle && bRatio >= 0.3 && isNotOverextended && cp <= 0.50;
+  // Confluencia requires valid market volume: must be positive and >= 0.8 * vAvg
+  // For zero-volume symbols (^VIX, Yahoo Forex), volume = 0 must NOT pass the filter
+  const validVolume = curr.volume > 0 && vAvg > 0 && curr.volume >= vAvg * 0.8;
+
+  const is_buy = vwapBuyOk && e9 > e20 && validVolume
+                  && validBullishCandle && isNotOverextended && cp >= 0.50;
+  const is_sell = vwapSellOk && e9 < e20 && validVolume
+                  && validBearishCandle && isNotOverextended && cp <= 0.50;
+
+  const is5m = (ctx.interval || '').toLowerCase() === '5m';
+  const isEquity = ctx.isCrypto === false;
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   if (is_buy) signal = 'BUY';
   else if (is_sell) signal = 'SELL';
 
-  const stopLossLong = curr.close - (2 * atr);
-  const stopLossShort = curr.close + (2 * atr);
+  // Session guard for 5m equities: Confluencia only has net edge in the opening window
+  // (09:35–11:00 ET). The former afternoon ADX >= 25 window (14:00–15:15 ET) was removed:
+  // 90 signals over 60 days on the 21-symbol watchlist at -0.23R net.
+  if (isEquity && is5m && signal !== 'NEUTRAL' && curr && curr.time) {
+    const candleMs = curr.time > 1e11 ? curr.time : curr.time * 1000;
+    if (!isNyseOpeningHour(candleMs)) {
+      signal = 'NEUTRAL';
+    }
+  }
+
+  const rawDistPct = curr.close > 0 && atr > 0 ? (2 * atr) / curr.close : 0.008;
+  const effectiveStopPct = is5m ? Math.max(0.004, rawDistPct) : rawDistPct;
+  const stopLossLong = curr.close * (1 - effectiveStopPct);
+  const stopLossShort = curr.close * (1 + effectiveStopPct);
   const stopLoss = signal === 'BUY' ? stopLossLong : (signal === 'SELL' ? stopLossShort : 0);
 
   const emaCrossover = detectEmaCrossoverFromSeries(ctx.ema9, ctx.ema20, i, 5);
@@ -154,7 +190,7 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
   return {
     signal,
     stopLoss,
-    validVolume: curr.volume > vAvg,
+    validVolume,
     emaCrossover
   };
 }
@@ -172,11 +208,20 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
  */
 export const DEFAULT_SCORING_THRESHOLD_RATIO = 0.45;
 
+export interface ScoringSRCacheItem {
+  nearestSupport?: number;
+  nearestResistance?: number;
+  supports?: number[];
+  resistances?: number[];
+  pivotHighs?: number[];
+  pivotLows?: number[];
+}
+
 export interface ScoringContext {
   klines: Kline[];
   interval: string;
   weights: ScoringWeights;
-  cfg: typeof SCORING_CONFIG[string];
+  cfg: ScoringConfig;
   closes: number[];
   emaFastArr: number[];
   emaSlowArr: number[];
@@ -189,20 +234,23 @@ export interface ScoringContext {
   obvArr: number[];
   obvEMAArr: number[];
   volRollingArr?: number[];
-  srCache: Map<number, { nearestSupport: number; nearestResistance: number }>;
+  srCache: Map<number, ScoringSRCacheItem>;
+  isCrypto?: boolean;
 }
 
 export function buildScoringContext(
   klines: Kline[],
   interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS
+  weights: ScoringWeights = DEFAULT_WEIGHTS,
+  symbolOrIsCrypto?: string | boolean
 ): ScoringContext {
+  const isCrypto = typeof symbolOrIsCrypto === 'boolean' ? symbolOrIsCrypto : isCryptoAsset(symbolOrIsCrypto);
   const length = klines ? klines.length : 0;
   const cfg = SCORING_CONFIG[interval] ?? SCORING_CONFIG['1h'];
   if (length === 0) {
     return {
       klines: [], interval, weights, cfg, closes: [], emaFastArr: [], emaSlowArr: [], emaMajorArr: [],
-      rsiSeries: [], bbSeries: [], vwapSeries: [], vwapReliableSeries: [], atrSeries: [], obvArr: [], obvEMAArr: [], volRollingArr: [], srCache: new Map()
+      rsiSeries: [], bbSeries: [], vwapSeries: [], vwapReliableSeries: [], atrSeries: [], obvArr: [], obvEMAArr: [], volRollingArr: [], srCache: new Map(), isCrypto
     };
   }
 
@@ -233,24 +281,29 @@ export function buildScoringContext(
     }
   }
 
-  // Aligned 5-bar checkpoint cache for S/R
+  // Aligned 5-bar checkpoint cache for S/R:
+  // Caches raw clustered pivot highs and pivot lows without pre-filtering against klines[idx].close,
+  // preventing level blindness when price moves between snapshot intervals.
   const srCacheInterval = 5;
-  const srCache: Map<number, { nearestSupport: number; nearestResistance: number }> = new Map();
+  const srCache: Map<number, ScoringSRCacheItem> = new Map();
   const startIdx = Math.max(0, Math.floor(55 / srCacheInterval) * srCacheInterval);
   for (let idx = startIdx; idx < length; idx += srCacheInterval) {
     const windowStart = Math.max(0, idx - 100);
     const windowSlice = klines.slice(windowStart, idx + 1);
-    const sr = calculateSupportResistance(windowSlice, klines[idx].close);
-    srCache.set(idx, { nearestSupport: sr.nearestSupport, nearestResistance: sr.nearestResistance });
+    const { pivotHighs, pivotLows } = calculateRawPivotLevels(windowSlice, 5);
+    srCache.set(idx, {
+      pivotHighs,
+      pivotLows
+    });
   }
 
   return {
     klines, interval, weights, cfg, closes, emaFastArr, emaSlowArr, emaMajorArr,
-    rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache
+    rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache, isCrypto
   };
 }
 
-export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult {
+export function evaluateScoringAt(ctx: ScoringContext, i: number, effectivePrice?: number): ScoringResult {
   const fallback: ScoringResult = {
     signal: 'HOLD', score: 0, threshold: 3,
     layers: {
@@ -269,6 +322,7 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
 
   const curr = ctx.klines[i];
   const closeVal = ctx.closes[i];
+  const evalPrice = (effectivePrice !== undefined && effectivePrice > 0) ? effectivePrice : closeVal;
   const cfg = ctx.cfg;
 
   // Layer 1 — Tendencia EMA
@@ -289,7 +343,7 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
     n1 += ` | Sobre/Bajo EMA${cfg.emaMajor} (${s1Major >= 0 ? '+' : ''}${s1Major.toFixed(2)})`;
   }
 
-  // Layer 2 — RSI con pendiente
+  // Layer 2 — RSI con pendiente simétrica (matriz espejo alrededor de 50)
   const rsi = ctx.rsiSeries[i];
   const rsiSlopeVal = calculateRSISlope(ctx.rsiSeries, i, 3);
   const rsiRising = rsiSlopeVal > 0;
@@ -297,18 +351,68 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
 
   let s2 = 0;
   let n2 = `RSI(${cfg.rsiPeriod}): ${isNaN(rsi) ? '-' : rsi.toFixed(1)}`;
-  if      (isNaN(rsi))                { n2 += ' | Datos insuficientes'; }
-  else if (rsi < cfg.rsiOversold)     { s2 += 1; n2 += ` | Sobreventa (<${cfg.rsiOversold})`; }
-  else if (rsi > cfg.rsiOverbought)   { s2 -= 1; n2 += ` | Sobrecompra (>${cfg.rsiOverbought})`; }
-  else if (rsi > 50) {
-    if (rsiFalling) { s2 += 0; n2 += ' | Sobre 50 ▼ (desacelerando)'; }
-    else            { s2 += 1; n2 += rsiRising ? ' | Sobre 50 ▲ (momentum +)' : ' | Sobre 50 (momentum +)'; }
+  if (isNaN(rsi)) {
+    n2 += ' | Datos insuficientes';
+  } else if (!rsiRising && !rsiFalling) {
+    // RSI plano (variación <= 1.5 puntos en 3 velas): estrictamente neutral
+    s2 = 0.0;
+    n2 += ' | Plano (neutral)';
+  } else if (rsiRising) {
+    if (rsi > 80) {
+      s2 = 0.0;
+      n2 += ' | Sobrecompra extrema >80 (agotamiento)';
+    } else if (rsi >= 72) {
+      s2 = 0.5;
+      n2 += ' | Impulso extendido ▲ (+0.5)';
+    } else if (rsi >= 50) {
+      s2 = 1.0;
+      n2 += ' | Sobre 50 ▲ (momentum +)';
+    } else if (rsi >= 40) {
+      s2 = 1.0;
+      n2 += ' | Pullback en tendencia ▲ (recuperando)';
+    } else if (rsi >= 28) {
+      s2 = 0.5;
+      n2 += ' | Rebote técnico en soporte ▲ (+0.5)';
+    } else if (rsi >= 20) {
+      s2 = 0.5;
+      n2 += ' | Rebote desde sobreventa ▲ (+0.5)';
+    } else {
+      // rsi < 20 subiendo
+      s2 = 0.5;
+      n2 += ' | Rebote desde capitulación extrema ▲ (+0.5)';
+    }
   } else {
-    if (rsiRising) { s2 += 0; n2 += ' | Bajo 50 ▲ (recuperando)'; }
-    else           { s2 -= 1; n2 += rsiFalling ? ' | Bajo 50 ▼ (momentum -)' : ' | Bajo 50 (momentum -)'; }
+    // rsiFalling — matriz simétrica alrededor de 50 (espejo exacto de rsiRising)
+    if (rsi < 20) {
+      // Sobreventa extrema (<20): neutraliza para evitar vender suelos de capitulación
+      s2 = 0.0;
+      n2 += ' | Sobreventa extrema <20 (agotamiento bajista)';
+    } else if (rsi <= 28) {
+      s2 = -0.5;
+      n2 += ' | Sobreventa extendida ▼ (-0.5)';
+    } else if (rsi <= 40) {
+      s2 = -1.0;
+      n2 += ' | Impulso bajista (<40 ▼)';
+    } else if (rsi <= 50) {
+      s2 = -1.0;
+      n2 += ' | Impulso bajista hacia sobreventa ▼';
+    } else if (rsi <= 60) {
+      s2 = -1.0;
+      n2 += ' | Impulso bajista bajo 60 ▼';
+    } else if (rsi <= 72) {
+      s2 = -0.5;
+      n2 += ' | Pullback en tendencia alcista ▼ (-0.5)';
+    } else if (rsi <= 80) {
+      s2 = -0.5;
+      n2 += ' | Rechazo desde sobrecompra ▼ (-0.5)';
+    } else {
+      // rsi > 80 bajando
+      s2 = -0.5;
+      n2 += ' | Rechazo desde sobrecompra extrema ▼ (-0.5)';
+    }
   }
 
-  // Layer 3 — Bollinger %B & Squeeze
+  // Layer 3 — Bollinger %B, Squeeze y Expansión de Volatilidad
   let s3 = 0;
   let n3 = '';
   const bbIdx = i - (cfg.bbPeriod - 1);
@@ -317,15 +421,115 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
     const bandWidth = bb.upper - bb.lower;
     const pctB = bandWidth > 0 ? (closeVal - bb.lower) / bandWidth : 0.5;
     n3 = `%B: ${pctB.toFixed(2)}`;
-    if      (closeVal <= bb.lower) { s3 += 1; n3 += ' | En/bajo banda inf. (rebote)'; }
-    else if (closeVal >= bb.upper) { s3 -= 1; n3 += ' | En/sobre banda sup. (rechazo)'; }
-    else if (pctB < 0.2)           { s3 += 1; n3 += ' | Cerca banda inf.'; }
-    else if (pctB > 0.8)           { s3 -= 1; n3 += ' | Cerca banda sup.'; }
-    else                           { n3 += ' | Dentro de bandas'; }
 
     const bbMiddle = (bb.upper + bb.lower) / 2;
     const bbWidthRatio = bbMiddle > 0 ? bandWidth / bbMiddle : 0;
-    if (bbWidthRatio < 0.05) { n3 += ' | Squeeze (alta compresión)'; }
+
+    // Squeeze adaptativo dinámico:
+    // En velas cortas (5m de acciones/cripto), el ancho de banda normal es de 0.5% a 1.5%.
+    // Un squeeze real representa una contracción estadística significativa respecto a la volatilidad reciente:
+    // 1) Si hay historial rodante (>= 10 velas), el ancho actual debe ser < 75% del promedio reciente de las últimas 30 velas.
+    // 2) Piso absoluto de compresión por temporalidad (0.004 en 5m, 0.010 en 1h, 0.020 en 1d).
+    // 3) Salvaguarda para series sintéticas o cortas (< 10 velas en tests unitarios): bbWidthRatio < 0.05.
+    let sumWidthRatio = 0;
+    let countWidthRatio = 0;
+    const lookback = 30;
+    const startBBIdx = Math.max(0, bbIdx - lookback);
+    for (let k = startBBIdx; k <= bbIdx; k++) {
+      const bItem = ctx.bbSeries[k];
+      if (bItem) {
+        const bMid = (bItem.upper + bItem.lower) / 2;
+        if (bMid > 0) {
+          sumWidthRatio += (bItem.upper - bItem.lower) / bMid;
+          countWidthRatio++;
+        }
+      }
+    }
+    const avgWidthRatio = countWidthRatio > 0 ? sumWidthRatio / countWidthRatio : 0;
+    const isSqueeze = (countWidthRatio >= 10 && avgWidthRatio > 0 && bbWidthRatio < avgWidthRatio * 0.70)
+      || (countWidthRatio < 10 && bbWidthRatio < 0.03);
+
+    const uWick = upperWickRatio(curr);
+    const lWick = lowerWickRatio(curr);
+    const isBullCandle = curr.close >= curr.open;
+
+    if (isSqueeze) {
+      // En compresión alta de volatilidad (Squeeze):
+      // Si rompe con vela verde sobre la media, premia la liberación de volatilidad alcista
+      if (closeVal >= bbMiddle && isBullCandle) {
+        s3 = 1.0;
+        n3 += ' | Squeeze con ruptura alcista';
+      } else if (closeVal <= bbMiddle && !isBullCandle) {
+        s3 = -1.0;
+        n3 += ' | Squeeze con ruptura bajista';
+      } else {
+        s3 = 0.0;
+        n3 += ' | Squeeze (alta compresión)';
+      }
+    } else {
+      // Fuera de squeeze: evaluar expansión direccional vs sobreextensión
+      if (pctB >= 0.70) {
+        // Mitad superior expandida:
+        if (pctB <= 0.95) {
+          // Cabalgando banda superior en expansión sana
+          if (isBullCandle && uWick <= 0.25) {
+            s3 = 1.0;
+            n3 += ' | Walking upper band (impulso fuerte)';
+          } else if (uWick > 0.25) {
+            s3 = -0.5;
+            n3 += ' | Rechazo en banda sup. (mecha)';
+          } else {
+            s3 = 0.5;
+            n3 += ' | En banda sup. (expansión)';
+          }
+        } else {
+          // Sobreextensión extrema (>0.95) fuera de la banda: riesgo de rechazo o clímax
+          if (uWick > 0.20) {
+            s3 = -0.5;
+            n3 += ' | Rechazo en techo de banda sup.';
+          } else if (isBullCandle && uWick <= 0.15) {
+            s3 = 1.0;
+            n3 += ' | Walking upper band (ruptura climática)';
+          } else {
+            s3 = 0.0;
+            n3 += ' | Sobreextendido fuera de banda sup.';
+          }
+        }
+      } else if (pctB <= 0.30) {
+        // Mitad inferior expandida:
+        if (pctB >= 0.05) {
+          // Cerca banda inferior:
+          if (lWick >= 0.25) {
+            // Mecha de absorción/rebote independientemente de si el cuerpo cerró verde o rojo
+            s3 = 0.5;
+            n3 += ' | Rebote en soporte dinámico inf.';
+          } else if (!isBullCandle) {
+            s3 = -1.0;
+            n3 += ' | Presión bajista hacia banda inf.';
+          } else {
+            s3 = 0.0;
+            n3 += ' | Dentro de bandas';
+          }
+        } else {
+          // En o bajo la banda inferior (pctB < 0.05):
+          if (lWick >= 0.25) {
+            // Mecha inferior: absorción institucional en soporte dinámico
+            s3 = 0.5;
+            n3 += ' | Absorción en banda inf. (rebote)';
+          } else if (!isBullCandle && lWick <= 0.15) {
+            s3 = -1.0;
+            n3 += ' | Walking lower band (impulso bajista)';
+          } else {
+            s3 = 0.0;
+            n3 += ' | En banda inf.';
+          }
+        }
+      } else {
+        // Dentro de la zona media neutral [0.30, 0.70]
+        s3 = 0.0;
+        n3 += ' | Dentro de bandas';
+      }
+    }
   } else {
     n3 = 'Bollinger no disponible';
   }
@@ -395,24 +599,40 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   // Layer 6 — Estructura S/R
   const srCacheInterval = 5;
   const cacheIdx = Math.floor(i / srCacheInterval) * srCacheInterval;
-  const sr = ctx.srCache.get(cacheIdx) || { nearestSupport: 0, nearestResistance: 0 };
+  const cachedSr = ctx.srCache.get(cacheIdx);
+
+  // Dynamically resolve resistances (above evalPrice) and supports (below evalPrice):
+  // When raw pivot levels are cached, classify without snapshot truncation; otherwise fall back to pre-filtered levels.
+  let resistances: number[] = [];
+  let supports: number[] = [];
+  if (cachedSr?.pivotHighs || cachedSr?.pivotLows) {
+    resistances = (cachedSr.pivotHighs ?? []).filter(r => r > evalPrice);
+    supports = (cachedSr.pivotLows ?? []).filter(s => s < evalPrice);
+  } else {
+    resistances = (cachedSr?.resistances ?? (cachedSr?.nearestResistance ? [cachedSr.nearestResistance] : [])).filter(r => r > evalPrice);
+    supports = (cachedSr?.supports ?? (cachedSr?.nearestSupport ? [cachedSr.nearestSupport] : [])).filter(s => s < evalPrice);
+  }
+
+  const nearestResistance = resistances[0] ?? 0;
+  const nearestSupport = supports[0] ?? 0;
+
   const structureWeight = 1.0;
   let s6 = 0;
   let n6 = '';
 
-  if (sr.nearestSupport > 0 || sr.nearestResistance > 0) {
-    const distSupport = sr.nearestSupport > 0 ? (closeVal - sr.nearestSupport) / closeVal : Infinity;
-    const distResist = sr.nearestResistance > 0 ? (sr.nearestResistance - closeVal) / closeVal : Infinity;
+  if (nearestSupport > 0 || nearestResistance > 0) {
+    const distSupport = nearestSupport > 0 ? (evalPrice - nearestSupport) / evalPrice : Infinity;
+    const distResist = nearestResistance > 0 ? (nearestResistance - evalPrice) / evalPrice : Infinity;
     const nearThreshold = 0.015; // 1.5%
 
     if (distSupport >= 0 && distSupport < nearThreshold && distSupport <= distResist) {
       s6 += 1;
-      n6 = `Cerca soporte (${formatSmartPrice(sr.nearestSupport)})`;
+      n6 = `Cerca soporte (${formatSmartPrice(nearestSupport)})`;
     } else if (distResist >= 0 && distResist < nearThreshold && distResist < distSupport) {
       s6 -= 1;
-      n6 = `Cerca resistencia (${formatSmartPrice(sr.nearestResistance)})`;
+      n6 = `Cerca resistencia (${formatSmartPrice(nearestResistance)})`;
     } else {
-      n6 = `S: ${sr.nearestSupport > 0 ? formatSmartPrice(sr.nearestSupport) : '-'} | R: ${sr.nearestResistance > 0 ? formatSmartPrice(sr.nearestResistance) : '-'}`;
+      n6 = `S: ${nearestSupport > 0 ? formatSmartPrice(nearestSupport) : '-'} | R: ${nearestResistance > 0 ? formatSmartPrice(nearestResistance) : '-'}`;
     }
   } else {
     n6 = 'Sin niveles S/R detectados';
@@ -440,6 +660,27 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
   if      (totalScore >=  threshold) signal = 'BUY';
   else if (totalScore <= -threshold) signal = 'SELL';
 
+  // Filtro de No-Contradicción Inter-Capas (Non-Dissent Rule):
+  // Protege la calidad de las señales impidiendo operaciones "híbridas" donde una capa principal
+  // presenta una oposición frontal dura (rechazo severo en Bollinger s3 <= -0.5 o volumen netamente contrario s4 <= -0.5).
+  if (signal === 'BUY') {
+    if (s3 <= -0.5) {
+      signal = 'HOLD';
+      n3 += ' | Veto de contradicción inter-capas: BUY bloqueado por rechazo en techo de Bollinger';
+    } else if (s4 <= -0.5) {
+      signal = 'HOLD';
+      n4 += ' | Veto de contradicción inter-capas: BUY bloqueado por presión distribuidora en volumen';
+    }
+  } else if (signal === 'SELL') {
+    if (s3 >= 0.5) {
+      signal = 'HOLD';
+      n3 += ' | Veto de contradicción inter-capas: SELL bloqueado por absorción en soporte de Bollinger';
+    } else if (s4 >= 0.5) {
+      signal = 'HOLD';
+      n4 += ' | Veto de contradicción inter-capas: SELL bloqueado por presión compradora en volumen';
+    }
+  }
+
   // Veto direccional incondicional de VWAP:
   // En intradía (5m y 1h), Scoring opera como un motor estrictamente tendencial y alineado
   // con el flujo institucional: nunca compra por debajo de VWAP ni vende en corto por encima de VWAP.
@@ -448,34 +689,58 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number): ScoringResult
     if (isVwapReliable) {
       const vwap = ctx.vwapSeries[i];
 
-      if (signal === 'BUY' && closeVal < vwap) {
+      if (signal === 'BUY' && (closeVal < vwap || evalPrice < vwap)) {
         signal = 'HOLD';
         n4 += ' | Veto direccional VWAP: BUY bloqueado bajo VWAP (tendencia contraria)';
-      } else if (signal === 'SELL' && closeVal > vwap) {
+      } else if (signal === 'SELL' && (closeVal > vwap || evalPrice > vwap)) {
         signal = 'HOLD';
         n4 += ' | Veto direccional VWAP: SELL bloqueado sobre VWAP (tendencia contraria)';
       }
     }
   }
 
-  // R:R validation
+  // R:R validation using exact operational levels from calculateAlertLevels (parity with [0.2%, 8%] clamp)
   if (signal !== 'HOLD') {
     const atr = ctx.atrSeries[i];
     if (atr > 0) {
-      const slDist = 1.5 * atr;
-      if (signal === 'BUY' && sr.nearestResistance > 0) {
-        const rewardRoom = sr.nearestResistance - closeVal;
-        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+      const levels = calculateAlertLevels(signal, evalPrice, ctx.interval, atr, 'scoring', { isCrypto: ctx.isCrypto });
+      const slDist = Math.abs(evalPrice - levels.stopLoss);
+      const targetDist = Math.abs(levels.takeProfit1 - evalPrice);
+
+      if (signal === 'BUY' && nearestResistance > evalPrice) {
+        const rewardRoom = nearestResistance - evalPrice;
+        if (rewardRoom < targetDist) {
           signal = 'HOLD';
-          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
+          n6 += ` | R:R ${(rewardRoom / (slDist || 1)).toFixed(1)}:1 insuficiente (resistencia en ${formatSmartPrice(nearestResistance)} antes de TP1 ${formatSmartPrice(levels.takeProfit1)})`;
         }
-      } else if (signal === 'SELL' && sr.nearestSupport > 0) {
-        const rewardRoom = closeVal - sr.nearestSupport;
-        if (rewardRoom > 0 && rewardRoom < slDist * 1.5) {
+      } else if (signal === 'SELL' && nearestSupport > 0 && nearestSupport < evalPrice) {
+        const rewardRoom = evalPrice - nearestSupport;
+        if (rewardRoom < targetDist) {
           signal = 'HOLD';
-          n6 += ` | R:R ${(rewardRoom / slDist).toFixed(1)}:1 insuficiente`;
+          n6 += ` | R:R ${(rewardRoom / (slDist || 1)).toFixed(1)}:1 insuficiente (soporte en ${formatSmartPrice(nearestSupport)} antes de TP1 ${formatSmartPrice(levels.takeProfit1)})`;
         }
       }
+    }
+  }
+
+  // Veto para acciones en 5m:
+  // 1) En 5m acciones, los setups SELL de Scoring han demostrado ser estadísticamente anti-predictivos.
+  // 2) Pausa durante apertura NYSE (09:30–09:35 ET: normalización de subasta y spreads).
+  // 3) Pausa durante la sesión de mediodía de Wall Street (11:30–14:00 ET: bajo volumen institucional).
+  // 4) Pausa cerca del cierre de sesión NYSE (después de 15:15 ET: insuficiente tiempo para madurar).
+  if (ctx.isCrypto === false && ctx.interval === '5m' && signal !== 'HOLD') {
+    if (signal === 'SELL') {
+      signal = 'HOLD';
+      n3 += ' | SELL desactivado en 5m para acciones (asimetría predictiva adversa)';
+    } else if (curr.time && isNyseOpeningCross(curr.time * 1000)) {
+      signal = 'HOLD';
+      n4 += ' | Pausado durante apertura NYSE (primeros 5m normalización de subasta)';
+    } else if (curr.time && isNyseMiddayChop(curr.time * 1000)) {
+      signal = 'HOLD';
+      n4 += ' | Pausado durante sesión de mediodía NYSE (11:30–14:00 ET: bajo volumen institucional)';
+    } else if (curr.time && isNearNyseSessionClose(curr.time * 1000, 915)) {
+      signal = 'HOLD';
+      n4 += ' | Pausado por proximidad al cierre NYSE (después de 15:15 ET)';
     }
   }
 
@@ -560,6 +825,8 @@ export function evaluateStandardVotingAt(
 
   const curr = ctx.klines[i];
   const close = ctx.closes[i];
+  const emaVal = ctx.ema200Series[i];
+  const rvol = ctx.volSmaSeries[i] > 0 ? curr.volume / ctx.volSmaSeries[i] : 0;
 
   // 1. RSI Indicator
   const rsiVal = ctx.rsiSeries[i];
@@ -567,9 +834,11 @@ export function evaluateStandardVotingAt(
   const slopeArrow = rsiSlopeDir > 0 ? ' ▲' : rsiSlopeDir < 0 ? ' ▼' : '';
   let rsiSig: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   if (!isNaN(rsiVal)) {
-    // Momentum slope alignment: do not vote BUY into a falling knife or SELL into runaway blow-off
-    if (rsiVal < 30 && rsiSlopeDir >= 0) rsiSig = 'BUY';
-    else if (rsiVal > 70 && rsiSlopeDir <= 0) rsiSig = 'SELL';
+    // Momentum slope alignment: oversold reversal curling up OR trend-pullback bounce in bull market support zone (35-48)
+    const isTrendPullbackBuy = !isNaN(emaVal) && close > emaVal && rsiVal >= 35 && rsiVal <= 48 && rsiSlopeDir >= 0;
+    const isTrendPullbackSell = !isNaN(emaVal) && close < emaVal && rsiVal >= 52 && rsiVal <= 65 && rsiSlopeDir <= 0;
+    if ((rsiVal < 30 && rsiSlopeDir >= 0) || isTrendPullbackBuy) rsiSig = 'BUY';
+    else if ((rsiVal > 70 && rsiSlopeDir <= 0) || isTrendPullbackSell) rsiSig = 'SELL';
   }
 
   // 2. MACD Indicator
@@ -583,8 +852,24 @@ export function evaluateStandardVotingAt(
   let bbVal = '-';
   if (bb) {
     bbVal = close.toFixed(2);
-    if (close < bb.lower) bbSig = 'BUY';
-    else if (close > bb.upper) bbSig = 'SELL';
+    const bandWidth = bb.upper - bb.lower;
+    const pctB = bandWidth > 0 ? (close - bb.lower) / bandWidth : 0.5;
+
+    if (close < bb.lower) {
+      // In established downtrend with healthy volume and bearish continuation candle, walking the lower band is downward expansion, not immediate buy
+      const isBearExpansion = !isNaN(emaVal) && close < emaVal && rvol >= 1.0 && curr.close < curr.open;
+      bbSig = isBearExpansion ? 'NEUTRAL' : 'BUY';
+    } else if (close > bb.upper) {
+      // In established uptrend with healthy volume, walking the upper band is upward expansion, not immediate sell
+      const isBullExpansion = !isNaN(emaVal) && close > emaVal && rvol >= 1.0;
+      bbSig = isBullExpansion ? 'NEUTRAL' : 'SELL';
+    } else if (!isNaN(emaVal) && close > emaVal && pctB <= 0.38 && curr.close >= curr.open) {
+      // Confluent trend pullback bounce: in uptrend, testing lower third of bands (%B <= 0.38) with bullish candle
+      bbSig = 'BUY';
+    } else if (!isNaN(emaVal) && close < emaVal && pctB >= 0.62 && curr.close <= curr.open) {
+      // Confluent trend pullback rejection: in downtrend, testing upper third of bands (%B >= 0.62) with bearish candle
+      bbSig = 'SELL';
+    }
   }
 
   // 4. Supertrend Indicator (Lookback up to 3 candles for flip)
@@ -615,7 +900,6 @@ export function evaluateStandardVotingAt(
   // 6. Volume Signal
   const volSig = ctx.volSignalSeries.signals ? (ctx.volSignalSeries.signals[i] || 'NEUTRAL') : 'NEUTRAL';
   const volVal = ctx.volSignalSeries.values ? (ctx.volSignalSeries.values[i] || '—') : '—';
-  const rvol = ctx.volSmaSeries[i] > 0 ? curr.volume / ctx.volSmaSeries[i] : 0;
 
   const colorFor = (sig: string) =>
     sig === 'BUY' ? 'var(--accent-green)' : sig === 'SELL' ? 'var(--accent-red)' : 'var(--text-primary)';
@@ -668,11 +952,21 @@ export function evaluateStandardVotingAt(
   if (rawSignal.includes('BUY')) finalSig = 'BUY';
   if (rawSignal.includes('SELL')) finalSig = 'SELL';
 
-  const emaVal = ctx.ema200Series[i];
-  if (!isNaN(emaVal) && finalSig !== 'NEUTRAL') {
+  if (isNaN(emaVal)) {
+    finalSig = 'NEUTRAL';
+  } else if (finalSig !== 'NEUTRAL') {
     const trend = close > emaVal ? 'UP' : 'DOWN';
-    if (trend === 'UP' && finalSig === 'SELL') finalSig = 'NEUTRAL';
-    if (trend === 'DOWN' && finalSig === 'BUY') finalSig = 'NEUTRAL';
+    // Allow counter-trend signals ONLY when confirmed by high-conviction mean-reversion confluence
+    // (STRONG consensus margin >= 3 with 0 opposing votes, or both extreme oversold/overbought voters aligned with non-plunging anatomy)
+    const isConfluentMeanReversionBuy = (rsiSig === 'BUY' && bbSig === 'BUY' && (curr.close >= curr.open || cp >= 0.50)) || (rawSignal === 'STRONG BUY' && sellVotes === 0);
+    const isConfluentMeanReversionSell = (rsiSig === 'SELL' && bbSig === 'SELL' && (curr.close <= curr.open || cp <= 0.50)) || (rawSignal === 'STRONG SELL' && buyVotes === 0);
+
+    if (trend === 'UP' && finalSig === 'SELL' && !isConfluentMeanReversionSell) {
+      finalSig = 'NEUTRAL';
+    }
+    if (trend === 'DOWN' && finalSig === 'BUY' && !isConfluentMeanReversionBuy) {
+      finalSig = 'NEUTRAL';
+    }
   }
 
   return { indicators, buyVotes, sellVotes, rawSignal, finalSignal: finalSig, signal: finalSig };
@@ -811,15 +1105,17 @@ export function buildVCMESniperContext(
   // Pre-indexed temporal mappings 5m -> 1h and 5m -> 1d O(N+M)
   const idx1hMap = new Int32Array(len5m).fill(-1);
   const idx1dMap = new Int32Array(len5m).fill(-1);
+  const triggerStepSec = style === 'swing' ? 3600 : 300;
 
   if (len5m > 0 && len1h > 0) {
     let hCursor = 0;
     for (let i = 0; i < len5m; i++) {
       const t = klines5m[i].time;
-      while (hCursor + 1 < len1h && (klines1h[hCursor + 1].time + 3600) <= t) {
+      const tClose = t + triggerStepSec;
+      while (hCursor + 1 < len1h && (klines1h[hCursor + 1].time + 3600) <= tClose) {
         hCursor++;
       }
-      if ((klines1h[hCursor].time + 3600) <= t) {
+      if ((klines1h[hCursor].time + 3600) <= tClose) {
         idx1hMap[i] = hCursor;
       }
     }
@@ -829,10 +1125,11 @@ export function buildVCMESniperContext(
     let dCursor = 0;
     for (let i = 0; i < len5m; i++) {
       const t = klines5m[i].time;
-      while (dCursor + 1 < len1d && (klines1d[dCursor + 1].time + 86400) <= t) {
+      const tClose = t + triggerStepSec;
+      while (dCursor + 1 < len1d && (klines1d[dCursor + 1].time + 86400) <= tClose) {
         dCursor++;
       }
-      if ((klines1d[dCursor].time + 86400) <= t) {
+      if ((klines1d[dCursor].time + 86400) <= tClose) {
         idx1dMap[i] = dCursor;
       }
     }
@@ -846,6 +1143,14 @@ export function buildVCMESniperContext(
     closes5m, bbSeries5m, ema9_5m, ema21_5m, vwapSeries5m, vwapReliable5m, rsiSeries5m,
     atrSeries5m, adxSeries5m, vol5m, volSma5m, bbWidth5m,
     idx1hMap, idx1dMap
+  };
+}
+
+export function getVCMETargetMultipliers(tradeType: 'DAY' | 'SWING'): { tp1Mult: number; tp2Mult: number; tp3Mult: number } {
+  return {
+    tp1Mult: tradeType === 'SWING' ? 2.0 : 1.20,
+    tp2Mult: tradeType === 'SWING' ? 3.5 : 2.0,
+    tp3Mult: tradeType === 'SWING' ? 5.0 : 3.0,
   };
 }
 
@@ -927,16 +1232,24 @@ export function evaluateVCMESniperAt(
       : (ema200Prev5 * 0.01);
     const slopeAtr = (ema200Val - ema200Prev5) / atr1h;
     const adxVal = ctx.adxSeries1h.adx[hIdx];
-    const regimeOkLong = adxVal > 20 && slopeAtr > 0.05;
+
+    // In day trading, avoid discarding early consolidations or gentle slopes:
+    const isSwing = ctx.style === 'swing';
+    const slopeThreshold = isSwing ? 0.05 : -0.01;
+    const adxThreshold = isSwing ? 20 : 18;
+    const regimeOkLong = adxVal >= adxThreshold && slopeAtr >= slopeThreshold;
 
     const isVwap1hOkLong = (!ctx.vwapReliable1h || !ctx.vwapReliable1h[hIdx]) ? true : ctx.closes1h[hIdx] > ctx.vwapSeries1h[hIdx];
+    const macdHistOkLong = isSwing
+      ? hist > 0 && (hist > prevHist || hist >= 0.02 * atr1h)
+      : (hist > prevHist || hist > 0);
+    const rsiMin = isSwing ? 50 : 45;
     return (
       regimeOkLong &&
       isVwap1hOkLong &&
       ctx.ema20_1h[hIdx] > ctx.ema50_1h[hIdx] &&
-      ctx.rsiSeries1h[hIdx] >= 50 && ctx.rsiSeries1h[hIdx] <= 70 &&
-      hist > 0 &&
-      hist > prevHist
+      ctx.rsiSeries1h[hIdx] >= rsiMin && ctx.rsiSeries1h[hIdx] <= 80 &&
+      macdHistOkLong
     );
   };
 
@@ -950,16 +1263,23 @@ export function evaluateVCMESniperAt(
       : (ema200Prev5 * 0.01);
     const slopeAtr = (ema200Val - ema200Prev5) / atr1h;
     const adxVal = ctx.adxSeries1h.adx[hIdx];
-    const regimeOkShort = adxVal > 20 && slopeAtr < -0.05;
+
+    const isSwing = ctx.style === 'swing';
+    const slopeThreshold = isSwing ? -0.05 : 0.01;
+    const adxThreshold = isSwing ? 20 : 18;
+    const regimeOkShort = adxVal >= adxThreshold && slopeAtr <= slopeThreshold;
 
     const isVwap1hOkShort = (!ctx.vwapReliable1h || !ctx.vwapReliable1h[hIdx]) ? true : ctx.closes1h[hIdx] < ctx.vwapSeries1h[hIdx];
+    const macdHistOkShort = isSwing
+      ? hist < 0 && (hist < prevHist || hist <= -0.02 * atr1h)
+      : (hist < prevHist || hist < 0);
+    const rsiMax = isSwing ? 50 : 55;
     return (
       regimeOkShort &&
       isVwap1hOkShort &&
       ctx.ema20_1h[hIdx] < ctx.ema50_1h[hIdx] &&
-      ctx.rsiSeries1h[hIdx] >= 30 && ctx.rsiSeries1h[hIdx] <= 50 &&
-      hist < 0 &&
-      hist < prevHist
+      ctx.rsiSeries1h[hIdx] >= 20 && ctx.rsiSeries1h[hIdx] <= rsiMax &&
+      macdHistOkShort
     );
   };
 
@@ -1044,13 +1364,13 @@ export function evaluateVCMESniperAt(
       const gateVWAP = k.close > vw;
       const gateBreakout = k.close > b.upper && prevK.close <= prevB.upper;
       const gateVol = rvolLocal >= 1.5;
-      const gateRSI = rsi > 50 && rsi < 75;
+      const gateRSI = rsi > 50 && rsi <= 82;
       return gateVWAP && gateBreakout && gateVol && gateRSI;
     } else {
       const gateVWAP = k.close < vw;
       const gateBreakout = k.close < b.lower && prevK.close >= prevB.lower;
       const gateVol = rvolLocal >= 1.8;
-      const gateRSI = rsi < 50 && rsi > 25;
+      const gateRSI = rsi < 50 && rsi >= 18;
       return gateVWAP && gateBreakout && gateVol && gateRSI;
     }
   };
@@ -1163,22 +1483,9 @@ export function evaluateVCMESniperAt(
     condBreakoutShort = squeezePrev && breakoutShortPrev && curr5m.close < orb.low;
   }
 
-  // Mean Reversion
-  const condMRLong = bias1D === 'NEUTRAL' &&
-                     curr5m.close < bb.lower &&
-                     rsi5m < 25 &&
-                     checkBullishDivergence(ctx.klines5m, ctx.rsiSeries5m, i, 10) &&
-                     curr5m.close > curr5m.open;
-
-  const condMRShort = bias1D === 'NEUTRAL' &&
-                      curr5m.close > bb.upper &&
-                      rsi5m > 75 &&
-                      checkBearishDivergence(ctx.klines5m, ctx.rsiSeries5m, i, 10) &&
-                      curr5m.close < curr5m.open;
-
   // 5. Candle Quality & Filters
   const minutesSinceOpen = (() => {
-    const isCrypto = ctx.symbol ? (ctx.symbol.endsWith('USDT') || ctx.symbol.endsWith('BTC')) : true;
+    const isCrypto = isCryptoAsset(ctx.symbol);
     if (isCrypto) return 60;
     let sessionStartIdx = i;
     const expectedStep = ctx.style === 'swing' ? 3600 : 300;
@@ -1220,7 +1527,11 @@ export function evaluateVCMESniperAt(
   const getContinuousConfidence = (dir: 'LONG' | 'SHORT') => {
     const isLong = dir === 'LONG';
     const volScore = 0.30 * Math.min(rvol / 2.0, 1.0);
-    const macroScore = 0.25 * (isLong ? (lastClose1d > lastEma200Ref ? 1 : 0) : (lastClose1d < lastEma200Ref ? 1 : 0));
+    const macroScore = 0.25 * (
+      isLong
+        ? (lastClose1d > lastEma200Ref ? 1.0 : (bias1D === 'NEUTRAL' && ctx.style !== 'swing' ? 0.5 : 0))
+        : (lastClose1d < lastEma200Ref ? 1.0 : (bias1D === 'NEUTRAL' && ctx.style !== 'swing' ? 0.5 : 0))
+    );
     const macdScore = 0.20 * (isLong ? (macdHist1h > 0 ? 1 : 0) : (macdHist1h < 0 ? 1 : 0));
     const distRatio = Math.abs(curr5m.close - ema21Val) / (atr5m || 1);
     const distScore = 0.15 * Math.max(0, 1.0 - Math.abs(distRatio - 0.5) / 1.0);
@@ -1261,7 +1572,7 @@ export function evaluateVCMESniperAt(
 
   // 7. Final Signal Determination
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  let mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
+  let mode: 'PULLBACK' | 'BREAKOUT' | 'NONE' = 'NONE';
   let triggerDetail = 'Sin disparo de gatillo';
 
   // 1D Macro Bias Gate:
@@ -1277,8 +1588,6 @@ export function evaluateVCMESniperAt(
 
   const triggerLong = isBiasCompatibleLong && (setupArmedLong && (condPullbackLong || condBreakoutLong)) && qualityLong;
   const triggerShort = isBiasCompatibleShort && (setupArmedShort && (condPullbackShort || condBreakoutShort)) && qualityShort;
-  const triggerMRLong = condMRLong && qualityLong;
-  const triggerMRShort = condMRShort && qualityShort;
 
   if (triggerLong) {
     signal = 'BUY';
@@ -1288,14 +1597,6 @@ export function evaluateVCMESniperAt(
     signal = 'SELL';
     mode = condPullbackShort ? 'PULLBACK' : 'BREAKOUT';
     triggerDetail = condPullbackShort ? 'Gatillo Pullback en 5m (Ruptura micro-mínimo)' : 'Gatillo Breakdown 5m (Ruptura ORB/Bollinger Squeeze)';
-  } else if (triggerMRLong) {
-    signal = 'BUY';
-    mode = 'MEAN_REVERSION';
-    triggerDetail = 'Gatillo Reversión a la Media (Sobreventa extrema BB + Divergencia RSI)';
-  } else if (triggerMRShort) {
-    signal = 'SELL';
-    mode = 'MEAN_REVERSION';
-    triggerDetail = 'Gatillo Reversión a la Media (Sobrecompra extrema BB + Divergencia RSI)';
   }
 
   const confidenceScore = signal === 'BUY' ? confidenceScoreLong : (signal === 'SELL' ? confidenceScoreShort : Math.max(confidenceScoreLong, confidenceScoreShort));
@@ -1309,12 +1610,12 @@ export function evaluateVCMESniperAt(
   }
 
   if (signal === 'NEUTRAL') {
-    const isCrypto = ctx.symbol ? (ctx.symbol.endsWith('USDT') || ctx.symbol.endsWith('BTC')) : true;
+    const minRequiredRvol = (setupArmedShort && !setupArmedLong) ? 1.8 : 1.5;
     if ((setupArmedLong && !isBiasCompatibleLong) || (setupArmedShort && !isBiasCompatibleShort)) {
       discardReason = 'regimeFilter';
     } else if (!setupArmedLong && !setupArmedShort) {
       discardReason = 'regimeFilter';
-    } else if (rvol < (isCrypto ? 1.5 : 1.2)) {
+    } else if (rvol < minRequiredRvol) {
       discardReason = 'volumeFilter';
     } else if (upperWickRatio(curr5m) > 0.35 || lowerWickRatio(curr5m) > 0.35 || candleBodyRatio(curr5m) < 0.3) {
       discardReason = 'candleAnatomy';
@@ -1343,16 +1644,14 @@ export function evaluateVCMESniperAt(
   const lookbackS = Math.max(0, i - (tradeType === 'SWING' ? 5 : 10));
   let swingLow = Infinity;
   let swingHigh = -Infinity;
-  for (let s = lookbackS; s < i; s++) {
+  for (let s = lookbackS; s <= i; s++) {
     if (ctx.klines5m[s].low < swingLow) swingLow = ctx.klines5m[s].low;
     if (ctx.klines5m[s].high > swingHigh) swingHigh = ctx.klines5m[s].high;
   }
 
   const atrMultLong = 1.5;
-  const atrMultShort = 1.8;
-  const tp1Mult = 2.0;
-  const tp2Mult = 3.5;
-  const tp3Mult = 5.0;
+  const atrMultShort = 1.5;
+  const { tp1Mult, tp2Mult, tp3Mult } = getVCMETargetMultipliers(tradeType);
 
   const chandelierLong = ctx.chandelierData.long[idx1h];
   const chandelierShort = ctx.chandelierData.short[idx1h];
@@ -1360,6 +1659,7 @@ export function evaluateVCMESniperAt(
   if (signal === 'BUY') {
     const slATR = entry - atrMultLong * atr5m;
     const slStruct = swingLow > 0 && swingLow < Infinity ? (swingLow - 0.20 * atr5m) : slATR;
+    // Floor at 1.5 ATR (slATR) to protect trade against friction and micro-noise, expandable up to 1.8 ATR (2.0 ATR in BREAKOUT)
     stopLoss = Math.min(slATR, slStruct);
     let risk = entry - stopLoss;
     if (risk <= 0) {
@@ -1370,19 +1670,29 @@ export function evaluateVCMESniperAt(
       discardReason = 'riskFilter';
       stopLoss = 0;
     } else {
-      const minRisk = 0.8 * atr5m;
-      const maxRisk = 1.8 * atr5m;
+      const minRisk = 1.5 * atr5m;
+      const maxRisk = (mode === 'BREAKOUT' ? 2.0 : (tradeType === 'SWING' ? 1.8 : 2.0)) * atr5m;
       if (risk < minRisk) {
         stopLoss = entry - minRisk;
         risk = minRisk;
       }
-      const riskPercent = entry > 0 ? risk / entry : 0;
       const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
+
+      // Clamping: If structural risk exceeds maxRisk, clamp stop to maxRisk provided it
+      // stays strictly at or below the trigger candle extreme buffer (curr5m.low - 0.15 * atr5m)
+      const triggerExtreme = curr5m.low - 0.15 * atr5m;
+      const clampedStop = entry - maxRisk;
+      if (risk > maxRisk && clampedStop <= triggerExtreme) {
+        stopLoss = clampedStop;
+        risk = maxRisk;
+      }
+
+      const riskPercent = entry > 0 ? risk / entry : 0;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         signal = 'NEUTRAL';
         mode = 'NONE';
         confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
+        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx ${formatSmartNumber(maxRisk / (atr5m || 1))} ATR)`;
         discardReason = 'riskFilter';
         stopLoss = 0;
       } else {
@@ -1396,6 +1706,7 @@ export function evaluateVCMESniperAt(
   } else if (signal === 'SELL') {
     const slATR = entry + atrMultShort * atr5m;
     const slStruct = swingHigh > -Infinity ? (swingHigh + 0.20 * atr5m) : slATR;
+    // Floor at 1.5 ATR (slATR) to protect trade against friction and micro-noise, expandable up to 1.8 ATR (2.0 ATR in BREAKOUT)
     stopLoss = Math.max(slATR, slStruct);
     let risk = stopLoss - entry;
     if (risk <= 0) {
@@ -1406,19 +1717,29 @@ export function evaluateVCMESniperAt(
       discardReason = 'riskFilter';
       stopLoss = 0;
     } else {
-      const minRisk = 0.8 * atr5m;
-      const maxRisk = 1.8 * atr5m;
+      const minRisk = 1.5 * atr5m;
+      const maxRisk = (mode === 'BREAKOUT' ? 2.0 : (tradeType === 'SWING' ? 1.8 : 2.0)) * atr5m;
       if (risk < minRisk) {
         stopLoss = entry + minRisk;
         risk = minRisk;
       }
-      const riskPercent = entry > 0 ? risk / entry : 0;
       const maxAllowedRisk = tradeType === 'SWING' ? 0.035 : 0.015;
+
+      // Clamping: If structural risk exceeds maxRisk, clamp stop to maxRisk provided it
+      // stays strictly at or above the trigger candle extreme buffer (curr5m.high + 0.15 * atr5m)
+      const triggerExtreme = curr5m.high + 0.15 * atr5m;
+      const clampedStop = entry + maxRisk;
+      if (risk > maxRisk && clampedStop >= triggerExtreme) {
+        stopLoss = clampedStop;
+        risk = maxRisk;
+      }
+
+      const riskPercent = entry > 0 ? risk / entry : 0;
       if (risk > maxRisk || riskPercent > maxAllowedRisk) {
         signal = 'NEUTRAL';
         mode = 'NONE';
         confidence = 'DESCARTAR';
-        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx 1.8 ATR)`;
+        triggerDetail = `Descartado por riesgo excesivo (${formatSmartNumber(riskPercent * 100)}% vs máx ${formatSmartNumber(maxAllowedRisk * 100)}% o ${formatSmartNumber(risk / (atr5m || 1))} ATR vs máx ${formatSmartNumber(maxRisk / (atr5m || 1))} ATR)`;
         discardReason = 'riskFilter';
         stopLoss = 0;
       } else {
@@ -1463,7 +1784,7 @@ export function evaluateVCMESniperAt(
     adx1H: isNaN(adxVal1h) ? 0 : Number(adxVal1h.toFixed(1)),
     momentum1H,
     triggerDetail,
-    rsi1H: Number(rsiVal1h.toFixed(1)),
+    rsi1H: (rsiVal1h !== undefined && !isNaN(rsiVal1h)) ? Number(rsiVal1h.toFixed(1)) : 50,
     macdHistDirection: macdHistDir,
     ema200_1D: lastEma200Ref,
     ema50_1H: ema50Val1h,
@@ -1541,15 +1862,17 @@ export function buildMultifractalMTFContext(
 
   const idx1hMap = new Int32Array(len5m).fill(-1);
   const idx1dMap = new Int32Array(len5m).fill(-1);
+  const triggerStepSec = 300;
 
   if (len5m > 0 && len1h > 0) {
     let hCursor = 0;
     for (let i = 0; i < len5m; i++) {
       const t = klines5m[i].time;
-      while (hCursor + 1 < len1h && (klines1h[hCursor + 1].time + 3600) <= t) {
+      const tClose = t + triggerStepSec;
+      while (hCursor + 1 < len1h && (klines1h[hCursor + 1].time + 3600) <= tClose) {
         hCursor++;
       }
-      if ((klines1h[hCursor].time + 3600) <= t) {
+      if ((klines1h[hCursor].time + 3600) <= tClose) {
         idx1hMap[i] = hCursor;
       }
     }
@@ -1559,10 +1882,11 @@ export function buildMultifractalMTFContext(
     let dCursor = 0;
     for (let i = 0; i < len5m; i++) {
       const t = klines5m[i].time;
-      while (dCursor + 1 < len1d && (klines1d[dCursor + 1].time + 86400) <= t) {
+      const tClose = t + triggerStepSec;
+      while (dCursor + 1 < len1d && (klines1d[dCursor + 1].time + 86400) <= tClose) {
         dCursor++;
       }
-      if ((klines1d[dCursor].time + 86400) <= t) {
+      if ((klines1d[dCursor].time + 86400) <= tClose) {
         idx1dMap[i] = dCursor;
       }
     }
@@ -1580,46 +1904,47 @@ export function evaluateMultifractalMTFAt(
   i: number,
   executionPrice?: number
 ): MultifractalMTFEvaluationResult {
+  const currCandle = (ctx.klines5m && i >= 0 && i < ctx.klines5m.length) ? ctx.klines5m[i] : undefined;
+  const triggerPrice = (executionPrice && executionPrice > 0) ? executionPrice : (currCandle ? currCandle.close : 0);
+
   const fallback: MultifractalMTFEvaluationResult = {
-    signal: 'NEUTRAL', strategy: 'NONE', stopLoss: 0, triggerPrice: 0,
+    signal: 'NEUTRAL', strategy: 'NONE', stopLoss: 0, triggerPrice,
     isCompressed1H: false, bias1D: 'NEUTRAL', activeVolumePercent5M: 0, volumeMultiplier5M: 0,
     andianGreen: 0, andianRed: 0, andianOrange: 0, volatilityWidth1H: 0, dreadBlitzMCD: 0,
     isOverbought5M: false, isOversold5M: false,
     reasoning: 'Datos insuficientes — se requieren al menos 20 velas de 5m'
   };
 
-  if (!ctx.klines5m || ctx.klines5m.length < 20 || i < 19 || i >= ctx.klines5m.length) {
+  if (!ctx.klines5m || ctx.klines5m.length < 20 || i < 19 || i >= ctx.klines5m.length || !currCandle) {
     return { ...fallback, discardReason: 'insufficientData' };
   }
 
   // 1. MACRO FILTER (1D - Andian)
-  let bias1D: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-  let lastAndian = { green: 0, red: 0, orange: 0, bias: 'NEUTRAL' as 'BULLISH' | 'BEARISH' | 'NEUTRAL' };
   const idx1d = ctx.idx1dMap[i];
-  if (idx1d >= 0 && idx1d < ctx.andianSeries.length) {
-    lastAndian = ctx.andianSeries[idx1d];
-    bias1D = lastAndian.bias;
-  } else if (ctx.andianSeries.length > 0 && i === ctx.klines5m.length - 1) {
-    lastAndian = ctx.andianSeries[ctx.andianSeries.length - 1];
-    bias1D = lastAndian.bias;
+  if (idx1d < 0 || idx1d >= ctx.andianSeries.length) {
+    return { ...fallback, reasoning: 'Datos 1D insuficientes o no alineados con la vela evaluada', discardReason: 'insufficientData' };
   }
+  const lastAndian = ctx.andianSeries[idx1d];
+  const bias1D = lastAndian.bias;
 
   // 2. CONTEXT FILTER (1H - Revolution Volatility Band Squeeze)
-  let isCompressed1H = false;
-  let current1HBand = { width: 0, midpoint: 0, upper: 0, lower: 0 };
   const idx1h = ctx.idx1hMap[i];
-  if (idx1h >= 0 && idx1h < ctx.volBands1H.length) {
-    const recent1H = ctx.volBands1H.slice(Math.max(0, idx1h - 3), idx1h + 1);
-    isCompressed1H = recent1H.some(b => b.isCompressed);
-    current1HBand = ctx.volBands1H[idx1h];
-  } else if (ctx.volBands1H.length > 0 && i === ctx.klines5m.length - 1) {
-    const recent1H = ctx.volBands1H.slice(-4);
-    isCompressed1H = recent1H.some(b => b.isCompressed);
-    current1HBand = ctx.volBands1H[ctx.volBands1H.length - 1];
+  if (idx1h < 0 || idx1h >= ctx.volBands1H.length) {
+    return {
+      ...fallback,
+      bias1D,
+      andianGreen: lastAndian.green,
+      andianRed: lastAndian.red,
+      andianOrange: lastAndian.orange,
+      reasoning: 'Datos 1H insuficientes o no alineados con la vela evaluada',
+      discardReason: 'insufficientData'
+    };
   }
+  const recent1H = ctx.volBands1H.slice(Math.max(0, idx1h - 3), idx1h + 1);
+  const isCompressed1H = recent1H.some(b => b.isCompressed);
+  const current1HBand = ctx.volBands1H[idx1h];
 
   // 3. TRIGGER CONDITIONS (5M)
-  const currCandle = ctx.klines5m[i];
   const prevCandle = i > 0 ? ctx.klines5m[i - 1] : currCandle;
   const currVolComp = (i < ctx.volComp5M.length) ? ctx.volComp5M[i] : { volumeMultiplier: 1, activeBuyPercent: 50, activeSellPercent: 50, isPassiveBuyAbsorption: false, isPassiveSellAbsorption: false };
   const curr5MBand = (i < ctx.volBands5M.length) ? ctx.volBands5M[i] : { upper: currCandle.high, lower: currCandle.low, midpoint: currCandle.close, width: 0, isCompressed: false };
@@ -1627,7 +1952,7 @@ export function evaluateMultifractalMTFAt(
   const prevDread = (i > 0 && (i - 1) < ctx.dreadBlitz5M.length) ? ctx.dreadBlitz5M[i - 1] : currDread;
 
   const isNyseOpening = isNyseOpeningWindow(currCandle.time, ctx.symbol);
-  const minVolMultiplier = isNyseOpening ? 2.5 : 1.5;
+  const minVolMultiplier = isNyseOpening ? 1.8 : 1.5;
 
   let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
   let strategy: 'BREAKOUT_EXPANSION' | 'MEAN_REVERSION' | 'NONE' = 'NONE';
@@ -1635,12 +1960,15 @@ export function evaluateMultifractalMTFAt(
   let reasoning = '';
 
   // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN (LONG)
+  const isBreakoutBiasLong = bias1D === 'BULLISH' || (bias1D === 'NEUTRAL' && isCompressed1H);
+  const isBreakoutBiasShort = bias1D === 'BEARISH' || (bias1D === 'NEUTRAL' && isCompressed1H);
+
   if (
-    bias1D === 'BULLISH' &&
+    isBreakoutBiasLong &&
     isCompressed1H &&
     currCandle.close > curr5MBand.upper &&
     currVolComp.volumeMultiplier >= minVolMultiplier &&
-    currVolComp.activeBuyPercent >= 65
+    currVolComp.activeBuyPercent >= 58
   ) {
     signal = 'BUY';
     strategy = 'BREAKOUT_EXPANSION';
@@ -1649,11 +1977,11 @@ export function evaluateMultifractalMTFAt(
   }
   // ESTRATEGIA 1: RUPTURA DE RANGO CON EXPANSIÓN (SHORT)
   else if (
-    bias1D === 'BEARISH' &&
+    isBreakoutBiasShort &&
     isCompressed1H &&
     currCandle.close < curr5MBand.lower &&
     currVolComp.volumeMultiplier >= minVolMultiplier &&
-    currVolComp.activeSellPercent >= 65
+    currVolComp.activeSellPercent >= 58
   ) {
     signal = 'SELL';
     strategy = 'BREAKOUT_EXPANSION';
@@ -1696,8 +2024,6 @@ export function evaluateMultifractalMTFAt(
   const minRisk = 0.8 * atr5m;
   const maxRisk = 2.0 * atr5m;
   const maxAllowedRiskPct = 0.025; // 2.5%
-
-  const triggerPrice = (executionPrice && executionPrice > 0) ? executionPrice : currCandle.close;
 
   let discardReason: keyof DiscardBreakdown | undefined;
 
@@ -1764,3 +2090,406 @@ export function evaluateMultifractalMTFAt(
     discardReason
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. MACD FAILURE & LIQUIDITY SWEEP (MFLS) ENGINE (Signal 6)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface MFLSContext {
+  klines5m: Kline[];
+  symbol: string;
+  closes: number[];
+  atrSeries: number[];
+  macdData: MACDSeriesData;
+  rsiSeries: number[];
+  volSmaSeries: number[];
+  pivots: FractalPivotsSeries;
+  isCrypto: boolean;
+}
+
+export interface MFLSEvaluationResult {
+  signal: 'BUY' | 'SELL' | 'NEUTRAL';
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  riskRewardRatio: number;
+  triggerPrice: number;
+  sweepPrice: number;
+  pivotReference: number;
+  penetrationPct: number;
+  isReclaim: boolean;
+  macdDivergence: boolean;
+  rsiDivergence: boolean;
+  hasImbalance: boolean;
+  setupSide: 'BUY' | 'SELL' | null;
+  reasoning: string;
+  discardReason?: keyof DiscardBreakdown;
+}
+
+export function buildMFLSContext(
+  klines5m: Kline[],
+  symbolOrIsCrypto: string | boolean = 'ASSET'
+): MFLSContext {
+  const isCrypto = typeof symbolOrIsCrypto === 'boolean' ? symbolOrIsCrypto : isCryptoAsset(symbolOrIsCrypto);
+  const symbol = typeof symbolOrIsCrypto === 'string' ? symbolOrIsCrypto : (isCrypto ? 'BTCUSDT' : 'AAPL');
+  const len = klines5m ? klines5m.length : 0;
+
+  if (len === 0) {
+    return {
+      klines5m: [],
+      symbol,
+      closes: [],
+      atrSeries: [],
+      macdData: { macd: [], signal: [], histogram: [], signals: [] },
+      rsiSeries: [],
+      volSmaSeries: [],
+      pivots: { swingLows: [], swingLowIndices: [], swingHighs: [], swingHighIndices: [] },
+      isCrypto
+    };
+  }
+
+  const closes = klines5m.map(k => k.close);
+  const atrSeries = calculateATRSeries(klines5m, 14);
+  const macdData = calculateMACDSeries(closes);
+  const rsiSeries = calculateRSISeries(closes, 14);
+
+  const volSmaSeries = new Array(len).fill(0);
+  let volSum = 0;
+  for (let idx = 0; idx < Math.min(20, len); idx++) {
+    volSum += klines5m[idx].volume;
+  }
+  if (len >= 20) volSmaSeries[19] = volSum / 20;
+  for (let idx = 20; idx < len; idx++) {
+    volSmaSeries[idx] = volSum / 20;
+    volSum = volSum - klines5m[idx - 20].volume + klines5m[idx].volume;
+  }
+
+  const pivots = calculateFractalPivotsSeries(klines5m, 20);
+
+  return {
+    klines5m,
+    symbol,
+    closes,
+    atrSeries,
+    macdData,
+    rsiSeries,
+    volSmaSeries,
+    pivots,
+    isCrypto
+  };
+}
+
+export function evaluateMFLSAt(
+  ctx: MFLSContext,
+  i: number,
+  executionPrice?: number
+): MFLSEvaluationResult {
+  const currCandle = (ctx.klines5m && i >= 0 && i < ctx.klines5m.length) ? ctx.klines5m[i] : undefined;
+  const triggerPrice = (executionPrice && executionPrice > 0) ? executionPrice : (currCandle ? currCandle.close : 0);
+
+  const fallback: MFLSEvaluationResult = {
+    signal: 'NEUTRAL',
+    setupSide: null,
+    stopLoss: 0,
+    takeProfit1: 0,
+    takeProfit2: 0,
+    riskRewardRatio: 0,
+    triggerPrice,
+    sweepPrice: 0,
+    pivotReference: 0,
+    penetrationPct: 0,
+    isReclaim: false,
+    macdDivergence: false,
+    rsiDivergence: false,
+    hasImbalance: false,
+    reasoning: 'Datos insuficientes para evaluar MFLS',
+    discardReason: 'insufficientData'
+  };
+
+  if (!ctx.klines5m || ctx.klines5m.length < 25 || i < 20 || i >= ctx.klines5m.length || !currCandle) {
+    return fallback;
+  }
+
+  // 1. Session Filter (Equities only: 9:45 - 15:30 EST)
+  if (!ctx.isCrypto) {
+    const executionMs = currCandle.time > 1e11 ? currCandle.time : (currCandle.time + 300) * 1000;
+    if (!isMFLSSessionWindow(executionMs)) {
+      return { ...fallback, reasoning: 'Descartado: Fuera del horario de sesión MFLS (09:45–15:30 EST)', discardReason: 'sessionGap' };
+    }
+  }
+
+  // 2. Relative Volume & News Spike Filter
+  // Veto extreme uncontrolled spikes (RVOL >= 8.0x). Climax absorption (6.0x-8.0x) is evaluated directionally per side.
+  const volSma = (i < ctx.volSmaSeries.length && ctx.volSmaSeries[i] > 0) ? ctx.volSmaSeries[i] : 1;
+  const rvol = volSma > 0 ? (currCandle.volume / volSma) : 1;
+  if (rvol >= 8.0) {
+    return { ...fallback, reasoning: `Descartado: Volumen anómalo de noticias institucionales (RVOL ${rvol.toFixed(1)}x)`, discardReason: 'volumeFilter' };
+  }
+
+  const atr = (i < ctx.atrSeries.length && !isNaN(ctx.atrSeries[i]) && ctx.atrSeries[i] > 0)
+    ? ctx.atrSeries[i]
+    : (currCandle.close * 0.005);
+
+  const prevSwingLow = ctx.pivots.swingLows[i];
+  const prevSwingLowIdx = ctx.pivots.swingLowIndices[i];
+  const prevSwingHigh = ctx.pivots.swingHighs[i];
+  const prevSwingHighIdx = ctx.pivots.swingHighIndices[i];
+
+  // Sweep penetration bound strictly driven by ATR volatility (1.8x ATR)
+  const maxSweepDist = 1.8 * atr;
+
+  let signal: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  let setupSide: 'BUY' | 'SELL' | null = null;
+  let stopLoss = 0;
+  let takeProfit1 = 0;
+  let takeProfit2 = 0;
+  let sweepPrice = 0;
+  let pivotReference = 0;
+  let penetrationPct = 0;
+  let isReclaim = false;
+  let macdDivergence = false;
+  let rsiDivergence = false;
+  let hasImbalance = false;
+  let reasoning = '';
+  let discardReason: keyof DiscardBreakdown | undefined;
+
+  // -------------------------------------------------------------
+  // EVALUAR LADO LARGO (BUY - BARRIDO DE SOPORTE + RECLAIM)
+  // -------------------------------------------------------------
+  if (prevSwingLow !== null && prevSwingLowIdx !== null && prevSwingLowIdx < i) {
+    const sweepDepth = prevSwingLow - currCandle.low;
+    const isSweep = currCandle.low < prevSwingLow && sweepDepth > 0 && sweepDepth <= maxSweepDist;
+    const isReclaimClose = currCandle.close > prevSwingLow;
+
+    if (isSweep && isReclaimClose) {
+      setupSide = 'BUY';
+      sweepPrice = currCandle.low;
+      pivotReference = prevSwingLow;
+      penetrationPct = (sweepDepth / prevSwingLow) * 100;
+      isReclaim = true;
+
+      // Guard against invalidation by execution/live price (symmetrical without premature return)
+      let buyInvalidated = false;
+      if (triggerPrice < prevSwingLow || triggerPrice <= currCandle.low) {
+        buyInvalidated = true;
+        discardReason = 'riskFilter';
+        reasoning = `Descartado: Reclaim invalidado por precio (${formatSmartPrice(triggerPrice)} < soporte ${formatSmartPrice(prevSwingLow)})`;
+      }
+      const maxChasingDist = Math.max(1.2 * atr, Math.min(1.8 * atr, 0.015 * triggerPrice));
+      if (!buyInvalidated && triggerPrice > prevSwingLow + maxChasingDist) {
+        buyInvalidated = true;
+        discardReason = 'riskFilter';
+        reasoning = 'Descartado: Precio en vivo escapado de la zona de soporte (deslizamiento excesivo)';
+      }
+
+      if (!buyInvalidated) {
+        // Inefficiency / Imbalance check in prior 4 bars: requires genuine expansion displacement in i-4 to i-1
+        let wideBearBars = 0;
+        let maxPriorHigh = -Infinity;
+        let minPriorLow = Infinity;
+        const lookStart = Math.max(0, i - 4);
+        for (let kIdx = lookStart; kIdx < i; kIdx++) {
+          const k = ctx.klines5m[kIdx];
+          if (k.close < k.open && candleBodyRatio(k) >= 0.45) wideBearBars++;
+          if (k.high > maxPriorHigh) maxPriorHigh = k.high;
+          if (k.low < minPriorLow) minPriorLow = k.low;
+        }
+        const priorDrop = (maxPriorHigh > -Infinity && minPriorLow < Infinity) ? (maxPriorHigh - minPriorLow) : 0;
+        const priceDropAtr = priorDrop / atr;
+        hasImbalance = wideBearBars >= 2 || priceDropAtr >= 1.6;
+
+        // MACD Failure: strictly evaluated on the MACD line itself (curling up + higher low vs pivot bar)
+        const currMacd = ctx.macdData.macd[i];
+        const prevMacd = ctx.macdData.macd[i - 1];
+        const pivotMacd = ctx.macdData.macd[prevSwingLowIdx];
+        const macdCurlingUp = currMacd > prevMacd;
+        const macdHigherLow = currMacd > pivotMacd;
+        macdDivergence = macdCurlingUp && macdHigherLow;
+
+        // RSI Divergence: RSI at current bar > RSI at pivot low bar
+        const currRsi = ctx.rsiSeries[i];
+        const pivotRsi = ctx.rsiSeries[prevSwingLowIdx];
+        rsiDivergence = currRsi > pivotRsi;
+
+        // Rejection wick confirmation (lower wick >= 25% of candle range, or >= 40% if RVOL >= 6.0)
+        const range = currCandle.high - currCandle.low;
+        const lowerWick = Math.min(currCandle.open, currCandle.close) - currCandle.low;
+        const lowerWickRatio = range > 0 ? (lowerWick / range) : 1;
+        const minWickRequired = rvol >= 6.0 ? 0.40 : 0.25;
+        const hasRejectionWick = lowerWickRatio >= minWickRequired;
+
+        if (rvol >= 6.0 && !hasRejectionWick) {
+          buyInvalidated = true;
+          discardReason = 'volumeFilter';
+          reasoning = `Descartado: Volumen anómalo (RVOL ${rvol.toFixed(1)}x) sin absorción compradora suficiente (mecha inf ${(lowerWickRatio * 100).toFixed(0)}% < 40%)`;
+        } else if (!hasRejectionWick) {
+          buyInvalidated = true;
+          discardReason = 'riskFilter';
+          reasoning = `Descartado: Mecha de rechazo inferior insuficiente (${(lowerWickRatio * 100).toFixed(0)}% < 25%)`;
+        }
+
+        // Strict gating: hasImbalance AND macdDivergence AND hasRejectionWick
+        if (!buyInvalidated && hasImbalance && macdDivergence && hasRejectionWick) {
+          signal = 'BUY';
+          
+          // Structural Stop Loss: 0.8 ATR beyond sweep price, floored at 0.40% (native equity floor)
+          const rawSL = sweepPrice - 0.8 * atr;
+          const minRiskDist = Math.max(0.8 * atr, triggerPrice * 0.0040);
+          stopLoss = Math.min(rawSL, triggerPrice - minRiskDist);
+          const risk = triggerPrice - stopLoss;
+
+          takeProfit1 = triggerPrice + 1.75 * risk;
+          takeProfit2 = triggerPrice + 3.0 * risk;
+
+          const divText = rsiDivergence ? 'confluencia de fallo de MACD y divergencia RSI' : 'fallo de MACD confirmado';
+          reasoning = `MFLS Compra: Barrido de soporte ($${formatSmartPrice(prevSwingLow)}) con penetración ${penetrationPct.toFixed(2)}%, reclaim al cierre ($${formatSmartPrice(currCandle.close)}), ${divText}.`;
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // EVALUAR LADO CORTO (SELL - BARRIDO DE RESISTENCIA + RECLAIM)
+  // -------------------------------------------------------------
+  if (signal === 'NEUTRAL' && prevSwingHigh !== null && prevSwingHighIdx !== null && prevSwingHighIdx < i) {
+    const sweepDepth = currCandle.high - prevSwingHigh;
+    const isSweep = currCandle.high > prevSwingHigh && sweepDepth > 0 && sweepDepth <= maxSweepDist;
+    const isReclaimClose = currCandle.close < prevSwingHigh;
+
+    if (isSweep && isReclaimClose) {
+      // Prior BUY evaluation was invalidated or didn't trigger, but now we have a valid SELL sweep & reclaim candidate
+      discardReason = undefined;
+      reasoning = '';
+      setupSide = 'SELL';
+      sweepPrice = currCandle.high;
+      pivotReference = prevSwingHigh;
+      penetrationPct = (sweepDepth / prevSwingHigh) * 100;
+      isReclaim = true;
+
+      let sellInvalidated = false;
+      if (triggerPrice > prevSwingHigh || triggerPrice >= currCandle.high) {
+        sellInvalidated = true;
+        discardReason = 'riskFilter';
+        reasoning = `Descartado: Reclaim bajista invalidado por precio (${formatSmartPrice(triggerPrice)} > resistencia ${formatSmartPrice(prevSwingHigh)})`;
+      }
+      const maxChasingDist = Math.max(1.2 * atr, Math.min(1.8 * atr, 0.015 * triggerPrice));
+      if (!sellInvalidated && triggerPrice < prevSwingHigh - maxChasingDist) {
+        sellInvalidated = true;
+        discardReason = 'riskFilter';
+        reasoning = 'Descartado: Precio en vivo escapado de la zona de resistencia (deslizamiento excesivo)';
+      }
+
+      if (!sellInvalidated) {
+        let wideBullBars = 0;
+        let maxPriorHigh = -Infinity;
+        let minPriorLow = Infinity;
+        const lookStart = Math.max(0, i - 4);
+        for (let kIdx = lookStart; kIdx < i; kIdx++) {
+          const k = ctx.klines5m[kIdx];
+          if (k.close > k.open && candleBodyRatio(k) >= 0.45) wideBullBars++;
+          if (k.high > maxPriorHigh) maxPriorHigh = k.high;
+          if (k.low < minPriorLow) minPriorLow = k.low;
+        }
+        const priorRally = (maxPriorHigh > -Infinity && minPriorLow < Infinity) ? (maxPriorHigh - minPriorLow) : 0;
+        const priceRallyAtr = priorRally / atr;
+        hasImbalance = wideBullBars >= 2 || priceRallyAtr >= 1.6;
+
+        const currMacd = ctx.macdData.macd[i];
+        const prevMacd = ctx.macdData.macd[i - 1];
+        const pivotMacd = ctx.macdData.macd[prevSwingHighIdx];
+        const macdCurlingDown = currMacd < prevMacd;
+        const macdLowerHigh = currMacd < pivotMacd;
+        macdDivergence = macdCurlingDown && macdLowerHigh;
+
+        const currRsi = ctx.rsiSeries[i];
+        const pivotRsi = ctx.rsiSeries[prevSwingHighIdx];
+        rsiDivergence = currRsi < pivotRsi;
+
+        const range = currCandle.high - currCandle.low;
+        const upperWick = currCandle.high - Math.max(currCandle.open, currCandle.close);
+        const upperWickRatio = range > 0 ? (upperWick / range) : 1;
+        const minWickRequired = rvol >= 6.0 ? 0.40 : 0.25;
+        const hasRejectionWick = upperWickRatio >= minWickRequired;
+
+        if (rvol >= 6.0 && !hasRejectionWick) {
+          sellInvalidated = true;
+          discardReason = 'volumeFilter';
+          reasoning = `Descartado: Volumen anómalo (RVOL ${rvol.toFixed(1)}x) sin absorción vendedora suficiente (mecha sup ${(upperWickRatio * 100).toFixed(0)}% < 40%)`;
+        } else if (!hasRejectionWick) {
+          sellInvalidated = true;
+          discardReason = 'riskFilter';
+          reasoning = `Descartado: Mecha de rechazo superior insuficiente (${(upperWickRatio * 100).toFixed(0)}% < 25%)`;
+        }
+
+        if (!sellInvalidated && hasImbalance && macdDivergence && hasRejectionWick) {
+          signal = 'SELL';
+
+          const rawSL = sweepPrice + 0.8 * atr;
+          const minRiskDist = Math.max(0.8 * atr, triggerPrice * 0.0040);
+          stopLoss = Math.max(rawSL, triggerPrice + minRiskDist);
+          const risk = stopLoss - triggerPrice;
+
+          takeProfit1 = triggerPrice - 1.75 * risk;
+          takeProfit2 = triggerPrice - 3.0 * risk;
+
+          const divText = rsiDivergence ? 'confluencia de fallo de MACD y divergencia RSI' : 'fallo de MACD confirmado';
+          reasoning = `MFLS Venta: Barrido de resistencia ($${formatSmartPrice(prevSwingHigh)}) con penetración ${penetrationPct.toFixed(2)}%, reclaim bajista al cierre ($${formatSmartPrice(currCandle.close)}), ${divText}.`;
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // VALIDACIÓN DE RIESGO FINAL Y LÍMITES
+  // -------------------------------------------------------------
+  if (signal !== 'NEUTRAL') {
+    discardReason = undefined;
+    const risk = Math.abs(triggerPrice - stopLoss);
+    const maxRiskPct = 0.025; // 2.5% max risk
+    const riskPct = triggerPrice > 0 ? (risk / triggerPrice) : 0;
+    const minRiskDist = Math.max(0.8 * atr, triggerPrice * 0.0040);
+
+    if (riskPct > maxRiskPct) {
+      signal = 'NEUTRAL';
+      discardReason = 'riskFilter';
+      reasoning = `Descartado: Riesgo excesivo (${(riskPct * 100).toFixed(2)}% vs máx 2.50%).`;
+    } else if (risk > 2.5 * atr && risk > minRiskDist) {
+      signal = 'NEUTRAL';
+      discardReason = 'riskFilter';
+      reasoning = `Descartado: Barrido estructural demasiado profundo (stop ${risk.toFixed(2)} > 2.5x ATR ${atr.toFixed(2)}).`;
+    }
+  } else {
+    discardReason = discardReason || 'noSetup';
+    reasoning = reasoning || 'Sin setup de barrido con reclaim y divergencia en la vela actual';
+  }
+
+  // Reset levels if signal degraded to NEUTRAL
+  if (signal === 'NEUTRAL') {
+    stopLoss = 0;
+    takeProfit1 = 0;
+    takeProfit2 = 0;
+  }
+
+  const risk = Math.abs(triggerPrice - stopLoss);
+  const riskRewardRatio = risk > 0 ? Number((Math.abs(takeProfit1 - triggerPrice) / risk).toFixed(2)) : 0;
+
+  return {
+    signal,
+    setupSide,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    riskRewardRatio,
+    triggerPrice,
+    sweepPrice,
+    pivotReference,
+    penetrationPct: Number(penetrationPct.toFixed(2)),
+    isReclaim,
+    macdDivergence,
+    rsiDivergence,
+    hasImbalance,
+    reasoning,
+    discardReason
+  };
+}
+

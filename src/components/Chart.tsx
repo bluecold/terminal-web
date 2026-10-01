@@ -1,16 +1,19 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { createChart, ColorType, LineStyle } from 'lightweight-charts';
+import { createChart, ColorType, LineStyle, TickMarkType } from 'lightweight-charts';
 import type { IChartApi, ISeriesApi, IPriceLine, Time } from 'lightweight-charts';
 import type { Kline } from '../services/api';
 import { calculateBollingerBandsSeries } from '../utils/indicators';
 import type { BollingerBandsSeriesResult } from '../utils/indicators';
 import { formatSmartPrice } from '../utils/formatters';
+import { isChartDataIncremental, formatLocalTickMark } from '../utils/chartHelpers';
+import { isValidTradeGeometry } from '../utils/tradeLevels';
 
 export interface AlertOverlay {
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
   takeProfit2?: number;
+  takeProfit3?: number;
   signal: string;
 }
 
@@ -47,6 +50,8 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
   const bbMapRef = useRef<Map<number, BollingerBandsSeriesResult>>(new Map());
   const showBBRef = useRef(showBB);
   const lastSymbolRef = useRef<string>(symbol);
+  const lastIntervalRef = useRef<string>(interval);
+  const lastShowBBRef = useRef<boolean>(showBB);
   const intervalRef = useRef(interval);
 
   useEffect(() => {
@@ -143,6 +148,7 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: Time, tickMarkType: TickMarkType, locale: string) => formatLocalTickMark(time, tickMarkType, locale),
       },
       crosshair: {
         mode: 0,
@@ -276,6 +282,16 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
         container.removeEventListener('mouseleave', handleMouseLeave);
       }
       chart.remove();
+      chartRef.current = null;
+      candlestickSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      upperSeriesRef.current = null;
+      middleSeriesRef.current = null;
+      lowerSeriesRef.current = null;
+      dataRef.current = [];
+      lastSymbolRef.current = '';
+      lastIntervalRef.current = '';
+      lastShowBBRef.current = false;
     };
   }, [updateLegendValues]);
 
@@ -291,53 +307,111 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       lowerSeriesRef.current
     ) {
       const symbolChanged = lastSymbolRef.current !== symbol;
-      if (symbolChanged) {
-        lastSymbolRef.current = symbol;
-        if (chartRef.current) {
-          chartRef.current.priceScale('right').applyOptions({
-            autoScale: true,
+      const intervalChanged = lastIntervalRef.current !== interval;
+      const bbToggled = lastShowBBRef.current !== showBB;
+      const prevData = dataRef.current;
+
+      lastSymbolRef.current = symbol;
+      lastIntervalRef.current = interval;
+      lastShowBBRef.current = showBB;
+
+      if (symbolChanged && chartRef.current) {
+        chartRef.current.priceScale('right').applyOptions({
+          autoScale: true,
+        });
+      }
+
+      // Check if this is an incremental update (same symbol, same interval, same BB state, valid incremental candle progression)
+      const isIncremental =
+        !symbolChanged &&
+        !intervalChanged &&
+        !bbToggled &&
+        isChartDataIncremental(prevData, data);
+
+      if (isIncremental) {
+        const isNewBar = prevData && data.length === prevData.length + 1;
+
+        // If a new candle opened, first finalize the closed previous candle
+        if (isNewBar && data.length >= 2) {
+          const finalizedCandle = data[data.length - 2];
+          candlestickSeriesRef.current.update(finalizedCandle as unknown as Parameters<ISeriesApi<'Candlestick'>['update']>[0]);
+          volumeSeriesRef.current.update({
+            time: finalizedCandle.time as Time,
+            value: finalizedCandle.volume,
+            color: finalizedCandle.close >= finalizedCandle.open ? 'rgba(0, 255, 0, 0.15)' : 'rgba(255, 0, 0, 0.15)'
           });
+        }
+
+        // Update or append the latest forming candle
+        const latestCandle = data[data.length - 1];
+        candlestickSeriesRef.current.update(latestCandle as unknown as Parameters<ISeriesApi<'Candlestick'>['update']>[0]);
+        volumeSeriesRef.current.update({
+          time: latestCandle.time as Time,
+          value: latestCandle.volume,
+          color: latestCandle.close >= latestCandle.open ? 'rgba(0, 255, 0, 0.15)' : 'rgba(255, 0, 0, 0.15)'
+        });
+
+        if (showBB && data.length >= 20) {
+          const tailSlice = data.slice(-30);
+          const tailBB = calculateBollingerBandsSeries(tailSlice);
+          if (tailBB.length > 0) {
+            if (isNewBar && tailBB.length >= 2 && data.length >= 2) {
+              const prevCandleTime = data[data.length - 2].time;
+              const prevBB = tailBB[tailBB.length - 2];
+              bbMapRef.current.set(prevCandleTime as number, prevBB);
+              upperSeriesRef.current.update({ time: prevCandleTime as Time, value: prevBB.upper });
+              middleSeriesRef.current.update({ time: prevCandleTime as Time, value: prevBB.middle });
+              lowerSeriesRef.current.update({ time: prevCandleTime as Time, value: prevBB.lower });
+            }
+
+            const latestBB = tailBB[tailBB.length - 1];
+            bbMapRef.current.set(latestCandle.time as number, latestBB);
+            upperSeriesRef.current.update({ time: latestCandle.time as Time, value: latestBB.upper });
+            middleSeriesRef.current.update({ time: latestCandle.time as Time, value: latestBB.middle });
+            lowerSeriesRef.current.update({ time: latestCandle.time as Time, value: latestBB.lower });
+          }
+        }
+      } else {
+        candlestickSeriesRef.current.setData(data as unknown as Parameters<ISeriesApi<'Candlestick'>['setData']>[0]);
+        volumeSeriesRef.current.setData(data.map(k => ({
+          time: k.time as Time,
+          value: k.volume,
+          color: k.close >= k.open ? 'rgba(0, 255, 0, 0.15)' : 'rgba(255, 0, 0, 0.15)'
+        })));
+
+        const newBbMap = new Map<number, BollingerBandsSeriesResult>();
+        if (showBB) {
+          const bbData = calculateBollingerBandsSeries(data);
+          bbData.forEach(d => {
+            newBbMap.set(d.time as number, d);
+          });
+          upperSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.upper })));
+          middleSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.middle })));
+          lowerSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.lower })));
+        } else {
+          upperSeriesRef.current.setData([]);
+          middleSeriesRef.current.setData([]);
+          lowerSeriesRef.current.setData([]);
+        }
+
+        bbMapRef.current = newBbMap;
+
+        if ((symbolChanged || intervalChanged) && chartRef.current) {
+          chartRef.current.timeScale().fitContent();
         }
       }
 
-      candlestickSeriesRef.current.setData(data as unknown as Parameters<ISeriesApi<'Candlestick'>['setData']>[0]);
-      volumeSeriesRef.current.setData(data.map(k => ({
-        time: k.time as Time,
-        value: k.volume,
-        color: k.close >= k.open ? 'rgba(0, 255, 0, 0.15)' : 'rgba(255, 0, 0, 0.15)'
-      })));
-
-      const newBbMap = new Map<number, BollingerBandsSeriesResult>();
-      if (showBB) {
-        const bbData = calculateBollingerBandsSeries(data);
-        bbData.forEach(d => {
-          newBbMap.set(d.time as number, d);
-        });
-        upperSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.upper })));
-        middleSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.middle })));
-        lowerSeriesRef.current.setData(bbData.map(d => ({ time: d.time as Time, value: d.lower })));
-      } else {
-        upperSeriesRef.current.setData([]);
-        middleSeriesRef.current.setData([]);
-        lowerSeriesRef.current.setData([]);
-      }
-      
-      bbMapRef.current = newBbMap;
       dataRef.current = data;
-
-      if (symbolChanged && chartRef.current) {
-        chartRef.current.timeScale().fitContent();
-      }
 
       // Update legend with latest candle's values after DOM updates
       const latestCandle = data[data.length - 1];
-      const latestBB = showBB ? newBbMap.get(latestCandle.time as number) || null : null;
+      const latestBB = showBB ? bbMapRef.current.get(latestCandle.time as number) || null : null;
       const timer = setTimeout(() => {
         updateLegendValues(latestCandle, latestBB);
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [data, showBB, symbol, updateLegendValues]);
+  }, [data, showBB, symbol, interval, updateLegendValues]);
 
   // 4. Render Active Alert Overlay Price Lines (Entry, SL, TP1, TP2)
   useEffect(() => {
@@ -354,12 +428,12 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
     });
     priceLinesRef.current = [];
 
-    if (!activeAlertOverlay) return;
+    if (!activeAlertOverlay || !isValidTradeGeometry(activeAlertOverlay.signal, activeAlertOverlay)) return;
 
-    const { entryPrice, stopLoss, takeProfit1, takeProfit2, signal } = activeAlertOverlay;
+    const { entryPrice, stopLoss, takeProfit1, takeProfit2, takeProfit3, signal } = activeAlertOverlay;
     const isBuy = signal.includes('BUY');
     const riskDist = Math.abs(entryPrice - stopLoss);
-    const hasDistinctTP2 = takeProfit2 !== undefined && Math.abs(takeProfit2 - takeProfit1) > 0.000001;
+    const hasDistinctTP2 = takeProfit2 !== undefined && takeProfit2 !== takeProfit1;
     const r1 = riskDist > 0 ? Math.abs(takeProfit1 - entryPrice) / riskDist : 1.5;
 
     const entryLine = series.createPriceLine({
@@ -402,6 +476,14 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
         title: `TP2 (+${r2.toFixed(1)}R)`,
       });
       lines.push(tp2Line);
+    }
+
+    if (takeProfit3 !== undefined) {
+      lines.push(series.createPriceLine({
+        price: takeProfit3, color: '#047857', lineWidth: 2,
+        lineStyle: LineStyle.Dotted, axisLabelVisible: true,
+        title: `TP3 (+${(Math.abs(takeProfit3 - entryPrice) / riskDist).toFixed(1)}R)`,
+      }));
     }
 
     priceLinesRef.current = lines;

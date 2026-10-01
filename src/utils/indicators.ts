@@ -1,4 +1,6 @@
 import type { Kline } from '../services/api';
+import { getKlineSnapshotTime, stampKlineSnapshot } from '../services/marketDataSnapshot';
+import { getKlinesFingerprint } from './klineFingerprint';
 import {
   buildConfluenciaContext,
   evaluateConfluenciaAt,
@@ -10,6 +12,8 @@ import {
   evaluateVCMESniperAt,
   buildMultifractalMTFContext,
   evaluateMultifractalMTFAt,
+  buildMFLSContext,
+  evaluateMFLSAt,
   type ConfluenciaContext,
   type ConfluenciaEvaluationResult,
   type ScoringContext,
@@ -18,6 +22,8 @@ import {
   type VCMESniperEvaluationResult,
   type MultifractalMTFContext,
   type MultifractalMTFEvaluationResult,
+  type MFLSContext,
+  type MFLSEvaluationResult,
   DEFAULT_SCORING_THRESHOLD_RATIO
 } from './strategyEvaluators';
 
@@ -33,6 +39,8 @@ export {
   evaluateVCMESniperAt,
   buildMultifractalMTFContext,
   evaluateMultifractalMTFAt,
+  buildMFLSContext,
+  evaluateMFLSAt,
   type ConfluenciaContext,
   type ConfluenciaEvaluationResult,
   type ScoringContext,
@@ -40,7 +48,9 @@ export {
   type VCMESniperContext,
   type VCMESniperEvaluationResult,
   type MultifractalMTFContext,
-  type MultifractalMTFEvaluationResult
+  type MultifractalMTFEvaluationResult,
+  type MFLSContext,
+  type MFLSEvaluationResult
 };
 
 export interface IndicatorResult {
@@ -454,8 +464,12 @@ export function lowerWickRatio(c: Kline): number {
   return (Math.min(c.open, c.close) - c.low) / (c.high - c.low);
 }
 
-export function calculateExperimentalSignal(klines: Kline[], interval: string = '1h'): ConfluenciaEvaluationResult {
-  const ctx = buildConfluenciaContext(klines, interval);
+export function calculateExperimentalSignal(
+  klines: Kline[],
+  interval: string = '1h',
+  symbolOrIsCrypto?: string | boolean
+): ConfluenciaEvaluationResult {
+  const ctx = buildConfluenciaContext(klines, interval, symbolOrIsCrypto);
   return evaluateConfluenciaAt(ctx, klines ? klines.length - 1 : 0);
 }
 
@@ -527,10 +541,22 @@ export function calculateOBV(klines: Kline[]): number[] {
 export function calculateScoringSignal(
   klines: Kline[],
   interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS
+  weights: ScoringWeights = DEFAULT_WEIGHTS,
+  effectivePriceOrSymbol?: number | string | boolean,
+  symbolOrIsCryptoParam?: string | boolean
 ): ScoringResult {
-  const ctx = buildScoringContext(klines, interval, weights);
-  return evaluateScoringAt(ctx, klines ? klines.length - 1 : 0);
+  let effectivePrice: number | undefined;
+  let symbolOrIsCrypto: string | boolean | undefined;
+
+  if (typeof effectivePriceOrSymbol === 'number') {
+    effectivePrice = effectivePriceOrSymbol;
+    symbolOrIsCrypto = symbolOrIsCryptoParam;
+  } else {
+    symbolOrIsCrypto = effectivePriceOrSymbol;
+  }
+
+  const ctx = buildScoringContext(klines, interval, weights, symbolOrIsCrypto);
+  return evaluateScoringAt(ctx, klines ? klines.length - 1 : 0, effectivePrice);
 }
 
 export function calculateRSISeries(data: number[], period: number = 14): number[] {
@@ -1353,7 +1379,7 @@ export function calculatePivotPoints(klines: Kline[], lookback: number = 5): Piv
   return pivots;
 }
 
-function clusterPrices(prices: number[], threshold: number = 0.005): number[] {
+export function clusterPrices(prices: number[], threshold: number = 0.005): number[] {
   if (prices.length === 0) return [];
 
   const sorted = [...prices].sort((a, b) => a - b);
@@ -1371,6 +1397,35 @@ function clusterPrices(prices: number[], threshold: number = 0.005): number[] {
   }
 
   return clusters.map(c => c.reduce((a, b) => a + b, 0) / c.length);
+}
+
+export interface RawPivotLevels {
+  pivotHighs: number[];
+  pivotLows: number[];
+}
+
+/**
+ * Calculates raw clustered pivot highs (sorted ascending) and pivot lows (sorted descending)
+ * without pre-filtering against a specific price point, avoiding snapshot truncation.
+ */
+export function calculateRawPivotLevels(klines: Kline[], pivotLookback: number = 5): RawPivotLevels {
+  if (!klines || klines.length < pivotLookback * 2 + 1) return { pivotHighs: [], pivotLows: [] };
+
+  const pivots = calculatePivotPoints(klines, pivotLookback);
+  if (pivots.length === 0) return { pivotHighs: [], pivotLows: [] };
+
+  const rawHighs: number[] = [];
+  const rawLows: number[] = [];
+
+  for (const p of pivots) {
+    if (p.type === 'high') rawHighs.push(p.price);
+    else if (p.type === 'low') rawLows.push(p.price);
+  }
+
+  const pivotHighs = clusterPrices(rawHighs).sort((a, b) => a - b);
+  const pivotLows = clusterPrices(rawLows).sort((a, b) => b - a);
+
+  return { pivotHighs, pivotLows };
 }
 
 export interface SupportResistanceLevels {
@@ -1392,29 +1447,12 @@ export function calculateSupportResistance(
     nearestResistance: 0,
   };
 
-  if (!klines || klines.length < pivotLookback * 2 + 1 || currentPrice <= 0) return fallback;
+  if (!klines || currentPrice <= 0) return fallback;
 
-  const pivots = calculatePivotPoints(klines, pivotLookback);
-  if (pivots.length === 0) return fallback;
+  const { pivotHighs, pivotLows } = calculateRawPivotLevels(klines, pivotLookback);
 
-  const rawSupports: number[] = [];
-  const rawResistances: number[] = [];
-
-  for (const p of pivots) {
-    if (p.type === 'low' && p.price < currentPrice) {
-      rawSupports.push(p.price);
-    } else if (p.type === 'high' && p.price > currentPrice) {
-      rawResistances.push(p.price);
-    }
-  }
-
-  const supports = clusterPrices(rawSupports)
-    .sort((a, b) => b - a)
-    .slice(0, 3);
-
-  const resistances = clusterPrices(rawResistances)
-    .sort((a, b) => a - b)
-    .slice(0, 3);
+  const supports = pivotLows.filter(p => p < currentPrice).slice(0, 3);
+  const resistances = pivotHighs.filter(p => p > currentPrice).slice(0, 3);
 
   return {
     supports,
@@ -1597,7 +1635,7 @@ export function candleClosePosition(k: Kline): number {
 
 export interface VCMESniperResult {
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
-  mode: 'PULLBACK' | 'BREAKOUT' | 'MEAN_REVERSION' | 'REVERSAL' | 'NONE';
+  mode: 'PULLBACK' | 'BREAKOUT' | 'REVERSAL' | 'NONE';
   tradeType: 'DAY' | 'SWING';
   stopLoss: number;
   takeProfit1: number;
@@ -1828,24 +1866,161 @@ export function isNyseTradingSessionActive(epochMs: number = Date.now()): boolea
 }
 
 /**
+ * Evaluates whether the current candle or timestamp falls within the restricted
+ * MFLS trading session window (09:45 to 15:30 ET).
+ * Excludes opening volatility spike (09:30-09:45) and closing auction imbalances (15:30-16:00).
+ */
+export function isMFLSSessionWindow(epochMs: number = Date.now()): boolean {
+  const et = getEasternTime(epochMs);
+
+  // Non-trading day (weekend or official market holiday)
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+
+  const openMinute = 585; // 09:45 AM ET
+  const isEarlyClose = isNyseEarlyCloseDay(et.year, et.month, et.day, et.dayOfWeek);
+  const closeMinute = isEarlyClose ? 750 : 930; // 12:30 ET or 15:30 ET
+
+  return et.minuteOfDay >= openMinute && et.minuteOfDay < closeMinute;
+}
+
+/**
+ * Evaluates whether the current candle or timestamp falls within the NYSE midday chop window
+ * (11:30 AM to 14:00 PM ET = 690 to 840 min), characterized by institutional lunch drop in volume
+ * and high false breakout rate for short setups in equities.
+ */
+export function isNyseMiddayChop(epochMs: number = Date.now()): boolean {
+  const et = getEasternTime(epochMs);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+  return et.minuteOfDay >= 690 && et.minuteOfDay < 840;
+}
+
+/**
+ * Checks whether the current candle or timestamp is too close to NYSE session close (16:00 ET = 960 min)
+ * to allow an intraday 5m trade with 16 to 24-candle forward window (80 to 120 min) to mature.
+ * Blocks opening new positions when remaining time in the session is less than half the window (>= 15:15 ET = 915 min).
+ */
+export function isNearNyseSessionClose(epochMs: number = Date.now(), cutoffMinute: number = 915): boolean {
+  const et = getEasternTime(epochMs);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+  const isEarlyClose = isNyseEarlyCloseDay(et.year, et.month, et.day, et.dayOfWeek);
+  const effectiveCutoff = isEarlyClose ? 720 : cutoffMinute; // 12:00 ET on early close (13:00 close), or 15:15 ET
+  const sessionEnd = isEarlyClose ? 780 : 960;
+  return et.minuteOfDay >= effectiveCutoff && et.minuteOfDay < sessionEnd;
+}
+
+/**
+ * Canonical check for whether a symbol belongs to the cryptocurrency asset class.
+ * Returns false for equities (e.g. AAPL, NVDA, TSLA, SPY, QQQ, MSFT, SYM, ASYM).
+ * Returns true for crypto pairs (ending in USDT, BTC, BUSD, USDC, FDUSD, or containing /).
+ * Defaults to true when symbol is omitted to preserve backward compatibility for callers without asset context.
+ */
+export function isCryptoAsset(symbol?: string): boolean {
+  if (!symbol) return true;
+  const s = symbol.toUpperCase().trim();
+  return (
+    s.endsWith('USDT') ||
+    s.endsWith('BTC') ||
+    s.endsWith('BUSD') ||
+    s.endsWith('USDC') ||
+    s.endsWith('FDUSD') ||
+    s.includes('/')
+  );
+}
+
+/**
  * Fast check for NYSE opening window (09:30 AM to 09:45 AM Eastern Time) with exact DST handling.
  */
 export function isNyseOpeningWindow(timeSeconds: number, symbol?: string): boolean {
-  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
-  if (isCrypto) return false;
+  if (isCryptoAsset(symbol)) return false;
 
   const et = getEasternTime(timeSeconds * 1000);
   if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
     return false;
   }
 
-  // 09:30 AM to 09:45 AM ET (minutes 570 to 585)
+// 09:30 AM to 09:45 AM ET (minutes 570 to 585)
   return et.minuteOfDay >= 570 && et.minuteOfDay < 585;
 }
 
 /**
+ * Evaluates whether the timestamp falls within the high-momentum NYSE opening window
+ * (09:35 AM to 11:00 AM ET = 575 to 660 min), where institutional order flow produces
+ * validated statistical edge for momentum continuation (Confluencia BUY in 5m equities).
+ * Delays opening by 5 minutes (skipping erratic 09:30 auction print) to allow spread normalization.
+ */
+export function isNyseOpeningHour(epochMs: number = Date.now()): boolean {
+  const et = getEasternTime(epochMs);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+  return et.minuteOfDay >= 575 && et.minuteOfDay < 660;
+}
+
+/**
+ * Evaluates whether the timestamp falls within the opening cross auction spike
+ * (09:30 AM to 09:35 AM ET = 570 to 575 min), characterized by wide spreads and knee-jerk gap reactions.
+ */
+export function isNyseOpeningCross(epochMs: number = Date.now()): boolean {
+  const et = getEasternTime(epochMs);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+  return et.minuteOfDay >= 570 && et.minuteOfDay < 575;
+}
+
+/**
+ * Evaluates whether the timestamp falls within the high-momentum afternoon NYSE trend window
+ * (14:00 to 15:15 ET = 840 to 915 min) with confirmed institutional trend strength (ADX >= 25).
+ * Allows momentum continuation while filtering out choppy sideways range drift.
+ */
+export function isNyseAfternoonTrendWindow(epochMs: number = Date.now(), adx?: number): boolean {
+  if (adx === undefined || adx < 25) return false;
+  const et = getEasternTime(epochMs);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return false;
+  }
+  return et.minuteOfDay >= 840 && et.minuteOfDay < 915;
+}
+
+
+/**
+ * Checks whether a candle timestamp and interval corresponds to the final candle
+ * of regular NYSE market hours (or past session close), meaning an execution on the next
+ * bar would cross an overnight/weekend session gap.
+ */
+export function isNyseSessionClosingCandle(
+  candleTimestampSec: number,
+  interval: string = '5m',
+  symbol?: string
+): boolean {
+  if (isCryptoAsset(symbol)) return false;
+
+  const et = getEasternTime(candleTimestampSec * 1000);
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6 || isNyseHoliday(et.year, et.month, et.day, et.dayOfWeek)) {
+    return true; // Not a regular active trading day
+  }
+
+  const closeMinute = isNyseEarlyCloseDay(et.year, et.month, et.day, et.dayOfWeek) ? 780 : 960; // 13:00 or 16:00 ET
+  let durationMinutes = 5;
+  if (interval === '1m') durationMinutes = 1;
+  else if (interval === '3m') durationMinutes = 3;
+  else if (interval === '15m') durationMinutes = 15;
+  else if (interval === '1h') durationMinutes = 60;
+  else if (interval === '1d') return false; // Daily interval is exempt from intraday session gap cuts
+
+  return (et.minuteOfDay + durationMinutes) >= closeMinute;
+}
+
+/**
  * Returns only confirmed closed candles.
- * If the candle period has already elapsed in time (e.g. historical data, weekend, completed bar),
+ * Closure is judged at snapshot acquisition time, not at the later cache read.
+ * If the candle period had already elapsed (e.g. historical data, completed bar),
  * or for equities outside regular trading hours, the candle is closed and preserved.
  * If the candle is actively forming in real-time (crypto 24/7 or live NYSE session),
  * it is dropped via slice(0, -1) to prevent repainting.
@@ -1858,7 +2033,8 @@ export function getConfirmedClosedKlines(
   if (!klines || klines.length <= 1) return klines || [];
 
   const lastCandle = klines[klines.length - 1];
-  const nowSec = Math.floor(Date.now() / 1000);
+  const snapshotTime = getKlineSnapshotTime(klines);
+  const nowSec = Math.floor(snapshotTime / 1000);
 
   let durationSec = 300; // 5m default
   if (interval === '15m') durationSec = 900;
@@ -1873,15 +2049,14 @@ export function getConfirmedClosedKlines(
   }
 
   // 2. For non-crypto equities (NYSE / NASDAQ), if outside active market hours, last candle is finalized
-  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : false;
-  if (!isCrypto) {
+  if (!isCryptoAsset(symbol)) {
     if (!isNyseTradingSessionActive(nowSec * 1000)) {
       return klines;
     }
   }
 
   // 3. Candle is actively forming in live session (crypto 24/7 or active NYSE session): drop unclosed candle
-  return klines.slice(0, -1);
+  return stampKlineSnapshot(klines.slice(0, -1), snapshotTime);
 }
 
 /**
@@ -1911,7 +2086,7 @@ export function getEffectiveExecutionPrice(
 export function getSessionId(kline: Kline, interval: string, symbol?: string): string {
   const t = kline.time;
   if (interval === '5m' || interval === '1h') {
-    const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+    const isCrypto = symbol ? isCryptoAsset(symbol) : true;
     const offset = isCrypto ? 0 : 18000;
     return String(Math.floor((t - offset) / 86400));
   } else if (interval === '1d') {
@@ -1930,7 +2105,7 @@ export function getOpeningRange(klines: Kline[], index: number, interval: string
   const fallback = { high: 0, low: 0, isActive: false };
   if (klines.length === 0 || index < 0 || index >= klines.length) return fallback;
 
-  const isCrypto = symbol ? (symbol.endsWith('USDT') || symbol.endsWith('BTC')) : true;
+  const isCrypto = symbol ? isCryptoAsset(symbol) : true;
   const stepSec = interval === '1h' ? 3600 : 300;
   const offset = isCrypto ? 0 : 18000;
   const curTime = klines[index].time;
@@ -1948,7 +2123,7 @@ export function getOpeningRange(klines: Kline[], index: number, interval: string
     sessionStartIdx--;
   }
 
-  const requiredCandles = 6;
+  const requiredCandles = interval === '1h' ? 2 : 6;
   if (index < sessionStartIdx + requiredCandles) {
     return fallback;
   }
@@ -2067,6 +2242,81 @@ export function calculateTimeOfDayRVOL(
   return rollingAvg > 0 ? Number((targetVol / rollingAvg).toFixed(2)) : 1.0;
 }
 
+// ─── LRU Cache for MTF Contexts (VCME & Multifractal) ──────────────────────
+interface CachedContextEntry<T> {
+  fingerprint: string;
+  context: T;
+}
+
+const MAX_MTF_CONTEXT_CACHE_SIZE = 100;
+const vcmeContextCache = new Map<string, CachedContextEntry<VCMESniperContext>>();
+const multifractalContextCache = new Map<string, CachedContextEntry<MultifractalMTFContext>>();
+
+export function clearMTFContextCache(): void {
+  vcmeContextCache.clear();
+  multifractalContextCache.clear();
+}
+
+export function getCachedVCMESniperContext(
+  klines5m: Kline[],
+  klines1h: Kline[],
+  klines1d: Kline[],
+  symbol?: string,
+  style: 'dayTrading' | 'swing' = 'dayTrading',
+  triggerMode: 'agresivo' | 'conservador' = 'agresivo'
+): VCMESniperContext {
+  const cacheKey = `${symbol ?? 'DEFAULT'}_${style}_${triggerMode}`;
+  const fp = getKlinesFingerprint([klines5m, klines1h, klines1d]);
+  const cached = vcmeContextCache.get(cacheKey);
+
+  if (cached && cached.fingerprint === fp) {
+    // LRU touch
+    vcmeContextCache.delete(cacheKey);
+    vcmeContextCache.set(cacheKey, cached);
+    return cached.context;
+  }
+
+  const context = buildVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
+
+  if (vcmeContextCache.has(cacheKey)) {
+    vcmeContextCache.delete(cacheKey);
+  } else if (vcmeContextCache.size >= MAX_MTF_CONTEXT_CACHE_SIZE) {
+    const oldestKey = vcmeContextCache.keys().next().value;
+    if (oldestKey) vcmeContextCache.delete(oldestKey);
+  }
+  vcmeContextCache.set(cacheKey, { fingerprint: fp, context });
+  return context;
+}
+
+export function getCachedMultifractalMTFContext(
+  klines5m: Kline[],
+  klines1h: Kline[],
+  klines1d: Kline[],
+  _symbol: string = 'ASSET'
+): MultifractalMTFContext {
+  const cacheKey = _symbol || 'ASSET';
+  const fp = getKlinesFingerprint([klines5m, klines1h, klines1d]);
+  const cached = multifractalContextCache.get(cacheKey);
+
+  if (cached && cached.fingerprint === fp) {
+    // LRU touch
+    multifractalContextCache.delete(cacheKey);
+    multifractalContextCache.set(cacheKey, cached);
+    return cached.context;
+  }
+
+  const context = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
+
+  if (multifractalContextCache.has(cacheKey)) {
+    multifractalContextCache.delete(cacheKey);
+  } else if (multifractalContextCache.size >= MAX_MTF_CONTEXT_CACHE_SIZE) {
+    const oldestKey = multifractalContextCache.keys().next().value;
+    if (oldestKey) multifractalContextCache.delete(oldestKey);
+  }
+  multifractalContextCache.set(cacheKey, { fingerprint: fp, context });
+  return context;
+}
+
 export function calculateVCMESniperSignal(
   klines5m: Kline[],
   klines1h: Kline[],
@@ -2078,7 +2328,7 @@ export function calculateVCMESniperSignal(
   triggerMode: 'agresivo' | 'conservador' = 'agresivo',
   executionPrice?: number
 ): VCMESniperResult {
-  const ctx = buildVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
+  const ctx = getCachedVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
   return evaluateVCMESniperAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
 }
 
@@ -2280,7 +2530,8 @@ export function calculateAndianOscillator(klines1D: Kline[], period: number = 14
 
   for (let i = 0; i < klines1D.length; i++) {
     const k = klines1D[i];
-    const range = Math.max(0.000001, k.high - k.low);
+    const minRange = Math.max(1e-12, Math.abs(k.close) * 1e-6);
+    const range = Math.max(minRange, k.high - k.low);
     const bull = Math.max(0, k.close - k.open);
     const bear = Math.max(0, k.open - k.close);
 
@@ -2298,9 +2549,10 @@ export function calculateAndianOscillator(klines1D: Kline[], period: number = 14
   const rawOrange: number[] = [];
 
   for (let i = 0; i < klines1D.length; i++) {
-    const r = Math.max(0.000001, emaRange[i] || 1);
-    const g = Number(((emaBull[i] / r) * 100).toFixed(1));
-    const rd = Number(((emaBear[i] / r) * 100).toFixed(1));
+    const minEma = Math.max(1e-12, Math.abs(klines1D[i].close || 1) * 1e-6);
+    const r = Math.max(minEma, emaRange[i] || 1);
+    const g = (emaBull[i] / r) * 100;
+    const rd = (emaBear[i] / r) * 100;
     greenSeries.push(isNaN(g) ? 0 : g);
     redSeries.push(isNaN(rd) ? 0 : rd);
     rawOrange.push(isNaN(g) || isNaN(rd) ? 0 : (g + rd) / 2);
@@ -2356,7 +2608,10 @@ export function calculateDreadBlitz(klines5M: Kline[], period: number = 20, mult
 
   const mcdSeries: number[] = [];
   for (let i = 0; i < klines5M.length; i++) {
-    const currentAtr = Math.max(0.0001, atrSeries[i] || 1);
+    const price = closes[i] || 1;
+    const minAtr = Math.max(1e-12, Math.abs(price) * 1e-6);
+    const rawAtr = (atrSeries[i] && atrSeries[i] > 0) ? atrSeries[i] : minAtr;
+    const currentAtr = Math.max(minAtr, rawAtr);
     const rawMcd = (closes[i] - (ema12[i] || closes[i])) / currentAtr;
     mcdSeries.push(isNaN(rawMcd) ? 0 : rawMcd);
   }
@@ -2418,6 +2673,97 @@ export function calculateMultifractalMTFSignal(
   _symbol: string = 'ASSET',
   executionPrice?: number
 ): MultifractalMTFSignalResult {
-  const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
+  const ctx = getCachedMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
   return evaluateMultifractalMTFAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
 }
+
+// ============================================================================
+// ESTRATEGIA 6: MACD FAILURE & LIQUIDITY SWEEP (MFLS)
+// ============================================================================
+
+export interface FractalPivotsSeries {
+  swingLows: (number | null)[];
+  swingLowIndices: (number | null)[];
+  swingHighs: (number | null)[];
+  swingHighIndices: (number | null)[];
+}
+
+/**
+ * Pure O(N) calculation of confirmed fractal swing lows and highs.
+ * A candle at j is confirmed as a 5-bar fractal at bar j + 2 (zero lookahead bias):
+ * - Swing Low at j: low[j] < low[j-1] && low[j] < low[j-2] && low[j] <= low[j+1] && low[j] <= low[j+2]
+ * - Swing High at j: high[j] > high[j-1] && high[j] > high[j-2] && high[j] >= high[j+1] && high[j] >= high[j+2]
+ * For each bar i, reports the most significant confirmed pivot in [i - lookback, i - 2].
+ */
+export function calculateFractalPivotsSeries(klines: Kline[], lookback: number = 20): FractalPivotsSeries {
+  const len = klines ? klines.length : 0;
+  const swingLows: (number | null)[] = new Array(len).fill(null);
+  const swingLowIndices: (number | null)[] = new Array(len).fill(null);
+  const swingHighs: (number | null)[] = new Array(len).fill(null);
+  const swingHighIndices: (number | null)[] = new Array(len).fill(null);
+
+  if (len < 5) return { swingLows, swingLowIndices, swingHighs, swingHighIndices };
+
+  const isFractalLow = new Uint8Array(len);
+  const isFractalHigh = new Uint8Array(len);
+
+  for (let p = 2; p < len - 2; p++) {
+    const l = klines[p].low;
+    if (l < klines[p - 1].low && l < klines[p - 2].low && l <= klines[p + 1].low && l <= klines[p + 2].low) {
+      isFractalLow[p] = 1;
+    }
+    const h = klines[p].high;
+    if (h > klines[p - 1].high && h > klines[p - 2].high && h >= klines[p + 1].high && h >= klines[p + 2].high) {
+      isFractalHigh[p] = 1;
+    }
+  }
+
+  for (let i = 4; i < len; i++) {
+    const startP = i - 2;
+    const endP = Math.max(0, i - lookback);
+
+    let lowestLow = Infinity;
+    let lowestIdx: number | null = null;
+    let highestHigh = -Infinity;
+    let highestIdx: number | null = null;
+
+    for (let p = startP; p >= endP; p--) {
+      if (isFractalLow[p]) {
+        if (klines[p].low < lowestLow) {
+          lowestLow = klines[p].low;
+          lowestIdx = p;
+        }
+      }
+      if (isFractalHigh[p]) {
+        if (klines[p].high > highestHigh) {
+          highestHigh = klines[p].high;
+          highestIdx = p;
+        }
+      }
+    }
+
+
+
+    if (lowestIdx !== null && lowestLow < Infinity) {
+      swingLows[i] = lowestLow;
+      swingLowIndices[i] = lowestIdx;
+    }
+    if (highestIdx !== null && highestHigh > -Infinity) {
+      swingHighs[i] = highestHigh;
+      swingHighIndices[i] = highestIdx;
+    }
+  }
+
+  return { swingLows, swingLowIndices, swingHighs, swingHighIndices };
+}
+
+export function calculateMFLSSignal(
+  klines5m: Kline[],
+  symbolOrIsCrypto: string | boolean = 'ASSET',
+  executionPrice?: number
+): MFLSEvaluationResult {
+  const ctx = buildMFLSContext(klines5m, symbolOrIsCrypto);
+  return evaluateMFLSAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
+}
+
+

@@ -1,13 +1,14 @@
 {
   "name": "terminal-web",
   "private": true,
-  "version": "2026.09.03.12",
+  "version": "2026.10.01.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "npx tsx src/utils/__tests__/backtester.test.ts",
+    "test": "npx tsx src/utils/__tests__/backtester.test.ts && npx tsx --tsconfig tsconfig.execution-tests.json --test src/utils/__tests__/execution.test.ts src/utils/__tests__/chartRecovery.test.ts src/utils/__tests__/trackingIntegrity.test.ts src/utils/__tests__/mfls.test.ts src/utils/__tests__/equity5mPolicy.test.ts src/utils/__tests__/scannerPipeline.test.ts src/utils/__tests__/confluencia.test.ts",
     "lint": "eslint .",
+    "test:types": "tsc -p tsconfig.execution-tests.json",
     "preview": "vite preview"
   },
   "dependencies": {
