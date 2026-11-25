@@ -1,13 +1,9 @@
 import assert from 'node:assert';
 import test, { describe } from 'node:test';
 import type { Kline } from '../../services/api';
-import {
-  calculateFractalPivotsSeries,
-  calculateMFLSSignal,
-  buildMFLSContext,
-  evaluateMFLSAt,
-  isMFLSSessionWindow,
-} from '../indicators';
+import { calculateFractalPivotsSeries, isMFLSSessionWindow } from '../indicators';
+import { calculateMFLSSignal } from '../strategySignals';
+import { buildMFLSContext, evaluateMFLSAt } from '../strategyEvaluators';
 import { resolveOperationalTrade } from '../operationalTrade';
 import { backtestMFLS, getStrategyForwardWindow, getStrategySignalWarmup } from '../backtester';
 import { updateAlertsOutcome, type AuditAlertItem } from '../alertTracker';

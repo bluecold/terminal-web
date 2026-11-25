@@ -271,13 +271,13 @@ export default function Chart({ data, showBB = false, symbol, interval, activeAl
       }
     };
 
-    window.addEventListener('resize', handleResize);
+    // ResizeObserver also fires on window resizes (the container follows the window), so a separate
+    // window 'resize' listener would only resize the chart twice.
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(container);
 
     return () => {
       resizeObserver.disconnect();
-      window.removeEventListener('resize', handleResize);
       if (container) {
         container.removeEventListener('mouseleave', handleMouseLeave);
       }

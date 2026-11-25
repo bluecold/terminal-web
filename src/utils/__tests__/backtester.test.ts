@@ -25,10 +25,6 @@ import {
   type RecordedTrade
 } from '../backtester';
 import {
-  calculateStandardVoting,
-  calculateScoringSignal,
-  calculateVCMESniperSignal,
-  calculateMultifractalMTFSignal,
   calculateRollingVolumeAvg,
   calculateRevolutionVolatilityBand,
   isNyseOpeningWindow,
@@ -49,8 +45,14 @@ import {
   calculateRegimeSeriesWithHysteresis,
   calculateVWAPReliabilitySeries,
   calculateAndianOscillator,
-  type BollingerBandsSeriesResult
+  type BollingerBandsSeriesResult,
 } from '../indicators';
+import {
+  calculateStandardVoting,
+  calculateScoringSignal,
+  calculateVCMESniperSignal,
+  calculateMultifractalMTFSignal,
+} from '../strategySignals';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -80,7 +82,8 @@ import {
   buildStandardVotingContext,
   evaluateStandardVotingAt,
   buildMultifractalMTFContext,
-  evaluateMultifractalMTFAt
+  evaluateMultifractalMTFAt,
+  getScoringSRCheckpoint
 } from '../strategyEvaluators';
 import { DEFAULT_WEIGHTS } from '../indicators';
 import { sanitizeKlines, type Kline } from '../../services/api';
@@ -1315,7 +1318,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     assert.strictEqual(isCandleAlertFired('BTCUSDT', '5m', candleTs, 'Standard', 'BUY'), false, 'Multifractal BUY must NOT block Standard BUY on same candle');
   });
 
-  // Test 46: Scoring Series Checkpoint S/R Caching (srCacheInterval = 5)
+  // Test 46: Scoring Series Checkpoint S/R Caching (time-anchored 5-bar checkpoints)
   test('computeScoringSignalsSeries computes signals efficiently with aligned 5-bar S/R caching', () => {
     const klines = generateSyntheticKlines(300, 300, 100, 0.05);
     const signals = computeScoringSignalsSeries(klines, '5m');
@@ -5614,7 +5617,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
       volume: 1000
     }));
     const sCtx = buildScoringContext(scoringKlines, '5m');
-    sCtx.srCache.set(60, { nearestSupport: 95, nearestResistance: 100 });
+    sCtx.srCache.set(getScoringSRCheckpoint(sCtx, 60), { nearestSupport: 95, nearestResistance: 100 });
     const sRes = evaluateScoringAt(sCtx, 60);
     assert.notStrictEqual(sRes.signal, 'BUY', 'Scoring must reject BUY when price has zero or negative room to resistance');
   });
@@ -6809,7 +6812,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     ctx.closes[lastIdx] = 100.0;
 
     // Cache entry with resistances at 100.25 (which blocks 100.30 target) and 100.50
-    const cacheIdx = Math.floor(lastIdx / 5) * 5;
+    const cacheIdx = getScoringSRCheckpoint(ctx, lastIdx);
     ctx.srCache.set(cacheIdx, {
       nearestSupport: 99.5,
       nearestResistance: 100.25,
@@ -6973,7 +6976,7 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
     const lastIdx = klines.length - 1; // 64
 
     const ctx = buildScoringContext(klines, '5m');
-    const cacheIdx = Math.floor(lastIdx / 5) * 5; // 60
+    const cacheIdx = getScoringSRCheckpoint(ctx, lastIdx);
 
     // Simulate raw clustered pivots in cache:
     // pivotHighs contains a resistance at 100.50

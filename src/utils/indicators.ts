@@ -1,58 +1,5 @@
 import type { Kline } from '../services/api';
 import { getKlineSnapshotTime, stampKlineSnapshot } from '../services/marketDataSnapshot';
-import { getKlinesFingerprint } from './klineFingerprint';
-import {
-  buildConfluenciaContext,
-  evaluateConfluenciaAt,
-  buildScoringContext,
-  evaluateScoringAt,
-  buildStandardVotingContext,
-  evaluateStandardVotingAt,
-  buildVCMESniperContext,
-  evaluateVCMESniperAt,
-  buildMultifractalMTFContext,
-  evaluateMultifractalMTFAt,
-  buildMFLSContext,
-  evaluateMFLSAt,
-  type ConfluenciaContext,
-  type ConfluenciaEvaluationResult,
-  type ScoringContext,
-  type StandardVotingContext,
-  type VCMESniperContext,
-  type VCMESniperEvaluationResult,
-  type MultifractalMTFContext,
-  type MultifractalMTFEvaluationResult,
-  type MFLSContext,
-  type MFLSEvaluationResult,
-  DEFAULT_SCORING_THRESHOLD_RATIO
-} from './strategyEvaluators';
-
-export {
-  buildConfluenciaContext,
-  evaluateConfluenciaAt,
-  buildScoringContext,
-  evaluateScoringAt,
-  DEFAULT_SCORING_THRESHOLD_RATIO,
-  buildStandardVotingContext,
-  evaluateStandardVotingAt,
-  buildVCMESniperContext,
-  evaluateVCMESniperAt,
-  buildMultifractalMTFContext,
-  evaluateMultifractalMTFAt,
-  buildMFLSContext,
-  evaluateMFLSAt,
-  type ConfluenciaContext,
-  type ConfluenciaEvaluationResult,
-  type ScoringContext,
-  type StandardVotingContext,
-  type VCMESniperContext,
-  type VCMESniperEvaluationResult,
-  type MultifractalMTFContext,
-  type MultifractalMTFEvaluationResult,
-  type MFLSContext,
-  type MFLSEvaluationResult
-};
-
 export interface IndicatorResult {
   value: number;
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
@@ -464,14 +411,6 @@ export function lowerWickRatio(c: Kline): number {
   return (Math.min(c.open, c.close) - c.low) / (c.high - c.low);
 }
 
-export function calculateExperimentalSignal(
-  klines: Kline[],
-  interval: string = '1h',
-  symbolOrIsCrypto?: string | boolean
-): ConfluenciaEvaluationResult {
-  const ctx = buildConfluenciaContext(klines, interval, symbolOrIsCrypto);
-  return evaluateConfluenciaAt(ctx, klines ? klines.length - 1 : 0);
-}
 
 // ==========================================
 // EXPERIMENTAL SIGNAL 2: SCORING MULTICAPA
@@ -538,26 +477,6 @@ export function calculateOBV(klines: Kline[]): number[] {
   return obv;
 }
 
-export function calculateScoringSignal(
-  klines: Kline[],
-  interval: string,
-  weights: ScoringWeights = DEFAULT_WEIGHTS,
-  effectivePriceOrSymbol?: number | string | boolean,
-  symbolOrIsCryptoParam?: string | boolean
-): ScoringResult {
-  let effectivePrice: number | undefined;
-  let symbolOrIsCrypto: string | boolean | undefined;
-
-  if (typeof effectivePriceOrSymbol === 'number') {
-    effectivePrice = effectivePriceOrSymbol;
-    symbolOrIsCrypto = symbolOrIsCryptoParam;
-  } else {
-    symbolOrIsCrypto = effectivePriceOrSymbol;
-  }
-
-  const ctx = buildScoringContext(klines, interval, weights, symbolOrIsCrypto);
-  return evaluateScoringAt(ctx, klines ? klines.length - 1 : 0, effectivePrice);
-}
 
 export function calculateRSISeries(data: number[], period: number = 14): number[] {
   const rsiSeries: number[] = new Array(data.length).fill(NaN);
@@ -1006,10 +925,6 @@ export interface StandardVotingResult {
   signal: 'BUY' | 'SELL' | 'NEUTRAL';
 }
 
-export function calculateStandardVoting(klines: Kline[]): StandardVotingResult {
-  const ctx = buildStandardVotingContext(klines);
-  return evaluateStandardVotingAt(ctx, klines ? klines.length - 1 : 0);
-}
 
 // ==========================================
 // OPTIMIZED SERIES-BASED INDICATORS
@@ -2242,95 +2157,6 @@ export function calculateTimeOfDayRVOL(
   return rollingAvg > 0 ? Number((targetVol / rollingAvg).toFixed(2)) : 1.0;
 }
 
-// ─── LRU Cache for MTF Contexts (VCME & Multifractal) ──────────────────────
-interface CachedContextEntry<T> {
-  fingerprint: string;
-  context: T;
-}
-
-const MAX_MTF_CONTEXT_CACHE_SIZE = 100;
-const vcmeContextCache = new Map<string, CachedContextEntry<VCMESniperContext>>();
-const multifractalContextCache = new Map<string, CachedContextEntry<MultifractalMTFContext>>();
-
-export function clearMTFContextCache(): void {
-  vcmeContextCache.clear();
-  multifractalContextCache.clear();
-}
-
-export function getCachedVCMESniperContext(
-  klines5m: Kline[],
-  klines1h: Kline[],
-  klines1d: Kline[],
-  symbol?: string,
-  style: 'dayTrading' | 'swing' = 'dayTrading',
-  triggerMode: 'agresivo' | 'conservador' = 'agresivo'
-): VCMESniperContext {
-  const cacheKey = `${symbol ?? 'DEFAULT'}_${style}_${triggerMode}`;
-  const fp = getKlinesFingerprint([klines5m, klines1h, klines1d]);
-  const cached = vcmeContextCache.get(cacheKey);
-
-  if (cached && cached.fingerprint === fp) {
-    // LRU touch
-    vcmeContextCache.delete(cacheKey);
-    vcmeContextCache.set(cacheKey, cached);
-    return cached.context;
-  }
-
-  const context = buildVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
-
-  if (vcmeContextCache.has(cacheKey)) {
-    vcmeContextCache.delete(cacheKey);
-  } else if (vcmeContextCache.size >= MAX_MTF_CONTEXT_CACHE_SIZE) {
-    const oldestKey = vcmeContextCache.keys().next().value;
-    if (oldestKey) vcmeContextCache.delete(oldestKey);
-  }
-  vcmeContextCache.set(cacheKey, { fingerprint: fp, context });
-  return context;
-}
-
-export function getCachedMultifractalMTFContext(
-  klines5m: Kline[],
-  klines1h: Kline[],
-  klines1d: Kline[],
-  _symbol: string = 'ASSET'
-): MultifractalMTFContext {
-  const cacheKey = _symbol || 'ASSET';
-  const fp = getKlinesFingerprint([klines5m, klines1h, klines1d]);
-  const cached = multifractalContextCache.get(cacheKey);
-
-  if (cached && cached.fingerprint === fp) {
-    // LRU touch
-    multifractalContextCache.delete(cacheKey);
-    multifractalContextCache.set(cacheKey, cached);
-    return cached.context;
-  }
-
-  const context = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
-
-  if (multifractalContextCache.has(cacheKey)) {
-    multifractalContextCache.delete(cacheKey);
-  } else if (multifractalContextCache.size >= MAX_MTF_CONTEXT_CACHE_SIZE) {
-    const oldestKey = multifractalContextCache.keys().next().value;
-    if (oldestKey) multifractalContextCache.delete(oldestKey);
-  }
-  multifractalContextCache.set(cacheKey, { fingerprint: fp, context });
-  return context;
-}
-
-export function calculateVCMESniperSignal(
-  klines5m: Kline[],
-  klines1h: Kline[],
-  klines1d: Kline[],
-  symbol?: string,
-  _recentWinRate?: number,
-  _recentProfitFactor?: number | null,
-  style: 'dayTrading' | 'swing' = 'dayTrading',
-  triggerMode: 'agresivo' | 'conservador' = 'agresivo',
-  executionPrice?: number
-): VCMESniperResult {
-  const ctx = getCachedVCMESniperContext(klines5m, klines1h, klines1d, symbol, style, triggerMode);
-  return evaluateVCMESniperAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
-}
 
 // ============================================================================
 // MOTOR DE ALERTAS MULTIFRACTAL (MTF ENGINE) - MÓDULOS Y SEÑAL PRINCIPAL
@@ -2666,16 +2492,6 @@ export interface MultifractalMTFSignalResult {
   reasoning: string;
 }
 
-export function calculateMultifractalMTFSignal(
-  klines5m: Kline[],
-  klines1h: Kline[],
-  klines1d: Kline[],
-  _symbol: string = 'ASSET',
-  executionPrice?: number
-): MultifractalMTFSignalResult {
-  const ctx = getCachedMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
-  return evaluateMultifractalMTFAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
-}
 
 // ============================================================================
 // ESTRATEGIA 6: MACD FAILURE & LIQUIDITY SWEEP (MFLS)
@@ -2755,15 +2571,6 @@ export function calculateFractalPivotsSeries(klines: Kline[], lookback: number =
   }
 
   return { swingLows, swingLowIndices, swingHighs, swingHighIndices };
-}
-
-export function calculateMFLSSignal(
-  klines5m: Kline[],
-  symbolOrIsCrypto: string | boolean = 'ASSET',
-  executionPrice?: number
-): MFLSEvaluationResult {
-  const ctx = buildMFLSContext(klines5m, symbolOrIsCrypto);
-  return evaluateMFLSAt(ctx, klines5m ? klines5m.length - 1 : 0, executionPrice);
 }
 
 

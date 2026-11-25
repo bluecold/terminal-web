@@ -138,8 +138,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 9999,
-        background: 'rgba(5, 7, 12, 0.88)',
-        backdropFilter: 'blur(8px)',
+        background: 'rgba(5, 7, 12, 0.92)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '20px',
         animation: 'fadeIn 0.2s ease-out',
@@ -213,7 +212,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
               {[
                 { icon: '📡', title: 'Radar Multi-Activo', text: 'Escáner en vivo con la misma lógica que las alertas: estrategia líder, alineación Estándar 5m·1h·1d (informativa en acciones 5m), compresión BB y RVOL estacional.' },
                 { icon: '🏆', title: 'Torneo Bayesiano & QVE', text: 'Ranking puro In-Sample, compuerta de multiplicidad Bonferroni (+0.04R hurdle), margen sobre 2º y Walk-Forward disjunto.' },
-                { icon: '📋', title: 'Informe de alertas reales', text: 'Botón INFORME: resultado por día con intervalo de confianza (el día es la unidad, porque las alertas de un mismo día se mueven juntas), con y sin el mejor y el peor día, filtro por versión de reglas, R por estrategia y franja, demora de emisión y costo de tu ejecución.' },
+                { icon: '📋', title: 'Informe de alertas reales', text: 'Botón INFORME: resultado por día con intervalo de confianza (el día es la unidad, porque las alertas de un mismo día se mueven juntas), con y sin el mejor y el peor día, filtro por versión de reglas, R por estrategia y franja, demora de emisión y costo de tu ejecución. Guarda 90 días completos de alertas cerradas en el navegador; con Exportar descargás un respaldo (.json) y con Importar lo recuperás sin duplicar alertas. Si alguna vez no se puede guardar, el botón INFORME se marca en rojo.' },
                 { icon: '🎯', title: 'Audit Tracker & Chart', text: 'Seguimiento causal sin repintado en velas vivas, líneas visuales en TradingView y cero alertas fantasma.' },
               ].map((c, i) => (
                 <div key={i} style={{ background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.12)', borderRadius: '8px', padding: '12px' }}>

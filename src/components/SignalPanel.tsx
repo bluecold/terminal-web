@@ -1,5 +1,21 @@
 import { useMemo, useState, useEffect } from 'react';
-import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type MFLSEvaluationResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
+import {
+  getConfirmedClosedKlines,
+  getEffectiveExecutionPrice,
+  type VCMESniperResult,
+  type MultifractalMTFSignalResult,
+  type ScoringWeights,
+  DEFAULT_WEIGHTS,
+} from '../utils/indicators';
+import {
+  calculateExperimentalSignal,
+  calculateScoringSignal,
+  calculateStandardVoting,
+  calculateVCMESniperSignal,
+  calculateMultifractalMTFSignal,
+  calculateMFLSSignal,
+} from '../utils/strategySignals';
+import { type MFLSEvaluationResult } from '../utils/strategyEvaluators';
 import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue, resolveCandidateCascade, resolveTournamentLeader, isInformationalStrategy } from '../utils/tournament';
 import type { Kline } from '../services/api';
 import { Bell, BellOff, FlaskConical, ShieldAlert, Target, Trophy, Info, ChevronUp, ChevronDown } from 'lucide-react';

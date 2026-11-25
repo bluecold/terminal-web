@@ -117,6 +117,27 @@ export function generateDiscardDedupKey(
 }
 
 /**
+ * Forgets dedup keys of candles older than `maxAgeSec`: a closed candle is never re-evaluated after
+ * its scan window, so its key can no longer prevent a double count. Keeps the in-memory set bounded
+ * when the tab stays open for days. Returns how many keys were removed.
+ */
+export function pruneSeenDiscardKeys(seenKeys: Set<string>, nowSec: number, maxAgeSec: number = 86400): number {
+  let removed = 0;
+  for (const key of seenKeys) {
+    // Key layout: SYMBOL-interval-candleTimestamp-reason (the symbol itself may contain '-')
+    const match = /-(\d+)-[A-Za-z]+$/.exec(key);
+    const candleSec = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(candleSec) || nowSec - candleSec > maxAgeSec) {
+      seenKeys.delete(key);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+export const SEEN_DISCARD_KEYS_PRUNE_THRESHOLD = 2000;
+
+/**
  * Records a discard event if not already present in the seenKeys set.
  * Returns the updated stats object and a boolean indicating if it was newly recorded.
  */

@@ -1,16 +1,33 @@
-import { useEffect, useMemo, useState } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Upload, X } from 'lucide-react';
 import {
   buildAlertPerformanceReport,
+  buildAlertExport,
+  parseAlertImport,
   REPORT_TIME_SLOTS,
   type ArchivedAlert,
   type ReportBucket,
 } from '../utils/alertReport';
+import type { AuditAlertItem } from '../utils/alertTracker';
+import { APP_VERSION } from '../version';
 
 interface AlertReportModalProps {
   alerts: ArchivedAlert[];
+  /** Full live log (with targets and execution state), included in exports. */
+  liveLog: AuditAlertItem[];
+  /** Last archive persistence error, if any. */
+  archiveError: string | null;
+  /** Merges imported resolved alerts into the archive; resolves to the number of new alerts. */
+  onImport: (entries: ArchivedAlert[]) => Promise<number>;
   onClose: () => void;
 }
+
+const backupButtonStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: '4px',
+  background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)',
+  border: '1px solid var(--border-color)', borderRadius: '4px',
+  padding: '2px 8px', fontSize: '0.66rem', fontWeight: 700, cursor: 'pointer',
+};
 
 const PERIODS = [7, 14, 30, 90] as const;
 
@@ -70,8 +87,46 @@ function BucketTable({ rows }: { rows: { label: string; bucket: ReportBucket; mu
   );
 }
 
-export default function AlertReportModal({ alerts, onClose }: AlertReportModalProps) {
+export default function AlertReportModal({ alerts, liveLog, archiveError, onImport, onClose }: AlertReportModalProps) {
   const [days, setDays] = useState<number>(7);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [backupMessage, setBackupMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+  const handleExport = () => {
+    const data = buildAlertExport(alerts, liveLog, APP_VERSION);
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `terminal-alerts-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setBackupMessage({ kind: 'ok', text: `Exportadas ${alerts.length} alertas cerradas y ${liveLog.length} del log vivo.` });
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    try {
+      const entries = parseAlertImport(JSON.parse(await file.text()));
+      const added = await onImport(entries);
+      setBackupMessage({
+        kind: 'ok',
+        text: added > 0
+          ? `Importadas ${added} alertas nuevas (de ${entries.length} en el archivo; las de más de 90 días no entran al informe).`
+          : `Sin alertas nuevas: las ${entries.length} del archivo ya estaban o tienen más de 90 días.`,
+      });
+    } catch (err) {
+      setBackupMessage({ kind: 'error', text: `No se pudo importar: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setImporting(false);
+    }
+  };
   // The report window is anchored to the moment it is opened
   const [nowMs] = useState(() => Date.now());
   const [minVersion, setMinVersion] = useState<string>('');
@@ -98,8 +153,7 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 9999,
-        background: 'rgba(5, 7, 12, 0.88)',
-        backdropFilter: 'blur(8px)',
+        background: 'rgba(5, 7, 12, 0.92)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '20px',
       }}
@@ -161,6 +215,29 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
               <X size={18} />
             </button>
           </div>
+        </div>
+
+        <div style={{
+          padding: '8px 20px', borderBottom: '1px solid var(--border-color)', flexShrink: 0,
+          display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '0.66rem',
+        }}>
+          <span style={{ color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.5px' }}>RESPALDO</span>
+          <button onClick={handleExport} style={backupButtonStyle} title="Descarga un .json con las alertas cerradas (90 días) y el log vivo completo">
+            <Download size={12} /> Exportar
+          </button>
+          <button onClick={() => fileInputRef.current?.click()} disabled={importing} style={backupButtonStyle} title="Agrega al informe las alertas cerradas de un respaldo (.json); no borra ni duplica las actuales">
+            <Upload size={12} /> {importing ? 'Importando…' : 'Importar'}
+          </button>
+          <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleImportFile} style={{ display: 'none' }} />
+          <span style={{ color: 'var(--text-muted)' }}>{alerts.length} alertas archivadas</span>
+          {backupMessage && (
+            <span style={{ color: backupMessage.kind === 'error' ? 'var(--accent-red)' : 'var(--accent-green)' }}>{backupMessage.text}</span>
+          )}
+          {archiveError && (
+            <span style={{ color: 'var(--accent-red)', flexBasis: '100%' }}>
+              ⚠ No se pudo guardar el archivo del informe ({archiveError}). Exportá un respaldo para no perder alertas.
+            </span>
+          )}
         </div>
 
         <div style={{ padding: '16px 20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '18px' }}>

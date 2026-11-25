@@ -113,21 +113,23 @@ describe('Recursive analysis (freqtrade recursive-analysis)', () => {
     assertConverged(engine('Multifractal'), equity5m, 300);
   });
 
-  test('Scoring: converged from 300 bars when the series start keeps the 5-bar S/R grid', () => {
+  test('Scoring: converged from 300 bars wherever the series starts (S/R checkpoints anchored to candle time)', () => {
+    assertConverged(engine('Scoring'), equity5m, 300);
+    assertConverged(engine('Scoring'), crypto5m, 300);
+  });
+
+  test('Scoring: S/R checkpoints do not depend on where the series starts', () => {
     const e = engine('Scoring');
     for (const d of [equity5m, crypto5m]) {
       const idx = tail(d, 120);
       const full = e.evaluateMany(d, idx);
-      idx.forEach((i, k) => {
-        const start = Math.floor((i - 300) / 5) * 5;
-        const w = windowAt(d, i, i - start);
-        assert.strictEqual(signalOf(e.evaluateMany(w.data, [w.index])[0]), signalOf(full[k]), `bar ${i}`);
-      });
+      for (const shift of [0, 1, 2, 3, 4]) {
+        idx.forEach((i, k) => {
+          const w = windowAt(d, i, 600 + shift);
+          assert.strictEqual(signalOf(e.evaluateMany(w.data, [w.index])[0]), signalOf(full[k]), `bar ${i}, start shifted by ${shift}`);
+        });
+      }
     }
-  });
-
-  test('Scoring: S/R checkpoints do not depend on where the series starts', { todo: 'srCache uses floor(i/5)*5 on the array index; anchor it to candle time or evaluate S/R at i' }, () => {
-    assertConverged(engine('Scoring'), crypto5m, 1000);
   });
 
   // The backtest evaluates from getStrategyConvergedWarmup on long series (resolveBacktestWarmupFloor).

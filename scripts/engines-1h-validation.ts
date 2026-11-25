@@ -25,7 +25,8 @@ import type { Kline } from '../src/services/api';
 import { getEasternTime, calculateATRSeries } from '../src/utils/indicators';
 import { computeConfluenciaSignalsSeries, computeScoringSignalsSeries, computeStandardSignalsSeries, getStrategyForwardWindow } from '../src/utils/backtester';
 import { calculateAlertLevels, isTradeFrictionViable, validateScoringSRRoom } from '../src/utils/tradeLevels';
-import { buildVCMESniperContext, evaluateVCMESniperAt, DEFAULT_WEIGHTS } from '../src/utils/indicators';
+import { DEFAULT_WEIGHTS } from '../src/utils/indicators';
+import { buildVCMESniperContext, evaluateVCMESniperAt } from '../src/utils/strategyEvaluators';
 import { simulateTrade, type TradeLevels, type TradeSimulationResult } from '../src/utils/tradeSimulator';
 
 const H1 = 'scratch/h1-20261015', D1 = 'scratch/d1-20261015';

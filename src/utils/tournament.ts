@@ -55,7 +55,10 @@ export interface TournamentResult {
   reasoning: string;
 }
 
-// Empirical cross-sectional watchlist priors for 5m equities (derived from 45-stock / 60-day real data under 0.14% friction):
+// Cross-sectional priors (net E[R]) for 5m equities, first derived from 45 stocks / 60 days at 0.14% friction.
+// Only their sign is used (below: a negative prior keeps a winner with < 20 local trades at LIMITED), and
+// later measurements (106 symbols, Jul–Nov 2026, out of sample) kept every engine at ≤ 0R, so they are not
+// recalibrated. Revisit only if an engine measures positive out of sample.
 export const WATCHLIST_5M_PRIORS: Record<string, number> = {
   mfls: -0.35,
   standard: -0.25,

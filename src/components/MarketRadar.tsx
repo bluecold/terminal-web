@@ -2,12 +2,6 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Eye, AlertTriangle, ShieldCheck, Zap } from 'lucide-react';
 import { fetchKlines } from '../services/api';
 import {
-  calculateStandardVoting,
-  calculateExperimentalSignal,
-  calculateScoringSignal,
-  calculateVCMESniperSignal,
-  calculateMultifractalMTFSignal,
-  calculateMFLSSignal,
   calculateBollingerBandsSeries,
   calculateBollingerVolatilityStatus,
   getConfirmedClosedKlines,
@@ -17,6 +11,14 @@ import {
   isNyseSessionClosingCandle,
   type ScoringWeights,
 } from '../utils/indicators';
+import {
+  calculateStandardVoting,
+  calculateExperimentalSignal,
+  calculateScoringSignal,
+  calculateVCMESniperSignal,
+  calculateMultifractalMTFSignal,
+  calculateMFLSSignal,
+} from '../utils/strategySignals';
 import { formatSmartPrice } from '../utils/formatters';
 import { runQVESelection, buildStrategyCandidateQueue, resolveCandidateCascade, resolveTournamentLeader, type ConfidenceLevel } from '../utils/tournament';
 import { isExploratorySelection } from '../utils/alertEmission';

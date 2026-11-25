@@ -262,6 +262,8 @@ export interface ScoringContext {
   obvEMAArr: number[];
   volRollingArr?: number[];
   srCache: Map<number, ScoringSRCacheItem>;
+  /** For each candle, the srCache key of its time-anchored S/R checkpoint (-1 before the first one). */
+  srCheckpointIdx?: Int32Array;
   isCrypto?: boolean;
 }
 
@@ -308,26 +310,47 @@ export function buildScoringContext(
     }
   }
 
-  // Aligned 5-bar checkpoint cache for S/R:
-  // Caches raw clustered pivot highs and pivot lows without pre-filtering against klines[idx].close,
-  // preventing level blindness when price moves between snapshot intervals.
-  const srCacheInterval = 5;
+  // S/R checkpoint every 5 candles, anchored to the candle TIME (floor(time / step) % 5 === 0), not to
+  // the array index: the same candle gets the same S/R whatever the first downloaded candle is, so the
+  // live signal matches the backtest one. Caches raw clustered pivot highs/lows without pre-filtering
+  // against klines[idx].close, preventing level blindness when price moves between checkpoints.
+  // Measured with scripts/scoring-sr-anchor.ts: window-start dependence 9% → 0%, net E[R] unchanged.
   const srCache: Map<number, ScoringSRCacheItem> = new Map();
-  const startIdx = Math.max(0, Math.floor(55 / srCacheInterval) * srCacheInterval);
-  for (let idx = startIdx; idx < length; idx += srCacheInterval) {
-    const windowStart = Math.max(0, idx - 100);
-    const windowSlice = klines.slice(windowStart, idx + 1);
-    const { pivotHighs, pivotLows } = calculateRawPivotLevels(windowSlice, 5);
-    srCache.set(idx, {
-      pivotHighs,
-      pivotLows
-    });
+  const srCheckpointIdx = new Int32Array(length).fill(-1);
+  const stepSec = resolveCandleStepSec(klines, interval);
+  let checkpoint = -1;
+  for (let idx = 0; idx < length; idx++) {
+    if (idx >= SCORING_SR_MIN_INDEX && Math.floor(klines[idx].time / stepSec) % SCORING_SR_CHECKPOINT_BARS === 0) {
+      const windowStart = Math.max(0, idx - 100);
+      const { pivotHighs, pivotLows } = calculateRawPivotLevels(klines.slice(windowStart, idx + 1), 5);
+      srCache.set(idx, { pivotHighs, pivotLows });
+      checkpoint = idx;
+    }
+    srCheckpointIdx[idx] = checkpoint;
   }
 
   return {
     klines, interval, weights, cfg, closes, emaFastArr, emaSlowArr, emaMajorArr,
-    rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache, isCrypto
+    rsiSeries, bbSeries, vwapSeries, vwapReliableSeries, atrSeries, obvArr, obvEMAArr, srCache, srCheckpointIdx, isCrypto
   };
+}
+
+const SCORING_SR_CHECKPOINT_BARS = 5;
+const SCORING_SR_MIN_INDEX = 55;
+const INTERVAL_STEP_SEC: Record<string, number> = {
+  '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1wk': 604800,
+};
+
+function resolveCandleStepSec(klines: Kline[], interval: string): number {
+  const known = INTERVAL_STEP_SEC[interval];
+  if (known) return known;
+  const inferred = klines.length > 1 ? klines[1].time - klines[0].time : 0;
+  return inferred > 0 ? inferred : 300;
+}
+
+/** Index of the S/R checkpoint (key in ctx.srCache) used when evaluating candle i; -1 if none yet. */
+export function getScoringSRCheckpoint(ctx: ScoringContext, i: number): number {
+  return ctx.srCheckpointIdx ? (ctx.srCheckpointIdx[i] ?? -1) : Math.floor(i / SCORING_SR_CHECKPOINT_BARS) * SCORING_SR_CHECKPOINT_BARS;
 }
 
 export function evaluateScoringAt(ctx: ScoringContext, i: number, effectivePrice?: number): ScoringResult {
@@ -624,9 +647,7 @@ export function evaluateScoringAt(ctx: ScoringContext, i: number, effectivePrice
   }
 
   // Layer 6 — Estructura S/R
-  const srCacheInterval = 5;
-  const cacheIdx = Math.floor(i / srCacheInterval) * srCacheInterval;
-  const cachedSr = ctx.srCache.get(cacheIdx);
+  const cachedSr = ctx.srCache.get(getScoringSRCheckpoint(ctx, i));
 
   // Dynamically resolve resistances (above evalPrice) and supports (below evalPrice):
   // When raw pivot levels are cached, classify without snapshot truncation; otherwise fall back to pre-filtered levels.

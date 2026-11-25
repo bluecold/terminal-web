@@ -10,9 +10,12 @@ import { getEasternTime } from './indicators';
  * the trader's real execution versus the alert price.
  */
 
+/** Legacy localStorage key: the archive now lives in IndexedDB (alertArchiveStore.ts), this is the fallback. */
 export const ALERT_ARCHIVE_STORAGE_KEY = 'terminal_alert_archive';
 const ARCHIVE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
-const ARCHIVE_MAX_ENTRIES = 3000;
+// Safety bound only: the 90-day window is the real limit. The old 3000 cap was reached at ~42 closed
+// alerts/day, silently shortening the "90 días" report to ~70 days. ~380 chars per entry → ~7.6 MB.
+export const ARCHIVE_MAX_ENTRIES = 20000;
 export const ACTIVE_STATUSES = new Set<AlertStatus>(['OPEN', 'TP1_HIT', 'TP2_HIT']);
 
 export type ArchivedAlert = Pick<AuditAlertItem,
@@ -40,12 +43,15 @@ function archiveLogicalKey(a: Pick<ArchivedAlert, 'id' | 'symbol' | 'interval' |
     : `id:${a.id}`;
 }
 
-/** Upserts resolved alerts from the live log into the archive, pruning by age, size and duplicates. */
-export function mergeIntoAlertArchive(
-  archive: ArchivedAlert[],
-  alerts: AuditAlertItem[],
+/**
+ * Upserts archived entries (later lists win for the same alert id), keeping one entry per logical
+ * alert and pruning by age and size. Shared by the live merge and by backup imports.
+ */
+export function mergeArchivedAlerts(
+  lists: ArchivedAlert[][],
   nowMs: number = Date.now()
 ): ArchivedAlert[] {
+  const arrays = lists;
   const byKey = new Map<string, ArchivedAlert>();
   const upsert = (entry: ArchivedAlert) => {
     const key = archiveLogicalKey(entry);
@@ -53,18 +59,39 @@ export function mergeIntoAlertArchive(
     // The same alert updates in place; a duplicate emission of the same candle keeps the first one
     if (!existing || existing.id === entry.id || entry.timestamp < existing.timestamp) byKey.set(key, entry);
   };
-  archive.forEach(upsert);
-  for (const alert of alerts) {
-    if (ACTIVE_STATUSES.has(alert.status)) continue;
-    upsert(toArchivedAlert(alert));
-  }
+  arrays.forEach(list => list.forEach(upsert));
   return [...byKey.values()]
     .filter(a => typeof a.timestamp === 'number' && nowMs - a.timestamp <= ARCHIVE_MAX_AGE_MS)
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, ARCHIVE_MAX_ENTRIES);
 }
 
-export function loadAlertArchive(storage: Pick<Storage, 'getItem'> = localStorage): ArchivedAlert[] {
+/** Upserts resolved alerts from the live log into the archive, pruning by age, size and duplicates. */
+export function mergeIntoAlertArchive(
+  archive: ArchivedAlert[],
+  alerts: AuditAlertItem[],
+  nowMs: number = Date.now()
+): ArchivedAlert[] {
+  const resolved = alerts.filter(a => !ACTIVE_STATUSES.has(a.status)).map(toArchivedAlert);
+  return mergeArchivedAlerts([archive, resolved], nowMs);
+}
+
+/** Identity of what the archive would receive from the live log: skip writes when nothing changed. */
+export function archiveInputSignature(alerts: AuditAlertItem[]): string {
+  return alerts
+    .filter(a => !ACTIVE_STATUSES.has(a.status))
+    .map(a => `${a.id}|${a.status}|${a.realizedR}|${a.userFillPrice ?? ''}`)
+    .join(';');
+}
+
+function isArchivedAlertLike(a: unknown): a is ArchivedAlert {
+  const x = a as Partial<ArchivedAlert> | null;
+  return !!x && typeof x.id === 'string' && typeof x.symbol === 'string' && typeof x.status === 'string'
+    && typeof x.timestamp === 'number' && Number.isFinite(x.realizedR);
+}
+
+export function loadAlertArchive(storage: Pick<Storage, 'getItem'> | null = typeof localStorage !== 'undefined' ? localStorage : null): ArchivedAlert[] {
+  if (!storage) return [];
   try {
     const parsed = JSON.parse(storage.getItem(ALERT_ARCHIVE_STORAGE_KEY) || '[]');
     return Array.isArray(parsed) ? parsed.filter(a => a && typeof a.id === 'string') : [];
@@ -73,12 +100,58 @@ export function loadAlertArchive(storage: Pick<Storage, 'getItem'> = localStorag
   }
 }
 
-export function saveAlertArchive(archive: ArchivedAlert[], storage: Pick<Storage, 'setItem'> = localStorage): void {
+/** Saves the archive to localStorage (fallback store). Returns false when the browser refuses it (e.g. quota). */
+export function saveAlertArchive(archive: ArchivedAlert[], storage: Pick<Storage, 'setItem'> = localStorage): boolean {
   try {
     storage.setItem(ALERT_ARCHIVE_STORAGE_KEY, JSON.stringify(archive));
+    return true;
   } catch (e) {
     console.error('Error saving alert archive to local storage', e);
+    return false;
   }
+}
+
+// ─── Backup export / import ────────────────────────────────────────────────
+
+export const ALERT_EXPORT_FORMAT = 'terminal-lite-alerts';
+
+export interface AlertExportFile {
+  format: typeof ALERT_EXPORT_FORMAT;
+  formatVersion: 1;
+  exportedAt: string;
+  appVersion: string;
+  archive: ArchivedAlert[];      // resolved alerts (what the INFORME uses)
+  liveLog: AuditAlertItem[];     // full live log, with targets and execution state
+}
+
+export function buildAlertExport(archive: ArchivedAlert[], liveLog: AuditAlertItem[], appVersion: string, nowMs: number = Date.now()): AlertExportFile {
+  return {
+    format: ALERT_EXPORT_FORMAT,
+    formatVersion: 1,
+    exportedAt: new Date(nowMs).toISOString(),
+    appVersion,
+    archive,
+    liveLog,
+  };
+}
+
+/**
+ * Reads resolved alerts from a backup: this app's export, the older console-snippet export
+ * ({ archive, liveLog }) or a bare array. Active alerts in a live log are skipped (they are still
+ * being tracked); invalid entries are dropped. Throws when nothing in the file looks like alerts.
+ */
+export function parseAlertImport(data: unknown): ArchivedAlert[] {
+  const obj = (data && typeof data === 'object' && !Array.isArray(data)) ? data as Record<string, unknown> : null;
+  const archiveRaw: unknown[] = Array.isArray(data) ? data : Array.isArray(obj?.archive) ? obj!.archive as unknown[] : [];
+  const liveRaw: unknown[] = Array.isArray(obj?.liveLog) ? obj!.liveLog as unknown[] : [];
+  if (archiveRaw.length === 0 && liveRaw.length === 0) {
+    throw new Error('El archivo no contiene alertas (se espera un export de TERMINAL LITE).');
+  }
+  const fromLive = liveRaw
+    .filter((a): a is AuditAlertItem => isArchivedAlertLike(a) && !ACTIVE_STATUSES.has((a as AuditAlertItem).status))
+    .map(toArchivedAlert);
+  const fromArchive = archiveRaw.filter(isArchivedAlertLike).map(a => toArchivedAlert(a as unknown as AuditAlertItem));
+  return [...fromArchive, ...fromLive];
 }
 
 export function intervalToSeconds(interval: string): number {

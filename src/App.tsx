@@ -31,28 +31,49 @@ import { fetchKlines } from './services/api';
 import MarketTicker from './components/MarketTicker';
 import type { Kline } from './services/api';
 import { useEarningsCalendar } from './hooks/useEarningsCalendar';
-import { buildAlertEventNotice, getMacroNotice } from './utils/marketEvents';
+import { useScanner } from './hooks/useScanner';
+import { useMediaQuery } from './hooks/useMediaQuery';
+import {
+  STORAGE_KEYS,
+  readSetting,
+  writeSetting,
+  removeSetting,
+  readBoolSetting,
+  readJsonSetting,
+  writeJsonSetting,
+  isExploratoryNotificationEnabled,
+} from './utils/settings';
+import { getMacroNotice } from './utils/marketEvents';
 import EventBadge from './components/EventBadge';
 
 const MarketRadar = lazy(() => import('./components/MarketRadar'));
 const HelpModal = lazy(() => import('./components/HelpModal'));
 const AlertReportModal = lazy(() => import('./components/AlertReportModal'));
-import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, isNyseTradingSessionActive, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
-import { resolveOperationalTrade } from './utils/operationalTrade';
+import {
+  getConfirmedClosedKlines,
+  getEffectiveExecutionPrice,
+  isNyseTradingSessionActive,
+  DEFAULT_WEIGHTS,
+  type ScoringWeights,
+} from './utils/indicators';
+import {
+  calculateStandardVoting,
+  calculateExperimentalSignal,
+  calculateScoringSignal,
+  calculateVCMESniperSignal,
+  calculateMultifractalMTFSignal,
+  calculateMFLSSignal,
+} from './utils/strategySignals';
 import { isCryptoAsset } from './utils/tradeLevels';
-import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue, resolveCandidateCascade, resolveStandardExploratoryFallback } from './utils/tournament';
-import { evaluateAlertEmission } from './utils/alertEmission';
+import { runQVESelection, selectActionableStrategy, resolveStandardExploratoryFallback } from './utils/tournament';
 import { APP_VERSION } from './version';
-import { getMsUntilNextAlignedScan } from './utils/scanSchedule';
-import { computeAlertLatencySec, computeExecutionCostR, loadAlertArchive, mergeIntoAlertArchive, saveAlertArchive, ACTIVE_STATUSES, type ArchivedAlert } from './utils/alertReport';
+import { computeExecutionCostR, mergeIntoAlertArchive, mergeArchivedAlerts, archiveInputSignature, type ArchivedAlert } from './utils/alertReport';
+import { readAlertArchive, updateAlertArchive } from './utils/alertArchiveStore';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
-  isCandleAlertFired,
-  registerFiredCandleAlert,
   pruneFiredAlertsRegistry,
   clearFiredAlertsRegistry,
-  generateCandleAlertKey,
   trimAlertsPreservingActive,
   detectClosedAlertTransitions,
   getAlertCooldownKey,
@@ -67,25 +88,24 @@ import {
   createInitialDiscardStats,
   recordDiscardEvent,
   clearDiscardStats,
+  pruneSeenDiscardKeys,
+  SEEN_DISCARD_KEYS_PRUNE_THRESHOLD,
 } from './utils/liveDiscards';
 import { formatSmartPrice } from './utils/formatters';
 import type { AlertOverlay } from './components/Chart';
-import type { AlertCooldownRecord } from './utils/radarFilters';
+import { pruneExpiredCooldowns, type AlertCooldownRecord } from './utils/radarFilters';
 import { acquireScannerLeadership } from './utils/scannerLeadership';
 
 function loadSavedAlertCooldowns(): Record<string, number | AlertCooldownRecord> {
-  try {
-    const saved = localStorage.getItem('terminal_alert_cooldowns');
-    if (saved) return JSON.parse(saved);
-  } catch (e) {
-    console.error('Error parsing alert cooldowns from local storage', e);
-  }
-  return {};
+  const saved = readJsonSetting<Record<string, number | AlertCooldownRecord>>(STORAGE_KEYS.alertCooldowns) ?? {};
+  const pruned = pruneExpiredCooldowns(saved, Date.now());
+  if (Object.keys(pruned).length !== Object.keys(saved).length) writeJsonSetting(STORAGE_KEYS.alertCooldowns, pruned);
+  return pruned;
 }
 
 function App() {
   const [alertsLog, setAlertsLog] = useState<AuditAlertItem[]>(() => {
-    const saved = localStorage.getItem('terminal_alerts_log');
+    const saved = readSetting(STORAGE_KEYS.alertsLog);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -108,15 +128,26 @@ function App() {
     alertsLogRef.current = alertsLog;
   }, [alertsLog]);
 
-  // Resolved alerts are archived (90 days) for the performance report, independent of the
-  // 100-entry / 7-day live log and of the LIMPIAR button.
-  // Debounced to avoid blocking synchronous I/O (parsing up to 3,000 JSON entries) on high-frequency kline updates.
+  // Resolved alerts are archived (90 days, IndexedDB) for the performance report, independent of the
+  // 100-entry / 7-day live log and of the LIMPIAR button. Debounced, and skipped when the resolved
+  // alerts did not change (the log is re-synced every minute even when nothing closes).
+  const [reportAlerts, setReportAlerts] = useState<ArchivedAlert[] | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const lastArchivedSignatureRef = useRef<string>('');
   useEffect(() => {
-    const hasClosedOrFilled = alertsLog.some(a => !ACTIVE_STATUSES.has(a.status) || a.userFillPrice !== undefined);
-    if (!hasClosedOrFilled) return;
+    const signature = archiveInputSignature(alertsLog);
+    if (!signature || signature === lastArchivedSignatureRef.current) return;
 
     const handler = setTimeout(() => {
-      saveAlertArchive(mergeIntoAlertArchive(loadAlertArchive(), alertsLog));
+      updateAlertArchive(current => mergeIntoAlertArchive(current, alertsLog))
+        .then(() => {
+          lastArchivedSignatureRef.current = signature;
+          setArchiveError(null);
+        })
+        .catch(e => {
+          console.error('Error saving the alert archive', e);
+          setArchiveError(e instanceof Error ? e.message : String(e));
+        });
     }, 1500);
 
     return () => clearTimeout(handler);
@@ -127,34 +158,56 @@ function App() {
       const next = prev.map(a => a.id === alertId
         ? { ...a, userFillPrice: price, userFillTime: price !== undefined ? Date.now() : undefined }
         : a);
-      try {
-        localStorage.setItem('terminal_alerts_log', JSON.stringify(next));
-      } catch (e) {
-        console.error('Error saving terminal_alerts_log to local storage', e);
-      }
+      writeJsonSetting(STORAGE_KEYS.alertsLog, next);
       return next;
     });
   }, []);
 
   const openAlertReport = () => {
-    setReportAlerts(mergeIntoAlertArchive(loadAlertArchive(), alertsLogRef.current));
+    readAlertArchive()
+      .catch(e => {
+        console.error('Error reading the alert archive', e);
+        setArchiveError(e instanceof Error ? e.message : String(e));
+        return [];
+      })
+      .then(archive => setReportAlerts(mergeIntoAlertArchive(archive, alertsLogRef.current)));
   };
+
+  // Backup import from the INFORME: merges resolved alerts into the archive and refreshes the report.
+  const importAlertBackup = useCallback(async (entries: ArchivedAlert[]): Promise<number> => {
+    let added = 0;
+    const merged = await updateAlertArchive(current => {
+      const next = mergeArchivedAlerts([current, entries]);
+      added = Math.max(0, next.length - current.length);
+      return next;
+    });
+    setArchiveError(null);
+    setReportAlerts(mergeIntoAlertArchive(merged, alertsLogRef.current));
+    return added;
+  }, []);
 
   const toggleInformationalAlerts = () => {
     setLogInformationalAlerts(prev => {
-      localStorage.setItem('terminal_exploratory_alerts', prev ? 'false' : 'true');
+      writeSetting(STORAGE_KEYS.exploratoryAlerts, prev ? 'false' : 'true');
       return !prev;
     });
   };
 
   const [discardStats, setDiscardStats] = useState<LiveDiscardStats>(() => loadDiscardStats());
   const seenDiscardKeysRef = useRef<Set<string>>(new Set());
+  const nextDiscardPruneAtRef = useRef(SEEN_DISCARD_KEYS_PRUNE_THRESHOLD);
   const discardStatsRef = useRef<LiveDiscardStats>(discardStats);
   useEffect(() => {
     discardStatsRef.current = discardStats;
   }, [discardStats]);
 
   const recordDiscard = (symbol: string, interval: string, candleTimestamp: number, reason: LiveDiscardReason) => {
+    // Bound the in-memory dedup set: drop keys of candles older than a day, then wait for another
+    // batch of keys before sweeping again.
+    if (seenDiscardKeysRef.current.size >= nextDiscardPruneAtRef.current) {
+      pruneSeenDiscardKeys(seenDiscardKeysRef.current, Math.floor(Date.now() / 1000));
+      nextDiscardPruneAtRef.current = seenDiscardKeysRef.current.size + SEEN_DISCARD_KEYS_PRUNE_THRESHOLD;
+    }
     const res = recordDiscardEvent(discardStatsRef.current, seenDiscardKeysRef.current, symbol, interval, candleTimestamp, reason);
     if (res.recorded) {
       discardStatsRef.current = res.stats;
@@ -199,11 +252,7 @@ function App() {
 
   const setAlertCooldown = useCallback((key: string, timestamp: number, outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string) => {
     alertCooldownsRef.current[key] = { timestamp, outcome };
-    try {
-      localStorage.setItem('terminal_alert_cooldowns', JSON.stringify(alertCooldownsRef.current));
-    } catch (e) {
-      console.error('Error saving alert cooldowns to local storage', e);
-    }
+    writeJsonSetting(STORAGE_KEYS.alertCooldowns, alertCooldownsRef.current);
     setAlertCooldownsState({ ...alertCooldownsRef.current });
   }, []);
 
@@ -264,11 +313,7 @@ function App() {
           return alert;
         });
 
-    try {
-      localStorage.setItem('terminal_alerts_log', JSON.stringify(finalAlerts));
-    } catch (e) {
-      console.error('Error saving terminal_alerts_log to local storage', e);
-    }
+    writeJsonSetting(STORAGE_KEYS.alertsLog, finalAlerts);
 
     return finalAlerts;
   }, [setAlertCooldown]);
@@ -276,27 +321,27 @@ function App() {
   const [mainView, setMainView] = useState<'chart' | 'radar'>('chart');
   const [mobileTab, setMobileTab] = useState<'chart' | 'radar' | 'signals' | 'alerts' | 'watchlist'>('chart');
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem('terminal_left_collapsed') === 'true'; } catch { return false; }
+    return readBoolSetting(STORAGE_KEYS.leftCollapsed);
   });
   const [rightCollapsed, setRightCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem('terminal_right_collapsed') === 'true'; } catch { return false; }
+    return readBoolSetting(STORAGE_KEYS.rightCollapsed);
   });
   const toggleLeftSidebar = useCallback(() => {
     setLeftCollapsed(prev => {
       const next = !prev;
-      try { localStorage.setItem('terminal_left_collapsed', String(next)); } catch { /* ignore */ }
+      writeSetting(STORAGE_KEYS.leftCollapsed, String(next));
       return next;
     });
   }, []);
   const toggleRightSidebar = useCallback(() => {
     setRightCollapsed(prev => {
       const next = !prev;
-      try { localStorage.setItem('terminal_right_collapsed', String(next)); } catch { /* ignore */ }
+      writeSetting(STORAGE_KEYS.rightCollapsed, String(next));
       return next;
     });
   }, []);
   const [currentAsset, setCurrentAsset] = useState(() => {
-    return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
+    return readSetting(STORAGE_KEYS.currentAsset) || 'BTCUSDT';
   });
   const [searchVal, setSearchVal] = useState(currentAsset);
 
@@ -327,39 +372,37 @@ function App() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const [interval, setTimeInterval] = useState(() => {
-    return localStorage.getItem('terminal_time_interval') || '1h';
+    return readSetting(STORAGE_KEYS.timeInterval) || '1h';
   });
   const [splitView, setSplitView] = useState<boolean>(() => {
-    try { return localStorage.getItem('terminal_split_view') === 'true'; } catch { return false; }
+    return readBoolSetting(STORAGE_KEYS.splitView);
   });
-  const [splitInterval, setSplitInterval] = useState<'5m' | '1h' | '1d'>(() => {
-    try {
-      const saved = localStorage.getItem('terminal_split_interval');
-      if (saved === '5m' || saved === '1h' || saved === '1d') return saved;
-    } catch { /* ignore */ }
-    return '1h';
+  const [preferredSplitInterval, setPreferredSplitInterval] = useState<'5m' | '1h' | '1d'>(() => {
+    const saved = readSetting(STORAGE_KEYS.splitInterval);
+    return saved === '5m' || saved === '1h' || saved === '1d' ? saved : '1h';
   });
+  // The secondary pane never repeats the main timeframe: when they coincide (main timeframe changed by
+  // its buttons or by opening an alert) it shows another one, without overwriting the saved choice.
+  const splitInterval: '5m' | '1h' | '1d' = preferredSplitInterval !== interval
+    ? preferredSplitInterval
+    : interval === '5m' ? '1h' : '5m';
+  // The secondary chart is hidden on phones (CSS breakpoint 768px), so it is not mounted there either.
+  const isNarrowScreen = useMediaQuery('(max-width: 768px)');
+  const showSecondaryChart = splitView && !isNarrowScreen;
   const toggleSplitView = useCallback(() => {
-    setSplitView(prev => {
-      const next = !prev;
-      try { localStorage.setItem('terminal_split_view', String(next)); } catch { /* ignore */ }
-      if (next && splitInterval === interval) {
-        const fallback = interval === '5m' ? '1h' : '5m';
-        setSplitInterval(fallback);
-        try { localStorage.setItem('terminal_split_interval', fallback); } catch { /* ignore */ }
-      }
-      return next;
-    });
-  }, [interval, splitInterval]);
+    const next = !splitView;
+    setSplitView(next);
+    writeSetting(STORAGE_KEYS.splitView, String(next));
+  }, [splitView]);
   const handleSelectSplitInterval = useCallback((tf: '5m' | '1h' | '1d') => {
-    setSplitInterval(tf);
-    try { localStorage.setItem('terminal_split_interval', tf); } catch { /* ignore */ }
+    setPreferredSplitInterval(tf);
+    writeSetting(STORAGE_KEYS.splitInterval, tf);
   }, []);
   const [showBB, setShowBB] = useState(() => {
-    return localStorage.getItem('terminal_show_bb') === 'true';
+    return readBoolSetting(STORAGE_KEYS.showBB);
   });
   const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>(() => {
-    const saved = localStorage.getItem('terminal_watchlist');
+    const saved = readSetting(STORAGE_KEYS.watchlist);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -375,45 +418,32 @@ function App() {
   const [klines, setKlines] = useState<Kline[]>([]);
   const [loading, setLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [reportAlerts, setReportAlerts] = useState<ArchivedAlert[] | null>(null);
   // Opt-in logging of informational/exploratory signals (tracked separately, never notified unless
   // 'terminal_exploratory_notifications' is also enabled).
-  const [logInformationalAlerts, setLogInformationalAlerts] = useState(() => localStorage.getItem('terminal_exploratory_alerts') === 'true');
+  const [logInformationalAlerts, setLogInformationalAlerts] = useState(() => readBoolSetting(STORAGE_KEYS.exploratoryAlerts));
 
   const [executionStyle, setExecutionStyle] = useState<'dayTrading' | 'swing'>(() => {
-    return (localStorage.getItem('terminal_execution_style') as 'dayTrading' | 'swing') || 'dayTrading';
+    return (readSetting(STORAGE_KEYS.executionStyle) as 'dayTrading' | 'swing') || 'dayTrading';
   });
   const [triggerMode, setTriggerMode] = useState<'agresivo' | 'conservador'>(() => {
-    return (localStorage.getItem('terminal_trigger_mode') as 'agresivo' | 'conservador') || 'agresivo';
+    return (readSetting(STORAGE_KEYS.triggerMode) as 'agresivo' | 'conservador') || 'agresivo';
   });
 
   useEffect(() => {
-    localStorage.setItem('terminal_execution_style', executionStyle);
+    writeSetting(STORAGE_KEYS.executionStyle, executionStyle);
   }, [executionStyle]);
 
   useEffect(() => {
-    localStorage.setItem('terminal_trigger_mode', triggerMode);
+    writeSetting(STORAGE_KEYS.triggerMode, triggerMode);
   }, [triggerMode]);
 
   // Global custom scoring weights with persistent localStorage sync
-  const [scoringWeights, setScoringWeights] = useState<ScoringWeights>(() => {
-    try {
-      const saved = localStorage.getItem('terminal_scoring_weights');
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch {
-      // ignore JSON parse error
-    }
-    return DEFAULT_WEIGHTS;
-  });
+  const [scoringWeights, setScoringWeights] = useState<ScoringWeights>(
+    () => readJsonSetting<ScoringWeights>(STORAGE_KEYS.scoringWeights) ?? DEFAULT_WEIGHTS
+  );
 
   useEffect(() => {
-    try {
-      localStorage.setItem('terminal_scoring_weights', JSON.stringify(scoringWeights));
-    } catch {
-      // ignore
-    }
+    writeJsonSetting(STORAGE_KEYS.scoringWeights, scoringWeights);
   }, [scoringWeights]);
 
   // Prune expired fired alerts registry entries on mount (older than 7 days)
@@ -424,6 +454,11 @@ function App() {
   // ── Confluence Matrix & Earnings Events States ───────────────────────────
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
   const [allKlines, setAllKlines] = useState<Record<string, Kline[]>>({ '5m': [], '1h': [], '1d': [] });
+  // Latest committed klines, read by the 60 s poll without re-creating its interval.
+  const allKlinesRef = useRef(allKlines);
+  useEffect(() => {
+    allKlinesRef.current = allKlines;
+  }, [allKlines]);
   const earningsSymbols = useMemo(() => [...watchlistSymbols, currentAsset], [watchlistSymbols, currentAsset]);
   const earningsEvents = useEarningsCalendar(earningsSymbols);
   const earningsEventsRef = useRef(earningsEvents);
@@ -556,29 +591,28 @@ function App() {
 
     const pollInterval = setInterval(async () => {
       try {
-        const shouldPollSplit = splitView && splitInterval !== interval;
+        const shouldPollSplit = showSecondaryChart;
         const [data, splitData] = await Promise.all([
           fetchKlines(currentAsset, interval),
           shouldPollSplit ? fetchKlines(currentAsset, splitInterval) : Promise.resolve(null),
         ]);
         if (isMounted) {
           setKlines(data);
-          // Fix #5: use the functional form of setAllKlines so that `prev` is always
-          // the current state, not the stale closure value captured when the effect ran.
-          // This prevents computing the confluence signal with outdated 1h/1d klines.
-          setAllKlines(prev => {
-            const updatedAllKlines = {
-              ...prev,
-              [interval]: data,
-              ...(splitData ? { [splitInterval]: splitData } : {}),
-            };
-            if (data.length >= 35) {
-              const closedData = getConfirmedClosedKlines(data, interval, currentAsset);
-              const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
-              setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
-            }
-            return updatedAllKlines;
-          });
+          // Merge onto the latest klines (ref, not the stale closure value) so the confluence signal
+          // never uses outdated 1h/1d data. The heavy signal computation runs here, outside the state
+          // updater: updaters must stay pure (StrictMode runs them twice in development).
+          const updatedAllKlines = {
+            ...allKlinesRef.current,
+            [interval]: data,
+            ...(splitData ? { [splitInterval]: splitData } : {}),
+          };
+          allKlinesRef.current = updatedAllKlines;
+          setAllKlines(updatedAllKlines);
+          if (data.length >= 35) {
+            const closedData = getConfirmedClosedKlines(data, interval, currentAsset);
+            const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
+            setConfluenceSignals(cs => ({ ...cs, [interval]: signal }));
+          }
         }
       } catch (e) {
         console.error('Error auto-updating active chart data', e);
@@ -590,7 +624,7 @@ function App() {
       clearInterval(pollInterval);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
-  }, [currentAsset, interval, splitView, splitInterval]);
+  }, [currentAsset, interval, showSecondaryChart, splitInterval]);
 
   useEffect(() => {
     if (klines.length >= 35) {
@@ -605,24 +639,24 @@ function App() {
 
 
   useEffect(() => {
-    localStorage.setItem('terminal_watchlist', JSON.stringify(watchlistSymbols));
+    writeJsonSetting(STORAGE_KEYS.watchlist, watchlistSymbols);
   }, [watchlistSymbols]);
 
   useEffect(() => {
-    localStorage.setItem('terminal_current_asset', currentAsset);
+    writeSetting(STORAGE_KEYS.currentAsset, currentAsset);
   }, [currentAsset]);
 
   useEffect(() => {
-    localStorage.setItem('terminal_time_interval', interval);
+    writeSetting(STORAGE_KEYS.timeInterval, interval);
   }, [interval]);
 
   useEffect(() => {
-    localStorage.setItem('terminal_show_bb', showBB ? 'true' : 'false');
+    writeSetting(STORAGE_KEYS.showBB, showBB ? 'true' : 'false');
   }, [showBB]);
 
   // ── Browser Notifications & Watchlist Background Scanner ─────────────────
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
-    return localStorage.getItem('terminal_notifications_enabled') === 'true';
+    return readBoolSetting(STORAGE_KEYS.notificationsEnabled);
   });
 
   const toggleNotifications = async () => {
@@ -631,7 +665,7 @@ function App() {
         const permission = await Notification.requestPermission();
         if (permission === 'granted') {
           setNotificationsEnabled(true);
-          localStorage.setItem('terminal_notifications_enabled', 'true');
+          writeSetting(STORAGE_KEYS.notificationsEnabled, 'true');
           new Notification("🔔 Alertas de Watchlist Activas", {
             body: `Recibirás alertas en segundo plano cuando cambien las señales en ${interval.toUpperCase()}.`,
           });
@@ -643,379 +677,27 @@ function App() {
       }
     } else {
       setNotificationsEnabled(false);
-      localStorage.setItem('terminal_notifications_enabled', 'false');
+      writeSetting(STORAGE_KEYS.notificationsEnabled, 'false');
     }
   };
 
-  // Keep track of the last known signals for all scanned symbols (watchlist + active)
-  const lastSignalsRef = useRef<Record<string, string>>({});
-
-
-  // Timestamp of the last completed scanner run (task #4)
-  const [lastScanTime, setLastScanTime] = useState<string | null>(null);
-
-  // Avoid overlapping scans when a full watchlist pass takes longer than the
-  // scheduler interval, and keep network concurrency below provider limits.
-  const scannerRunningRef = useRef(false);
-  // A scan requested while another is running is replayed right after it, so a candle close
-  // is never skipped until the next minute.
-  const scanPendingRef = useRef(false);
-  const maxConcurrentSymbolScans = 4;
-
-  useEffect(() => {
-    if (!isScannerLeader) return;
-    let isMounted = true;
-
-    const checkAllSignals = async () => {
-      if (scannerRunningRef.current) {
-        scanPendingRef.current = true;
-        return;
-      }
-
-      scannerRunningRef.current = true;
-      try {
-      const activeAlertSymbols = alertsLogRef.current
-        .filter(a => a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT')
-        .map(a => a.symbol);
-      const symbolsToScan = Array.from(new Set([...watchlistSymbols, currentAsset, ...activeAlertSymbols]));
-      const scannedKlinesMap: Record<string, Kline[]> = {};
-
-      for (let batchStart = 0; batchStart < symbolsToScan.length; batchStart += maxConcurrentSymbolScans) {
-        const batch = symbolsToScan.slice(batchStart, batchStart + maxConcurrentSymbolScans);
-        await Promise.all(batch.map(async (symbol) => {
-        try {
-          // MTF engines always require their native 5m, 1h and 1d inputs.
-          // The active chart timeframe is fetched too when it is distinct.
-          const trackedIntervals = alertsLogRef.current
-            .filter(a => a.symbol === symbol && (a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT'))
-            .map(a => a.interval);
-          const requestedTimeframes = Array.from(new Set([interval, '5m', '1h', '1d', ...trackedIntervals]));
-          const responses = await Promise.all(requestedTimeframes.map(async (timeframe) => [
-            timeframe,
-            await fetchKlines(symbol, timeframe)
-          ] as const));
-          const dataByTimeframe = Object.fromEntries(responses) as Record<string, Kline[]>;
-          const data5m = dataByTimeframe['5m'] || [];
-          const data1h = dataByTimeframe['1h'] || [];
-          const data1d = dataByTimeframe['1d'] || [];
-
-          const activeHorizon = executionStyle === 'swing' ? '1h' : '5m';
-          const scanTargetKlines = activeHorizon === '1h' ? data1h : data5m;
-
-          if (!isMounted) return;
-          for (const [timeframe, candles] of responses) {
-            if (candles.length > 0) scannedKlinesMap[`${symbol}:${timeframe}`] = candles;
-          }
-          if (scanTargetKlines.length < 35) return;
-
-          // ── Determine best strategy using QVE (backed by fast FNV-1a backtest caching) ──
-          const now = Date.now();
-          const isCrypto = isCryptoAsset(symbol);
-          const qve = runQVESelection({
-            symbol,
-            data5m,
-            data1h,
-            data1d,
-            executionStyle,
-            triggerMode,
-            scoringWeights,
-          });
-
-          let bestStrategy = qve.bestStrategy;
-          let strategyLabel = qve.strategyLabel;
-          let bestPF = qve.profitFactor;
-          let bestConfidence = qve.confidence;
-          const btMulti = qve.btMulti;
-
-          // ── Calculate signals using each engine's authentic native timeframe & data ──
-          const closed5m = getConfirmedClosedKlines(data5m, '5m', symbol);
-          const closed1h = getConfirmedClosedKlines(data1h, '1h', symbol);
-          const closed1d = getConfirmedClosedKlines(data1d, '1d', symbol);
-
-          const entryPrice5m = getEffectiveExecutionPrice(data5m, closed5m);
-          const entryPrice1h = getEffectiveExecutionPrice(data1h, closed1h);
-
-          // Native horizon routing
-          const vcmeHorizon = executionStyle === 'swing' ? '1h' : '5m';
-          const vcmeClosedKlines = vcmeHorizon === '1h' ? closed1h : closed5m;
-          const vcmeEntryPrice = vcmeHorizon === '1h' ? entryPrice1h : entryPrice5m;
-
-          const genericHorizon = activeHorizon; // '1h' for swing, '5m' for dayTrading
-          const genericClosedKlines = genericHorizon === '1h' ? closed1h : closed5m;
-
-          // 1. Evaluate Multifractal (strictly native 5m execution with 1H and 1D context)
-          const allMfResult = calculateMultifractalMTFSignal(
-            closed5m,
-            closed1h,
-            closed1d,
-            symbol,
-            entryPrice5m
-          );
-
-          // 2. Evaluate MFLS (strictly native 5m execution)
-          const allMflsResult = calculateMFLSSignal(
-            closed5m,
-            symbol,
-            entryPrice5m
-          );
-
-          // 3. Evaluate VCME Sniper on its native horizon
-          const allVcmeResult = calculateVCMESniperSignal(
-            vcmeClosedKlines,
-            closed1h,
-            closed1d,
-            symbol,
-            btMulti.winRate,
-            btMulti.profitFactor,
-            executionStyle,
-            triggerMode,
-            vcmeEntryPrice
-          );
-
-          // 4. Evaluate Generic strategies on their native activeHorizon
-          const standardResult = calculateStandardVoting(genericClosedKlines);
-          const confluenciaResult = calculateExperimentalSignal(genericClosedKlines, genericHorizon, isCrypto);
-          const scoringResult = calculateScoringSignal(genericClosedKlines, genericHorizon, scoringWeights, isCrypto);
-
-          // 5. Multi-Strategy Actionable Selection & Cascade (shared with MarketRadar and SignalPanel)
-          const strategySignals = {
-            standard: standardResult.signal,
-            confluencia: confluenciaResult.signal,
-            scoring: scoringResult.signal,
-            multitemporal: allVcmeResult.signal,
-            multifractal: allMfResult.signal,
-            mfls: allMflsResult.signal,
-          };
-          const candidateQueue = buildStrategyCandidateQueue(qve, strategySignals);
-
-          // Iterate through candidates in strict order of statistical priority. A candidate that fails
-          // operational viability (friction > 0.35R, inverted geometry, no room to S/R) is recorded as a
-          // telemetry discard and the cascade moves on to the next one.
-          const cascade = resolveCandidateCascade(candidateQueue, candidate => resolveOperationalTrade({
-            strategy: candidate.strategy,
-            signal: candidate.signal,
-            executionStyle,
-            raw: { '5m': data5m, '1h': data1h },
-            closed: { '5m': closed5m, '1h': closed1h },
-            vcme: allVcmeResult,
-            multifractal: allMfResult,
-            mfls: allMflsResult,
-            isCrypto,
-          }));
-          for (const { plan } of cascade.rejected) {
-            const trigger = plan.signalKlines.length > 0 ? plan.signalKlines[plan.signalKlines.length - 1] : null;
-            recordDiscard(symbol, plan.interval, trigger ? trigger.time : 0, !plan.validGeometry ? 'geometry' : 'friction');
-          }
-
-          if (!cascade.viable) {
-            // No operationally viable strategy found across all candidates
-            const defaultActionable = selectActionableStrategy(qve, strategySignals);
-            bestStrategy = 'NONE';
-            strategyLabel = defaultActionable.strategyLabel;
-            bestPF = null;
-            bestConfidence = 'NONE';
-            const defaultInterval = executionStyle === 'dayTrading' ? '5m' : '1h';
-            lastSignalsRef.current[`${symbol}-${defaultInterval}`] = 'NEUTRAL';
-            return;
-          }
-
-          const viableCandidate = cascade.viable.candidate;
-          const tradePlan = cascade.viable.plan;
-          bestStrategy = viableCandidate.strategy;
-          strategyLabel = viableCandidate.strategyLabel;
-          bestPF = viableCandidate.profitFactor;
-          bestConfidence = viableCandidate.confidence;
-          const overallSignal = viableCandidate.signal;
-          const signalConfidence = bestStrategy === 'multitemporal' ? allVcmeResult.confidence : '';
-          const { interval: signalInterval, signalKlines, entryPrice, levels } = tradePlan;
-          const signalKey = `${symbol}-${signalInterval}`;
-
-          // Identify closed trigger candle timestamp for persistent atomic deduplication & telemetry
-          const triggerCandle = signalKlines.length > 0 ? signalKlines[signalKlines.length - 1] : null;
-          const candleTimestamp = triggerCandle ? triggerCandle.time : 0;
-
-          // Emission gates (shared pure logic): exploratory opt-in, open position, NYSE session,
-          // session-closing candle, atomic candle deduplication and persistent cooldown.
-          const emission = evaluateAlertEmission({
-            symbol,
-            interval: signalInterval,
-            signal: overallSignal,
-            strategyKey: bestStrategy,
-            strategyLabel,
-            confidence: bestConfidence,
-            executionStyle,
-            isCrypto,
-            candleTimestamp,
-            nowMs: now,
-            validGeometry: tradePlan.valid,
-            allowExploratoryAlerts: localStorage.getItem('terminal_exploratory_alerts') === 'true'
-              || localStorage.getItem('terminal_exploratory_notifications') === 'true',
-            activeAlerts: alertsLogRef.current,
-            alreadyFiredForCandle: candleTimestamp > 0 && isCandleAlertFired(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal),
-            cooldowns: alertCooldownsRef.current,
-          });
-          emission.discards.forEach(reason => recordDiscard(symbol, signalInterval, candleTimestamp, reason));
-          const isExploratoryAlert = emission.isExploratory;
-          const cooldownKey = getAlertCooldownKey({ symbol, interval: signalInterval, alertType: isExploratoryAlert ? 'EXPLORATORY' : 'PRIMARY' });
-
-          if (emission.emit) {
-            // Set alert cooldown timestamp with persistence
-            setAlertCooldown(cooldownKey, now, 'ENTRY');
-
-            const eventNotice = isCrypto ? undefined : buildAlertEventNotice(earningsEventsRef.current[symbol.toUpperCase()], now);
-
-              const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
-                && ('Notification' in window) && Notification.permission === 'granted';
-
-              // Logging exploratory/informational alerts and notifying them are separate opt-ins
-              const allowExploratoryNotifications = localStorage.getItem('terminal_exploratory_notifications') === 'true';
-
-              if (desktopNotificationsEnabled && (!isExploratoryAlert || allowExploratoryNotifications)) {
-                const confidenceTag = isExploratoryAlert
-                  ? ' 🔬 [Exploratoria / Sin Ventaja]'
-                  : bestConfidence === 'LIMITED'
-                    ? ' ⚠️ [Muestra Limitada]'
-                    : ' 📊 [Backtest favorable]';
-                const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
-
-                const hasDistinctTP2 = levels.takeProfit2 !== undefined && levels.takeProfit2 !== levels.takeProfit1;
-                const levelInfo = hasDistinctTP2
-                  ? `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP1: ${formatSmartPrice(levels.takeProfit1)} | TP2: ${formatSmartPrice(levels.takeProfit2)}`
-                  : `Entry: ${formatSmartPrice(entryPrice)} | SL: ${formatSmartPrice(levels.stopLoss)} | TP: ${formatSmartPrice(levels.takeProfit1)} (+1.5R)`;
-
-                const pfNotice = bestPF !== null ? `PF ${bestPF.toFixed(1)}` : 'PF N/D';
-                const notifTitle = isExploratoryAlert
-                  ? `🔬 Exploratoria en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}`
-                  : `🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`;
-
-                new Notification(notifTitle, {
-                  body: `${overallSignal} · vía ${strategyLabel} (${pfNotice})\n${levelInfo}${eventNotice ? `\n⚠️ ${eventNotice}` : ''}`,
-                  tag: `${symbol}-${signalInterval}`,
-                });
-              }
-
-            const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-            const dedupKey = candleTimestamp > 0
-              ? generateCandleAlertKey(symbol, signalInterval, candleTimestamp, strategyLabel, overallSignal)
-              : `${symbol}-${signalInterval}-${now}`;
-
-            const newAlert: AuditAlertItem = {
-              id: `${symbol}-${signalInterval}-${Date.now()}`,
-              symbol,
-              interval: signalInterval,
-              signal: overallSignal,
-              time: timeString,
-              pf: bestPF,
-              strategy: strategyLabel,
-              strategyKey: bestStrategy,
-              executionStyle,
-              confidence: bestConfidence,
-              entryPrice,
-              stopLoss: levels.stopLoss,
-              takeProfit1: levels.takeProfit1,
-              takeProfit2: levels.takeProfit2,
-              takeProfit3: levels.takeProfit3,
-              status: 'OPEN',
-              realizedR: 0,
-              pnlPercent: 0,
-              timestamp: now,
-              candleTimestamp: candleTimestamp > 0 ? candleTimestamp : undefined,
-              dedupKey,
-              alertType: isExploratoryAlert ? 'EXPLORATORY' : 'PRIMARY',
-              alertLatencySec: computeAlertLatencySec(candleTimestamp, signalInterval, now),
-              appVersion: APP_VERSION,
-              eventNotice,
-            };
-
-            // Register in persistent atomic deduplication registry
-            if (candleTimestamp > 0) {
-              registerFiredCandleAlert({
-                symbol,
-                interval: signalInterval,
-                candleTimestamp,
-                strategy: strategyLabel,
-                strategyKey: bestStrategy,
-                signal: overallSignal,
-                firedAt: now,
-              });
-            }
-
-            setAlertsLog(prev => {
-              // If there is an existing alert on the same candle:
-              // If existing is EXPLORATORY and newAlert is PRIMARY, promote/replace it with the higher-conviction signal!
-              const existingIdx = prev.findIndex(a => {
-                if (a.dedupKey && newAlert.dedupKey && a.dedupKey === newAlert.dedupKey) return true;
-                if (a.symbol === symbol && a.interval === signalInterval && a.candleTimestamp && candleTimestamp > 0 && a.candleTimestamp === candleTimestamp) return true;
-                if (a.id === newAlert.id) return true;
-                return false;
-              });
-
-              let filteredPrev = prev;
-              if (existingIdx !== -1) {
-                const existing = prev[existingIdx];
-                if (existing.alertType === 'EXPLORATORY' && newAlert.alertType === 'PRIMARY') {
-                  filteredPrev = prev.filter((_, idx) => idx !== existingIdx);
-                } else {
-                  return prev; // True duplicate
-                }
-              }
-
-              const nextAlerts = [newAlert, ...filteredPrev];
-              return syncAlertOutcomesAndCooldowns(nextAlerts, scannedKlinesMap, symbol);
-            });
-          }
-
-          lastSignalsRef.current[signalKey] = overallSignal;
-        } catch (e) {
-          console.error(`Error scanning background signal for ${symbol}`, e);
-        }
-        }));
-      }
-
-      // task #3: update last scan timestamp and alert outcomes after every full pass
-      if (isMounted) {
-        setLastScanTime(new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-        setAlertsLog(prev => syncAlertOutcomesAndCooldowns(prev, scannedKlinesMap));
-      }
-      } finally {
-        scannerRunningRef.current = false;
-        if (scanPendingRef.current && isMounted) {
-          scanPendingRef.current = false;
-          setTimeout(checkAllSignals, 0);
-        }
-      }
-    };
-
-    // Scan a few seconds after every minute boundary (aligned with candle closes) instead of a
-    // free-running 60s interval: a 5m close is evaluated within seconds, not up to a minute later.
-    checkAllSignals();
-    let alignedTimer: ReturnType<typeof setTimeout> | undefined;
-    const scheduleAlignedScan = () => {
-      alignedTimer = setTimeout(() => {
-        if (!isMounted) return;
-        checkAllSignals();
-        scheduleAlignedScan();
-      }, getMsUntilNextAlignedScan(Date.now()));
-    };
-    scheduleAlignedScan();
-
-    // Fix 2: Throttling recovery — run scanner immediately when tab regains focus
-    const handleVisibilityChange = () => {
-      if (!document.hidden && isMounted) {
-        checkAllSignals();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      isMounted = false;
-      lastSignalsRef.current = {};
-      scanPendingRef.current = false;
-      if (alignedTimer) clearTimeout(alignedTimer);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-    // Include executionStyle, triggerMode, scoringWeights, and memoized callbacks
-  }, [isScannerLeader, watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights, syncAlertOutcomesAndCooldowns, setAlertCooldown]);
+  // Background alert scanner (leader tab only); see hooks/useScanner.ts
+  const { lastScanTime } = useScanner({
+    isScannerLeader,
+    watchlistSymbols,
+    currentAsset,
+    interval,
+    executionStyle,
+    triggerMode,
+    scoringWeights,
+    alertsLogRef,
+    alertCooldownsRef,
+    earningsEventsRef,
+    setAlertsLog,
+    syncAlertOutcomesAndCooldowns,
+    setAlertCooldown,
+    recordDiscard,
+  });
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = useMemo(() => {
@@ -1167,15 +849,18 @@ function App() {
               <button
                 onClick={openAlertReport}
                 className="term-btn"
-                title="Informe de alertas reales por estrategia, franja horaria, demora y ejecución"
+                title={archiveError
+                  ? `No se pudo guardar el archivo del informe: ${archiveError}`
+                  : 'Informe de alertas reales por estrategia, franja horaria, demora y ejecución'}
+                style={archiveError ? { borderColor: 'var(--accent-red)', color: 'var(--accent-red)' } : undefined}
               >
-                INFORME
+                {archiveError ? '⚠ INFORME' : 'INFORME'}
               </button>
               {(alertsLog.length > 0 || discardStats.total > 0) && (
                 <button
                   onClick={() => {
                     setAlertsLog([]);
-                    localStorage.removeItem('terminal_alerts_log');
+                    removeSetting(STORAGE_KEYS.alertsLog);
                     clearFiredAlertsRegistry();
                     clearDiscardStats();
                     const initial = createInitialDiscardStats();
@@ -1751,6 +1436,8 @@ function App() {
                         <button
                           key={tf}
                           onClick={() => handleSelectSplitInterval(tf)}
+                          disabled={tf === interval}
+                          title={tf === interval ? 'Es la temporalidad del gráfico principal' : undefined}
                           className={`split-tf-btn ${splitInterval === tf ? 'active' : ''}`}
                         >
                           {tf.toUpperCase()}
@@ -1773,12 +1460,14 @@ function App() {
           <div className="chart-container" style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
             {mainView === 'chart' ? (
               klines.length > 0 && (
-                splitView ? (
-                  <div className="chart-split-grid">
-                    <div className="chart-split-pane">
-                      <span className="chart-split-badge">{currentAsset} · {interval.toUpperCase()}</span>
-                      <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
-                    </div>
+                // Same element tree with or without split, so toggling it keeps the main chart (zoom and
+                // scroll) instead of re-creating it; only the secondary pane is added or removed.
+                <div className={`chart-split-grid ${showSecondaryChart ? '' : 'is-single'}`}>
+                  <div className="chart-split-pane">
+                    {showSecondaryChart && <span className="chart-split-badge">{currentAsset} · {interval.toUpperCase()}</span>}
+                    <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
+                  </div>
+                  {showSecondaryChart && (
                     <div className="chart-split-pane chart-split-pane--secondary">
                       <span className="chart-split-badge">{currentAsset} · {splitInterval.toUpperCase()}</span>
                       {(allKlines[splitInterval]?.length ?? 0) > 0 ? (
@@ -1787,7 +1476,7 @@ function App() {
                           showBB={showBB}
                           symbol={currentAsset}
                           interval={splitInterval}
-                          activeAlertOverlay={splitInterval === interval ? selectedAlertOverlay : null}
+                          activeAlertOverlay={null}
                         />
                       ) : (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
@@ -1795,10 +1484,8 @@ function App() {
                         </div>
                       )}
                     </div>
-                  </div>
-                ) : (
-                  <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
-                )
+                  )}
+                </div>
               )
             ) : (
               <Suspense fallback={
@@ -1819,7 +1506,7 @@ function App() {
                   executionStyle={executionStyle}
                   triggerMode={triggerMode}
                   scoringWeights={scoringWeights}
-                  allowExploratory={logInformationalAlerts || localStorage.getItem('terminal_exploratory_notifications') === 'true'}
+                  allowExploratory={logInformationalAlerts || isExploratoryNotificationEnabled()}
                 />
               </Suspense>
             )}
@@ -1900,7 +1587,13 @@ function App() {
       )}
       {reportAlerts && (
         <Suspense fallback={null}>
-          <AlertReportModal alerts={reportAlerts} onClose={() => setReportAlerts(null)} />
+          <AlertReportModal
+            alerts={reportAlerts}
+            liveLog={alertsLog}
+            archiveError={archiveError}
+            onImport={importAlertBackup}
+            onClose={() => setReportAlerts(null)}
+          />
         </Suspense>
       )}
     </div>

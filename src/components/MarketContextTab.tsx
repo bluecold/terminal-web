@@ -10,6 +10,7 @@ import {
 import { APP_VERSION } from '../version';
 import { EARNINGS_NOTICE_WINDOW_DAYS, getDaysUntil, getNextMacroEvent, type EarningsEvent } from '../utils/marketEvents';
 
+const EXTRA_INFO_CACHE_MS = 24 * 60 * 60 * 1000; // Zacks / Fear & Greed context, cached per symbol
 const TIMING_TEXT = { BMO: 'antes de la apertura', AMC: 'tras el cierre', UNKNOWN: 'horario sin informar' } as const;
 
 interface MarketContextTabProps {
@@ -34,15 +35,27 @@ function MarketContextTab({
   // ── Extra Info (Zacks / Fear & Greed) with 24h Cache ───────────────────────
   /* eslint-disable react-hooks/set-state-in-effect -- sync cache read on symbol change */
   useEffect(() => {
-    const cachedVersion = localStorage.getItem('terminal_app_version');
-    if (cachedVersion !== APP_VERSION) {
+    // Drop every cached context on a new app version, and expired ones (> 24 h) otherwise: an entry
+    // is only read for its own symbol, so expired entries of symbols not reopened would stay forever.
+    try {
+      const versionChanged = localStorage.getItem('terminal_app_version') !== APP_VERSION;
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
-        if (key && key.startsWith('terminal_extra_info_')) {
-          localStorage.removeItem(key);
+        if (!key || !key.startsWith('terminal_extra_info_')) continue;
+        let expired = versionChanged;
+        if (!expired) {
+          try {
+            const entry = JSON.parse(localStorage.getItem(key) || 'null');
+            expired = !entry || typeof entry.timestamp !== 'number' || Date.now() - entry.timestamp >= EXTRA_INFO_CACHE_MS;
+          } catch {
+            expired = true;
+          }
         }
+        if (expired) localStorage.removeItem(key);
       }
-      localStorage.setItem('terminal_app_version', APP_VERSION);
+      if (versionChanged) localStorage.setItem('terminal_app_version', APP_VERSION);
+    } catch {
+      /* storage unavailable */
     }
 
     let isMounted = true;
@@ -52,7 +65,7 @@ function MarketContextTab({
     if (cachedData) {
       try {
         const parsed = JSON.parse(cachedData);
-        if (parsed && typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+        if (parsed && typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < EXTRA_INFO_CACHE_MS) {
           if (isCrypto) {
             setCryptoInfo(parsed.data);
             setStockInfo(null);
@@ -167,7 +180,7 @@ function MarketContextTab({
               textAlign: 'center',
               color: 'var(--text-muted)',
               fontSize: '0.75rem',
-              animation: 'pulse 1.5s infinite'
+              animation: 'pulse-loading 1.5s ease-in-out infinite'
             }}>
               Cargando métricas de contexto...
             </div>

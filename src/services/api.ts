@@ -25,13 +25,65 @@ interface CacheEntry<T> {
   data: T;
 }
 
-const apiCache = new Map<string, CacheEntry<unknown>>();
-const inFlightRequests = new Map<string, Promise<unknown>>();
-
 const KLINE_TTL_MS = 25000; // 25s default TTL for 5m intraday klines
 const TICKER_SUMMARY_TTL_MS = 30000; // 30s TTL for ticker summaries
 const NEWS_TTL_MS = 300000; // 5 min TTL for news
 const EXTRA_INFO_TTL_MS = 3600000; // 1 hour TTL for Zacks / Fundamental data
+
+/**
+ * In-memory response cache. No entry is ever reused after the longest TTL (1 h), so entries older
+ * than that are dropped as new ones arrive; a hard cap evicts the least recently used beyond it.
+ * Without this, every symbol ever opened kept its 5m/1h/1d klines (~1 MB) until the page reloaded.
+ */
+const API_CACHE_MAX_AGE_MS = EXTRA_INFO_TTL_MS;
+export const API_CACHE_MAX_ENTRIES = 400;
+const API_CACHE_SWEEP_EVERY = 50;
+
+export class ApiResponseCache extends Map<string, CacheEntry<unknown>> {
+  private setsSinceSweep = 0;
+  private readonly maxEntries: number;
+  private readonly maxAgeMs: number;
+
+  constructor(maxEntries: number = API_CACHE_MAX_ENTRIES, maxAgeMs: number = API_CACHE_MAX_AGE_MS) {
+    super();
+    this.maxEntries = maxEntries;
+    this.maxAgeMs = maxAgeMs;
+  }
+
+  override get(key: string): CacheEntry<unknown> | undefined {
+    const entry = super.get(key);
+    if (entry !== undefined) {
+      // LRU touch
+      super.delete(key);
+      super.set(key, entry);
+    }
+    return entry;
+  }
+
+  override set(key: string, entry: CacheEntry<unknown>): this {
+    if (super.has(key)) super.delete(key);
+    super.set(key, entry);
+    if (++this.setsSinceSweep >= API_CACHE_SWEEP_EVERY) {
+      this.setsSinceSweep = 0;
+      this.sweepExpired(Date.now());
+    }
+    while (this.size > this.maxEntries) {
+      const oldest = this.keys().next().value;
+      if (oldest === undefined) break;
+      super.delete(oldest);
+    }
+    return this;
+  }
+
+  sweepExpired(nowMs: number): void {
+    for (const [key, entry] of this) {
+      if (nowMs - entry.timestamp > this.maxAgeMs) super.delete(key);
+    }
+  }
+}
+
+const apiCache = new ApiResponseCache();
+const inFlightRequests = new Map<string, Promise<unknown>>();
 
 export function getKlineTtlMs(interval: string): number {
   if (interval === '1d' || interval === '1wk') return 600000; // 10 min TTL for daily/weekly klines

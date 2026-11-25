@@ -50,7 +50,7 @@ const yahooAgent = new https.Agent({
   maxSockets: 30,
   maxFreeSockets: 10,
   timeout: 20_000,
-  lookup: cachedLookup as any,
+  lookup: cachedLookup as unknown as https.AgentOptions['lookup'],
 })
 
 const zacksAgent = new https.Agent({

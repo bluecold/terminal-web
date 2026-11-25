@@ -8,6 +8,8 @@ import {
   calculateRegimeSeriesWithHysteresis,
   DEFAULT_WEIGHTS,
   type ScoringWeights,
+} from './indicators';
+import {
   buildConfluenciaContext,
   evaluateConfluenciaAt,
   buildScoringContext,
@@ -19,8 +21,8 @@ import {
   buildMultifractalMTFContext,
   evaluateMultifractalMTFAt,
   buildMFLSContext,
-  evaluateMFLSAt
-} from './indicators';
+  evaluateMFLSAt,
+} from './strategyEvaluators';
 
 // ─── Result Interface ──────────────────────────────────────────────────────
 

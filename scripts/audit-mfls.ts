@@ -1,7 +1,8 @@
 // MFLS audit, revision 2. Synthetic cases verify fixes and document remaining defects.
 // Run: npx tsx scripts/audit-mfls.ts. PENDING assertions describe current defects.
 import assert from 'node:assert/strict';
-import { buildMFLSContext, evaluateMFLSAt, calculateFractalPivotsSeries, isMFLSSessionWindow } from '../src/utils/indicators';
+import { calculateFractalPivotsSeries, isMFLSSessionWindow } from '../src/utils/indicators';
+import { buildMFLSContext, evaluateMFLSAt } from '../src/utils/strategyEvaluators';
 import { simulateTrade, type ExitPolicy, type TradeLevels, type TradeDirection } from '../src/utils/tradeSimulator';
 import { updateAlertsOutcome, type AuditAlertItem } from '../src/utils/alertTracker';
 import { resolveOperationalTrade } from '../src/utils/operationalTrade';

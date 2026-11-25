@@ -11,6 +11,9 @@
  * For each variant: signals, E[R] net in two independent halves, and phase stability (share of
  * signals that change when the series starts 1–4 candles later). Research only.
  *
+ * Since v2026.11.25.1 the app uses TIEMPO, so ACTUAL and TIEMPO print the same numbers (verified:
+ * identical trades and E[R], 0.0% phase change in all four datasets).
+ *
  * Usage: npx tsx --tsconfig tsconfig.execution-tests.json scripts/scoring-sr-anchor.ts
  */
 import * as fs from 'fs';

@@ -86,31 +86,38 @@
   color: var(--accent-blue);
 }
 
+/* Live dot: the pulse ring is a pseudo-element animated with transform + opacity only
+   (composited), so the dot never forces a repaint per frame. */
 .dot {
+  position: relative;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background-color: var(--accent-green);
   box-shadow: 0 0 8px var(--accent-green);
-  animation: pulse-green 2s infinite;
+}
+
+.dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background-color: var(--accent-green);
+  animation: dot-ring 2s ease-out infinite;
+}
+
+.status-indicator.loading .dot,
+.status-indicator.loading .dot::after {
+  background-color: var(--accent-blue);
 }
 
 .status-indicator.loading .dot {
-  background-color: var(--accent-blue);
   box-shadow: 0 0 8px var(--accent-blue);
-  animation: pulse-blue 2s infinite;
 }
 
-@keyframes pulse-green {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
-  70% { transform: scale(1); box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-
-@keyframes pulse-blue {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
-  70% { transform: scale(1); box-shadow: 0 0 0 5px rgba(59, 130, 246, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+@keyframes dot-ring {
+  0% { transform: scale(1); opacity: 0.5; }
+  70%, 100% { transform: scale(2.6); opacity: 0; }
 }
 
 .main-content {
@@ -731,6 +738,27 @@
   color: #fff;
 }
 
+.split-tf-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.split-tf-btn:disabled:hover {
+  color: var(--text-muted);
+}
+
+/* Without split the same grid holds only the main chart, styled as the plain chart area. */
+.chart-split-grid.is-single {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.chart-split-grid.is-single > .chart-split-pane {
+  background: none;
+  border: none;
+  border-radius: 0;
+}
+
 /* ================================================== */
 /*                MARKET TICKER MARQUEE               */
 /* ================================================== */
@@ -824,9 +852,10 @@
   50% { opacity: 1; }
 }
 
+/* Spacing lives on each item (not `gap`) so each of the three copies is exactly one third of
+   the strip and the -33.333% loop has no visible jump. */
 .ticker-scroll {
   display: inline-flex;
-  gap: 40px;
   animation: scroll-marquee 45s linear infinite;
   will-change: transform;
   transform: translate3d(0, 0, 0);
@@ -846,6 +875,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-right: 40px;
   font-size: 0.75rem;
   font-family: var(--font-mono);
   letter-spacing: -0.2px;
@@ -913,7 +943,6 @@
   padding: 8px 10px;
   border-radius: 6px;
   background: rgba(13, 17, 28, 0.96);
-  backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 0 15px rgba(59, 130, 246, 0.12);
   color: var(--text-primary);

@@ -4,13 +4,11 @@ import { updateAlertsOutcome, detectClosedAlertTransitions, getAlertCooldownKey,
 import { simulateTrade } from '../tradeSimulator';
 import {
   getConfirmedClosedKlines,
-  calculateVCMESniperSignal,
-  calculateMultifractalMTFSignal,
-  clearMTFContextCache,
   isNyseTradingSessionActive,
   isNyseSessionClosingCandle,
-  isNyseOpeningWindow
+  isNyseOpeningWindow,
 } from '../indicators';
+import { calculateVCMESniperSignal, calculateMultifractalMTFSignal, clearMTFContextCache } from '../strategySignals';
 import { resolveOperationalTrade } from '../operationalTrade';
 import { isCryptoAsset, getStrategyAtrMultiplier, validateScoringSRRoom, DEFAULT_FRICTION_PCT } from '../tradeLevels';
 import { runBacktestGenericOptimized, getStrategyForwardWindow, createFallbackBacktestResult, getStrategyCooldownCandles, getStrategyCooldownMs, createEmptyWalkForwardResult } from '../backtester';

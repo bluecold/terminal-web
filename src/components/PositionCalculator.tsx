@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, memo } from 'react';
 import type { Kline } from '../services/api';
-import type { VCMESniperResult, MultifractalMTFSignalResult, MFLSEvaluationResult } from '../utils/indicators';
+import type { VCMESniperResult, MultifractalMTFSignalResult } from '../utils/indicators';
+import type { MFLSEvaluationResult } from '../utils/strategyEvaluators';
 import { resolveOperationalTrade } from '../utils/operationalTrade';
 import { formatSmartPrice, formatSmartNumber } from '../utils/formatters';
 

@@ -7,6 +7,23 @@ export interface AlertCooldownRecord {
   outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string;
 }
 
+/** Longest cooldown is 48 h (1d position); entries a week old can never block an alert again. */
+export const COOLDOWN_RECORD_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/** Drops cooldown records older than `maxAgeMs` (they no longer affect any alert). */
+export function pruneExpiredCooldowns(
+  cooldowns: Record<string, number | AlertCooldownRecord>,
+  nowMs: number,
+  maxAgeMs: number = COOLDOWN_RECORD_MAX_AGE_MS
+): Record<string, number | AlertCooldownRecord> {
+  const out: Record<string, number | AlertCooldownRecord> = {};
+  for (const [key, record] of Object.entries(cooldowns ?? {})) {
+    const ts = typeof record === 'number' ? record : record?.timestamp;
+    if (typeof ts === 'number' && Number.isFinite(ts) && nowMs - ts <= maxAgeMs) out[key] = record;
+  }
+  return out;
+}
+
 export interface RadarRowData {
   symbol: string;
   name: string;
