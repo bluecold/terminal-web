@@ -7,6 +7,10 @@
     {
       "source": "/api/zacks/(.*)",
       "destination": "https://quote-feed.zacks.com/$1"
+    },
+    {
+      "source": "/api/nasdaq/(.*)",
+      "destination": "https://api.nasdaq.com/$1"
     }
   ]
 }

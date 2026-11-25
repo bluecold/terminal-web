@@ -1,4 +1,4 @@
-import type { AuditAlertItem, AlertStatus } from './alertTracker';
+import { generateCandleAlertKey, type AuditAlertItem, type AlertStatus } from './alertTracker';
 import { getEasternTime } from './indicators';
 
 /**
@@ -13,12 +13,12 @@ import { getEasternTime } from './indicators';
 export const ALERT_ARCHIVE_STORAGE_KEY = 'terminal_alert_archive';
 const ARCHIVE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const ARCHIVE_MAX_ENTRIES = 3000;
-const ACTIVE_STATUSES = new Set<AlertStatus>(['OPEN', 'TP1_HIT', 'TP2_HIT']);
+export const ACTIVE_STATUSES = new Set<AlertStatus>(['OPEN', 'TP1_HIT', 'TP2_HIT']);
 
 export type ArchivedAlert = Pick<AuditAlertItem,
   'id' | 'symbol' | 'interval' | 'signal' | 'strategy' | 'strategyKey' | 'alertType' | 'confidence'
   | 'entryPrice' | 'stopLoss' | 'status' | 'realizedR' | 'timestamp' | 'candleTimestamp'
-  | 'alertLatencySec' | 'userFillPrice' | 'userFillTime'>;
+  | 'alertLatencySec' | 'userFillPrice' | 'userFillTime' | 'appVersion'>;
 
 export function toArchivedAlert(a: AuditAlertItem): ArchivedAlert {
   return {
@@ -26,22 +26,39 @@ export function toArchivedAlert(a: AuditAlertItem): ArchivedAlert {
     strategyKey: a.strategyKey, alertType: a.alertType, confidence: a.confidence,
     entryPrice: a.entryPrice, stopLoss: a.stopLoss, status: a.status, realizedR: a.realizedR,
     timestamp: a.timestamp, candleTimestamp: a.candleTimestamp, alertLatencySec: a.alertLatencySec,
-    userFillPrice: a.userFillPrice, userFillTime: a.userFillTime,
+    userFillPrice: a.userFillPrice, userFillTime: a.userFillTime, appVersion: a.appVersion,
   };
 }
 
-/** Upserts resolved alerts from the live log into the archive, pruning by age and size. */
+/**
+ * One alert per symbol, interval, candle, strategy and direction (same key as the live dedup registry).
+ * Two scanners running at once (e.g. two open tabs) used to emit the same candle twice with distinct ids.
+ */
+function archiveLogicalKey(a: Pick<ArchivedAlert, 'id' | 'symbol' | 'interval' | 'candleTimestamp' | 'strategy' | 'signal'>): string {
+  return a.candleTimestamp && a.candleTimestamp > 0
+    ? generateCandleAlertKey(a.symbol, a.interval, a.candleTimestamp, a.strategy, a.signal)
+    : `id:${a.id}`;
+}
+
+/** Upserts resolved alerts from the live log into the archive, pruning by age, size and duplicates. */
 export function mergeIntoAlertArchive(
   archive: ArchivedAlert[],
   alerts: AuditAlertItem[],
   nowMs: number = Date.now()
 ): ArchivedAlert[] {
-  const byId = new Map(archive.map(a => [a.id, a]));
+  const byKey = new Map<string, ArchivedAlert>();
+  const upsert = (entry: ArchivedAlert) => {
+    const key = archiveLogicalKey(entry);
+    const existing = byKey.get(key);
+    // The same alert updates in place; a duplicate emission of the same candle keeps the first one
+    if (!existing || existing.id === entry.id || entry.timestamp < existing.timestamp) byKey.set(key, entry);
+  };
+  archive.forEach(upsert);
   for (const alert of alerts) {
     if (ACTIVE_STATUSES.has(alert.status)) continue;
-    byId.set(alert.id, toArchivedAlert(alert));
+    upsert(toArchivedAlert(alert));
   }
-  return [...byId.values()]
+  return [...byKey.values()]
     .filter(a => typeof a.timestamp === 'number' && nowMs - a.timestamp <= ARCHIVE_MAX_AGE_MS)
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, ARCHIVE_MAX_ENTRIES);
@@ -100,9 +117,35 @@ export interface ReportBucket {
 export const REPORT_TIME_SLOTS = ['09:30–10:00', '10:00–11:00', '11:00–14:00', '14:00–16:00', 'Fuera de sesión'] as const;
 export type ReportTimeSlot = typeof REPORT_TIME_SLOTS[number];
 
+export interface ReportDay {
+  day: string;   // ET session day, YYYY-MM-DD
+  bucket: ReportBucket;
+}
+
+/**
+ * Primary alerts with the ET day as the unit. Alerts of the same day are strongly correlated
+ * (one market move triggers many symbols), so the confidence interval is clustered by day.
+ */
+export interface ReportDayStats {
+  days: ReportDay[];             // newest first
+  ci95HalfWidth?: number;        // of the mean R per alert; undefined with fewer than 3 days
+  bestDay?: ReportDay;           // by total R; undefined with fewer than 2 days
+  avgRWithoutBestDay?: number;
+  worstDay?: ReportDay;
+  avgRWithoutWorstDay?: number;
+}
+
+export interface AlertReportOptions {
+  /** Keep only alerts emitted by this app version or a later one (unversioned alerts are older). */
+  minVersion?: string;
+}
+
 export interface AlertPerformanceReport {
   fromMs: number;
   toMs: number;
+  versions: string[];            // app versions present in the window, newest first (before the version filter)
+  unversioned: number;           // resolved alerts in the window emitted before versions were recorded
+  byDay: ReportDayStats;
   primary: ReportBucket;
   byStrategy: Record<string, ReportBucket>;          // all alerts, by strategy label (informational included)
   bySlot: Record<ReportTimeSlot, ReportBucket>;     // primary alerts only
@@ -135,22 +178,77 @@ export function getReportTimeSlot(candleTimestampSec: number): ReportTimeSlot {
 
 function etDayKey(candleTimestampSec: number): string {
   const et = getEasternTime(candleTimestampSec * 1000);
-  return `${et.year}-${et.month}-${et.day}`;
+  return `${et.year}-${String(et.month).padStart(2, '0')}-${String(et.day).padStart(2, '0')}`;
+}
+
+/** Orders app versions (`vYYYY.MM.DD.N`) numerically, part by part. */
+export function compareAppVersions(a: string, b: string): number {
+  const pa = (a.match(/\d+/g) ?? []).map(Number);
+  const pb = (b.match(/\d+/g) ?? []).map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+// Two-sided 95% Student t quantiles for 1..30 degrees of freedom
+const T95 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
+  2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
+
+function buildDayStats(primaryAlerts: ArchivedAlert[]): ReportDayStats {
+  const byDay = new Map<string, ReportBucket>();
+  for (const a of primaryAlerts) {
+    const day = etDayKey(a.candleTimestamp && a.candleTimestamp > 0 ? a.candleTimestamp : a.timestamp / 1000);
+    let bucket = byDay.get(day);
+    if (!bucket) byDay.set(day, bucket = emptyBucket());
+    addToBucket(bucket, a.realizedR);
+  }
+  const days = [...byDay.entries()].map(([day, bucket]) => ({ day, bucket })).sort((a, b) => b.day.localeCompare(a.day));
+  const stats: ReportDayStats = { days };
+  const g = days.length;
+  const n = primaryAlerts.length;
+  if (g < 2) return stats;
+
+  const totalR = days.reduce((sum, d) => sum + d.bucket.totalR, 0);
+  const without = (d: ReportDay) => (totalR - d.bucket.totalR) / (n - d.bucket.n);
+  stats.bestDay = days.reduce((best, d) => d.bucket.totalR > best.bucket.totalR ? d : best);
+  stats.worstDay = days.reduce((worst, d) => d.bucket.totalR < worst.bucket.totalR ? d : worst);
+  stats.avgRWithoutBestDay = without(stats.bestDay);
+  stats.avgRWithoutWorstDay = without(stats.worstDay);
+
+  if (g >= 3) {
+    // Cluster-robust standard error of the mean R per alert, clusters = days
+    const mean = totalR / n;
+    const ss = days.reduce((sum, d) => sum + (d.bucket.totalR - mean * d.bucket.n) ** 2, 0);
+    const se = Math.sqrt((g / (g - 1)) * ss) / n;
+    stats.ci95HalfWidth = (T95[g - 2] ?? 1.96) * se;
+  }
+  return stats;
 }
 
 /** Builds the performance report over resolved alerts emitted in the last `days` days. */
 export function buildAlertPerformanceReport(
   alerts: ArchivedAlert[],
   nowMs: number = Date.now(),
-  days: number = 7
+  days: number = 7,
+  options: AlertReportOptions = {}
 ): AlertPerformanceReport {
   const fromMs = nowMs - days * 24 * 60 * 60 * 1000;
-  const resolved = alerts.filter(a => !ACTIVE_STATUSES.has(a.status) && a.timestamp >= fromMs && a.timestamp <= nowMs && Number.isFinite(a.realizedR));
+  const inWindow = alerts.filter(a => !ACTIVE_STATUSES.has(a.status) && a.timestamp >= fromMs && a.timestamp <= nowMs && Number.isFinite(a.realizedR));
+  const versions = [...new Set(inWindow.map(a => a.appVersion).filter((v): v is string => !!v))].sort((a, b) => compareAppVersions(b, a));
+  const { minVersion } = options;
+  const resolved = minVersion
+    ? inWindow.filter(a => !!a.appVersion && compareAppVersions(a.appVersion, minVersion) >= 0)
+    : inWindow;
   const primaryAlerts = resolved.filter(a => (a.alertType ?? 'PRIMARY') === 'PRIMARY');
 
   const report: AlertPerformanceReport = {
     fromMs,
     toMs: nowMs,
+    versions,
+    unversioned: inWindow.filter(a => !a.appVersion).length,
+    byDay: buildDayStats(primaryAlerts),
     primary: emptyBucket(),
     byStrategy: {},
     bySlot: Object.fromEntries(REPORT_TIME_SLOTS.map(s => [s, emptyBucket()])) as Record<ReportTimeSlot, ReportBucket>,

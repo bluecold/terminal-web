@@ -1,5 +1,19 @@
 # FinceptTerminal - Web App Context
 
+## INFORME por día, etiquetas sin promesa de ventaja y motores informativos plegados — 2026-11-16 (v2026.11.16.1)
+
+- **INFORME (`alertReport.ts`, `AlertReportModal.tsx`):** sección "Por día (ET)" con el día como unidad: R medio por alerta con IC 95% agrupado por día (error estándar robusto por clúster, t de Student con días−1 grados de libertad, desde 3 días), resultado sin el mejor y sin el peor día, y tabla por día. Período de 90 días. Las notas que afirmaban ventaja por franja, primera alerta y demora ahora dicen que vienen de la muestra de calibración y no se sostuvieron fuera de muestra.
+- **Versión de reglas:** cada alerta guarda `appVersion` al emitirse y el INFORME filtra "Desde vX" (`compareAppVersions` ordena numéricamente). Las alertas anteriores a esta versión no tienen versión y quedan fuera al filtrar.
+- **Etiquetas (`SignalPanel.tsx`, `HelpModal.tsx`):** el panel dice "Backtest favorable (no validado fuera de muestra)" igual que el radar; en VCME, la insignia verde "ALTA" pasa a "PUNTAJE n" neutro y "Score de Confianza Final" a "Puntaje interno del motor".
+- **Menos ruido en acciones 5m:** las tarjetas informativas quedan plegadas tras "Ver N motores informativos · k con señal" (localStorage `terminal_show_informational`). Los pesos de Scoring pasan a "Avanzado: Pesos" con aviso de sobreajuste. No cambia ninguna señal, torneo ni alerta.
+
+## Chequeos de causalidad estilo freqtrade y pisos de warmup convergidos — 2026-11-04 (v2026.11.04.1)
+
+- **`causality.test.ts` (+ `__tests__/helpers/causality.ts`):** lookahead genérico de los seis motores (la salida del evaluador en la vela i es idéntica con la historia completa y con la historia cortada en i, 1h/1d sólo cerradas) y sensibilidad a la historia (cuántas velas necesita cada motor para que su señal no dependa de dónde empieza la serie). Incluye motores de control con fuga para probar el detector.
+- **Datos reales (`scripts/causality-analysis.ts`, 30 símbolos):** 0 diferencias de lookahead en ~15.500 evaluaciones. Con el piso mínimo cambiaban 13% de las señales de Standard (EMA200), 34% de Scoring y 3% de Confluencia respecto de la historia completa que ve la app en vivo.
+- **Pisos convergidos (`getStrategyConvergedWarmup` / `resolveBacktestWarmupFloor`):** Standard 500, Scoring 100, MFLS 100, VCME 100, Confluencia 59, Multifractal 59, y 300 para motores con VWAP en cripto 5m (VWAP anclado al día UTC). Se aplican sólo si cuestan ≤ 25% de la serie (≥ 4× el piso), así 1d (~500 velas) y las series cortas conservan el piso mínimo. Sólo cambia qué velas iniciales evalúa el backtest; las alertas en vivo no cambian. Impacto (30 símbolos 5m, E[R] neta): Confluencia sin cambios (780 señales, −0,057), Standard 3.239→3.006 señales (−0,195→−0,209), el resto ±0,01.
+- **Pendiente (todo en el test):** Scoring toma S/R de un checkpoint cada 5 velas contado desde el inicio del array (`floor(i/5)*5`), así que ~9% de sus señales cambian según dónde empiece la ventana descargada. `scripts/scoring-sr-anchor.ts` mide anclarlo al tiempo o recalcularlo por vela: elimina esa variación (0%) sin cambiar la E[R] neta (±0,005R en ambas mitades, acciones/cripto, 5m/1h).
+
 ## Estrategia #6: MACD Failure & Liquidity Sweep (MFLS) y Calibración Intradiaria — 2026-09-21 (Revisión 5)
 
 - **Motor Cuantitativo MFLS (`indicators.ts` / `strategyEvaluators.ts`):** Estrategia cuantitativa de reversión institucional por barrido de liquidez y fallo de momentum.
@@ -763,6 +777,19 @@ Medido sobre la watchlist de 21 papeles, 60 días de velas de 5m, neto de 0,11% 
 - **Lógica del escáner compartida y testeada**: `buildStrategyCandidateQueue` y `resolveCandidateCascade` (`tournament.ts`) arman la cola de candidatas y eligen la primera con plan operativo válido en App, MarketRadar y SignalPanel; `evaluateAlertEmission` (`alertEmission.ts`) decide si se emite la alerta (registro de informativas, posición abierta, sesión NYSE, vela de cierre, deduplicación y cooldown). Tests en `scannerPipeline.test.ts`; las reglas de Confluencia, en `confluencia.test.ts`.
 - **Radar coherente con las alertas**: la columna líder usa `resolveTournamentLeader` (Confluencia en acciones 5m salvo veto por historia tóxica; ganador del torneo en el resto), igual que el badge LÍDER de SignalPanel. La matriz 5m·1h·1d del radar se calcula con Standard Voting: se renombró a "Alineación Estándar" (antes "Confluencia MTF") y se atenúa como informativa en acciones 5m. El radar se refresca con `getMsUntilNextAlignedScan` y recibe el estado de 🔬 por prop (`allowExploratory`).
 - **Informe de alertas reales** (`alertReport.ts`, `AlertReportModal.tsx`, botón INFORME): archivo de alertas cerradas de 90 días (`terminal_alert_archive`) con R por estrategia, franja horaria, primera alerta del día, demora de emisión (`alertLatencySec`) y costo de ejecución contra el precio cargado por el usuario (`userFillPrice`).
+
+## Validación fuera de muestra de Confluencia 5m y filtro de volatilidad (2026-10-15, v2026.10.15.1)
+
+Revisión de un informe de auditoría externo y validación con datos nuevos de Yahoo (22-jul → 14-oct-2026, 106 papeles; `scripts/fetch-fresh-5m.ts`, `scripts/confluencia-volatility-oos.ts`). Neto de 0,11% + 0,03%:
+- **La ventaja de +0,06R no se sostuvo.** Watchlist de 21 papeles en las 14 sesiones nuevas (25-sep → 14-oct): −0,079R ±0,136 (236 alertas). En 49 papeles nunca analizados: −0,152R ±0,044. Confluencia sigue siendo la estrategia de alertas en acciones 5m por ser la que menos pierde, no por tener ventaja comprobada; textos de panel, guía y razonamientos del torneo ya no dicen "validada".
+- **Filtro de volatilidad** (`CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT = 0.005` en `evaluateConfluenciaAt`, mismo evaluador en vivo y backtest): Confluencia en acciones 5m solo opera si ATR(14) ≥ 0,5% del precio. Las alertas rechazadas pierden fuera de muestra −0,23R (temporal) y −0,32R (papeles nuevos); las aceptadas quedan cerca de cero (−0,04R / −0,08R). En la watchlist, en las sesiones nuevas, el total pasa de −18,7R a −1,2R conservando 2/3 de las alertas. Se eligió 0,5% (y no 0,65%, algo mejor en E[R]) para no recortar la frecuencia. El panel muestra el ATR% y avisa "SEÑAL BLOQUEADA"; el resultado expone `atrPct`, `lowVolatility` y `blockedSignal`.
+- **Descartado por medición** (propuestas del informe): stop 1,5×ATR en Confluencia (peor: +0,048 → −0,007R en la watchlist), motor de reversión a bandas VWAP ±2σ 10:15–15:25 (−0,13 a −0,23R, negativo en ambas mitades), bonos horarios en el torneo, cooldown por resultado (ya existía: 30 min tras SL, 5 min tras TP/timeout).
+
+## Motores en acciones 1h y etiquetas de confianza (2026-10-15, v2026.10.15.2)
+
+- **Medición** (`scripts/fetch-1h-1d.ts`, `scripts/engines-1h-validation.ts`): 106 papeles, velas 1h nov-2023 → oct-2026, costo real del usuario 0,11% si abre y cierra el mismo día y 0,22% si cruza la noche, + 0,03% de deslizamiento. Criterio fijado antes: positivo en las 2 mitades temporales × (watchlist / resto) y IC95 total > 0.
+- **Resultado:** ningún motor pasa. Modo app (salida al cierre de sesión): Confluencia −0,067R (n=43.025), Scoring −0,101R, Estándar −0,086R. Modo swing (hasta 21 velas): −0,13R a −0,19R. VCME swing −0,124R (n=618). La ventaja **bruta** (sin costos) ya es ≈0 o negativa (−0,07R a +0,01R): no es un problema de costos. Mantener de un día a otro empeora. El backtest de la app en 1h fuerza la salida al cierre de la sesión (`sessionGapCutoff`), así que nunca medía el swing real.
+- **Cambios de interfaz (sin tocar la lógica):** la confianza del torneo se muestra como "📊 Backtest favorable" (HIGH), "⚠️ Backtest con muestra limitada" (LIMITED) y "🛡️ Sin ventaja en el backtest" (NONE) en SignalPanel, notificaciones ("[Backtest favorable]" en lugar de "[Validada]") y radar. La guía explica qué significan y el resultado en 1h. Cripto no se midió fuera de muestra y así se indica.
 
 ## Cuestiones Pendientes y Futuras Mejoras
 

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { Pause, Play } from 'lucide-react';
 import { fetchTickerSummary } from '../services/api';
 import type { TickerSummary } from '../services/api';
 
@@ -13,11 +14,39 @@ const TICKERS_TO_FETCH = [
   { symbol: 'BTC-USD', name: 'Bitcoin USD' },
 ];
 
+const STORAGE_KEY = 'terminal_ticker_animation_paused';
+
 export default function MarketTicker() {
   const [data, setData] = useState<TickerSummary[]>([]);
   const [loading, setLoading] = useState(true);
-
   const [isPageVisible, setIsPageVisible] = useState(() => !document.hidden);
+
+  const [isPaused, setIsPaused] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved !== null) {
+        return saved === 'true';
+      }
+      if (typeof window !== 'undefined' && window.matchMedia) {
+        return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      }
+    } catch {
+      // Safe fallback if localStorage or matchMedia is restricted
+    }
+    return false;
+  });
+
+  const togglePause = useCallback(() => {
+    setIsPaused(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem(STORAGE_KEY, String(next));
+      } catch {
+        // Safe fallback
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -64,8 +93,10 @@ export default function MarketTicker() {
 
   if (loading && data.length === 0) {
     return (
-      <div className="ticker-wrapper">
-        <div className="ticker-loading">Loading market indices...</div>
+      <div className="ticker-container">
+        <div className="ticker-wrapper">
+          <div className="ticker-loading">Loading market indices...</div>
+        </div>
       </div>
     );
   }
@@ -74,33 +105,66 @@ export default function MarketTicker() {
 
   // Duplicate items to ensure a seamless scrolling effect
   const tickerItems = [...data, ...data, ...data]; // Triple items to guarantee enough width for scroll continuity
+  const isAnimationActive = !isPaused && isPageVisible;
 
   return (
-    <div className="ticker-wrapper">
-      <div className="ticker-scroll" style={{ animationPlayState: isPageVisible ? 'running' : 'paused' }}>
-        {tickerItems.map((item, idx) => {
-          const isPositive = item.change >= 0;
-          const formattedPrice = item.price.toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          });
-          const formattedChange = Math.abs(item.change).toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          });
-          const formattedPercent = item.changePercent.toFixed(2);
+    <div className="ticker-container">
+      <button
+        type="button"
+        className={`ticker-toggle-btn ${isPaused ? 'is-paused' : ''}`}
+        onClick={togglePause}
+        title={isPaused ? "Reanudar animación del carrusel" : "Pausar animación del carrusel (ahorra GPU)"}
+        aria-label={isPaused ? "Reanudar animación del carrusel" : "Pausar animación del carrusel (ahorra GPU)"}
+        aria-pressed={isPaused}
+      >
+        {isPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}
+        <span className="ticker-btn-label">{isPaused ? 'REANUDAR' : 'PAUSAR'}</span>
+      </button>
 
-          return (
-            <div key={`${item.symbol}-${idx}`} className="ticker-item">
-              <span className="ticker-name">{item.name}</span>
-              <span className="ticker-price">${formattedPrice}</span>
-              <span className={`ticker-change ${isPositive ? 'positive' : 'negative'}`}>
-                <span className="ticker-arrow">{isPositive ? '▲' : '▼'}</span>
-                {isPositive ? '+' : '-'}{formattedChange} ({isPositive ? '+' : ''}{formattedPercent}%)
-              </span>
-            </div>
-          );
-        })}
+      <div
+        className={`ticker-wrapper ${isPaused ? 'is-paused' : ''}`}
+        onClick={togglePause}
+        title={isPaused ? "Haz clic para reanudar animación" : "Haz clic para pausar animación (ahorra GPU)"}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            togglePause();
+          }
+        }}
+      >
+        <div
+          className={`ticker-scroll ${isPaused ? 'is-paused' : ''}`}
+          style={{
+            animationPlayState: isAnimationActive ? 'running' : 'paused',
+            willChange: isPaused ? 'auto' : 'transform',
+          }}
+        >
+          {tickerItems.map((item, idx) => {
+            const isPositive = item.change >= 0;
+            const formattedPrice = item.price.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+            const formattedChange = Math.abs(item.change).toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+            const formattedPercent = item.changePercent.toFixed(2);
+
+            return (
+              <div key={`${item.symbol}-${idx}`} className="ticker-item">
+                <span className="ticker-name">{item.name}</span>
+                <span className="ticker-price">${formattedPrice}</span>
+                <span className={`ticker-change ${isPositive ? 'positive' : 'negative'}`}>
+                  <span className="ticker-arrow">{isPositive ? '▲' : '▼'}</span>
+                  {isPositive ? '+' : '-'}{formattedChange} ({isPositive ? '+' : ''}{formattedPercent}%)
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

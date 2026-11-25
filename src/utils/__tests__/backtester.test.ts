@@ -7455,7 +7455,8 @@ export function runAllBacktesterTests(): { passed: number; total: number } {
 
     const resMulti = backtestMultifractalMTF(klines5m_600, klines1h_100, klines1d_60, '5m', 'TEST_MULTI_LABEL');
     assert.strictEqual(resMulti.insufficient, false, '600 candles must evaluate cleanly');
-    assert.strictEqual(resMulti.label, 'últimas 558 velas (5m)', 'Label must reflect 558 actual evaluated bars, not 576');
+    // 600 candles ≥ 4 × 59, so the converged warmup floor (59) applies: 600 − 1 − 12 (forward) − 59 + 1 = 529.
+    assert.strictEqual(resMulti.label, 'últimas 529 velas (5m)', 'Label must reflect 529 actual evaluated bars, not 576');
   });
 
   // Test 140: evaluateVCMESniperAt safely falls back to rsi1H: 50 when 1H RSI is NaN or undefined without throwing TypeError

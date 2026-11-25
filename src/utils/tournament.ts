@@ -68,8 +68,10 @@ export const WATCHLIST_5M_PRIORS: Record<string, number> = {
 
 /**
  * Engines that are informational-only on 5m equities. Measured on the 21-symbol watchlist over 60 days
- * net of 0.11% commission + 0.03% slippage, only Confluencia keeps a positive net edge on this profile
- * (Standard -0.13R, Scoring -0.23R, VCME -0.26R, Multifractal -0.29R, MFLS -0.31R). These engines stay
+ * net of 0.11% commission + 0.03% slippage, only Confluencia was positive on this profile
+ * (Standard -0.13R, Scoring -0.23R, VCME -0.26R, Multifractal -0.29R, MFLS -0.31R). Its +0.06R did not
+ * hold out of sample (2026-09-25 → 10-14 and 49 unseen symbols: ≈ 0R after its ATR guard), so it stays
+ * the alerting engine as the least-bad one, not as a validated edge. These engines stay
  * computed, backtested and visible, but never win the tournament nor emit PRIMARY alerts there.
  */
 export const INFORMATIONAL_STRATEGIES_5M_EQUITY: ReadonlySet<StrategyCandidate['key']> = new Set<StrategyCandidate['key']>([
@@ -1114,7 +1116,7 @@ function getEquity5mActionableCandidates(
     isFallback: !isWinner,
     reasoning: isWinner
       ? qve.tournament.reasoning
-      : `Confluencia (${signal}) validada sobre el conjunto de la watchlist en 5m (09:35–11:00 ET); sin veto por historial individual del papel`,
+      : `Confluencia (${signal}) en 5m (09:35–11:00 ET, ATR ≥ 0,5%): entrada técnica sin ventaja neta comprobada fuera de muestra; sin veto por historial individual del papel`,
   }];
 }
 
@@ -1193,7 +1195,7 @@ export function resolveTournamentLeader(qve: QVESelectionResult): TournamentLead
     label: onlyDirection ? `Confluencia · solo ${onlyDirection}` : conf.label,
     confidence: isWinner && qve.confidence === 'HIGH' ? 'HIGH' : 'LIMITED',
     profitFactor: isWinner ? qve.profitFactor : conf.profitFactor,
-    reasoning: `Confluencia validada sobre el conjunto de la watchlist en acciones 5m (09:35–11:00 ET)`
+    reasoning: `Confluencia en acciones 5m (09:35–11:00 ET, ATR ≥ 0,5%): entrada técnica sin ventaja neta comprobada fuera de muestra`
       + (onlyDirection ? `; ${onlyDirection === 'SELL' ? 'compras' : 'ventas'} vetadas por historia tóxica en este papel` : '')
       + `. ${ownHistory}`,
   };

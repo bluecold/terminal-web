@@ -76,7 +76,21 @@ export interface ConfluenciaEvaluationResult {
   stopLoss: number;
   validVolume: boolean;
   emaCrossover: EmaCrossover;
+  /** ATR(14) / close of the evaluated candle (0 when unavailable). */
+  atrPct?: number;
+  /** True when a 5m equity setup was neutralized by the minimum-volatility guard. */
+  lowVolatility?: boolean;
+  /** Direction of the setup neutralized by the volatility guard (research and telemetry). */
+  blockedSignal?: 'BUY' | 'SELL';
 }
+
+/**
+ * Minimum ATR(14)/close for Confluencia on 5m equities. Below it, the 0.14% round-trip friction
+ * eats too much of the 2 ATR stop: out-of-sample (2026-07-22 → 2026-10-14, 49 unseen symbols plus
+ * 14 new sessions on 57 known ones) the rejected setups lost −0.23R to −0.32R per alert, while the
+ * accepted ones were roughly break-even. It protects capital; it does not create a positive edge.
+ */
+export const CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT = 0.005;
 
 export function buildConfluenciaContext(
   klines: Kline[],
@@ -179,6 +193,16 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
     }
   }
 
+  // Volatility guard for 5m equities: no setup when ATR(14) < 0.5% of the price.
+  const atrPct = curr.close > 0 && atr > 0 ? atr / curr.close : 0;
+  let lowVolatility = false;
+  let blockedSignal: 'BUY' | 'SELL' | undefined;
+  if (isEquity && is5m && signal !== 'NEUTRAL' && !(atrPct >= CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT)) {
+    blockedSignal = signal;
+    signal = 'NEUTRAL';
+    lowVolatility = true;
+  }
+
   const rawDistPct = curr.close > 0 && atr > 0 ? (2 * atr) / curr.close : 0.008;
   const effectiveStopPct = is5m ? Math.max(0.004, rawDistPct) : rawDistPct;
   const stopLossLong = curr.close * (1 - effectiveStopPct);
@@ -191,7 +215,10 @@ export function evaluateConfluenciaAt(ctx: ConfluenciaContext, i: number): Confl
     signal,
     stopLoss,
     validVolume,
-    emaCrossover
+    emaCrossover,
+    atrPct,
+    lowVolatility,
+    ...(blockedSignal ? { blockedSignal } : {})
   };
 }
 

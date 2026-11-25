@@ -834,6 +834,44 @@ export function getStrategySignalWarmup(strategy?: string): number {
   return 30;
 }
 
+/**
+ * History after which each engine's signal no longer depends on where the series starts
+ * (recursive indicators converged). Measured with scripts/causality-analysis.ts on 30 real
+ * symbols (Nov 2026): at the minimal floor 13% of Standard signals (EMA200), 34% of Scoring
+ * signals and 3% of Confluencia signals differ from the full-history signal the live app sees;
+ * at these values the residual is ≤ 2% (Scoring keeps ~6–9% S/R-checkpoint phase noise).
+ */
+export function getStrategyConvergedWarmup(strategy?: string): number {
+  const norm = (strategy || '').toLowerCase();
+  if (norm.includes('standard')) return 500;
+  if (norm.includes('scoring')) return 100;
+  if (norm.includes('confluencia')) return 59;
+  if (norm.includes('multifractal')) return 59;
+  if (norm.includes('mfls')) return 100;
+  return 100; // VCME and others: EMA21 / ADX(14) on 5m
+}
+
+/**
+ * Backtest warmup floor: the converged history when the series is long enough to afford it
+ * (it costs at most 25% of the candles, e.g. 60 days of 5m), otherwise the minimal floor so short
+ * series (≈500 daily candles, recently listed symbols) keep an evaluable window. Only changes
+ * which early candles the backtest evaluates; live signals always use the full history.
+ */
+export function resolveBacktestWarmupFloor(
+  strategy: string | undefined,
+  totalCandles: number,
+  opts: { interval?: string; isCrypto?: boolean } = {}
+): number {
+  const norm = (strategy || '').toLowerCase();
+  const minimal = getStrategySignalWarmup(strategy);
+  let converged = Math.max(minimal, getStrategyConvergedWarmup(strategy));
+  // Crypto VWAP is anchored to the UTC day: the first partial day of the series has a wrong VWAP,
+  // so VWAP engines on 5m crypto need one full day (288 candles) before their first evaluation.
+  const usesVwap = norm.includes('confluencia') || norm.includes('scoring') || norm.includes('vcme');
+  if (opts.isCrypto && opts.interval === '5m' && usesVwap) converged = Math.max(converged, 300);
+  return totalCandles >= 4 * converged ? converged : minimal;
+}
+
 function getParams(
   interval: string,
   totalCandles?: number,
@@ -1149,7 +1187,8 @@ export function backtestMultitemporal(
   if (!klines1d || klines1d.length < 30) return fallbackResult;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
+  const warmupFloor = style === 'swing' ? 30 : resolveBacktestWarmupFloor('vcme', klines5m.length);
+  const oldestEvalIdx = Math.max(warmupFloor, latestEvalIdx - evalWindow + 1);
 
   let totalSignals = 0;
   let wins = 0;
@@ -1368,7 +1407,7 @@ export function runBacktestGenericOptimized(
 
   // Canonical forwardWindow derived purely from getStrategyForwardWindow
   const forwardWindow = getStrategyForwardWindow(strategyKey, interval, undefined, isCrypto);
-  const warmupFloor = getStrategySignalWarmup(strategyKey);
+  const warmupFloor = resolveBacktestWarmupFloor(strategyKey, klines.length, { interval, isCrypto });
   const params = getParams(interval, klines.length, forwardWindow, warmupFloor);
   const atrMultiplier = customAtrMultiplier ?? getStrategyAtrMultiplier(strategyKey, interval, isCrypto);
   const { evalWindow, targetMultiplier, forwardLabel } = params;
@@ -1715,7 +1754,7 @@ export function backtestMultifractalMTF(
   let nextAllowedIdx = 0;
 
   const latestEvalIdx = klines5m.length - 1 - forwardWindow;
-  const oldestEvalIdx = Math.max(30, latestEvalIdx - evalWindow + 1);
+  const oldestEvalIdx = Math.max(resolveBacktestWarmupFloor('multifractal', klines5m.length), latestEvalIdx - evalWindow + 1);
 
   const ctx = buildMultifractalMTFContext(klines5m, klines1h, klines1d, _symbol);
   const regimeSeries = calculateRegimeSeriesWithHysteresis(ctx.adxData5M.adx, 26.0, 22.0);
@@ -1893,7 +1932,7 @@ export function backtestMFLS(
 
   const forwardWindow = getStrategyForwardWindow('mfls', _interval, 'dayTrading', _symbol);
   const forwardLabel = `${forwardWindow} velas (${(forwardWindow * 5) / 60} hs max)`;
-  const warmup = 30;
+  const warmup = resolveBacktestWarmupFloor('mfls', klines5m.length);
   const cooldownPeriod = getStrategyCooldownCandles('5m');
   const evalWindow = klines5m.length <= 650
     ? Math.min(576, Math.max(0, klines5m.length - forwardWindow - warmup))

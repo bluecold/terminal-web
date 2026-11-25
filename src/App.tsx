@@ -1,15 +1,42 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import './App.css';
-import { Search, LayoutGrid, LineChart } from 'lucide-react';
+import {
+  Search,
+  LayoutGrid,
+  LineChart,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Activity,
+  Bell,
+  List,
+  FlaskConical,
+  Shield,
+  Zap,
+  Clock,
+  Timer,
+  Ruler,
+  Hourglass,
+  CheckCircle2,
+  XCircle,
+  TrendingUp,
+  AlertTriangle,
+  Columns2,
+} from 'lucide-react';
 import Chart from './components/Chart';
 import Watchlist from './components/Watchlist';
 import SignalPanel from './components/SignalPanel';
-import MarketRadar from './components/MarketRadar';
-import { fetchKlines, fetchEarningsDate } from './services/api';
+import { fetchKlines } from './services/api';
 import MarketTicker from './components/MarketTicker';
-import HelpModal from './components/HelpModal';
-import AlertReportModal from './components/AlertReportModal';
 import type { Kline } from './services/api';
+import { useEarningsCalendar } from './hooks/useEarningsCalendar';
+import { buildAlertEventNotice, getMacroNotice } from './utils/marketEvents';
+import EventBadge from './components/EventBadge';
+
+const MarketRadar = lazy(() => import('./components/MarketRadar'));
+const HelpModal = lazy(() => import('./components/HelpModal'));
+const AlertReportModal = lazy(() => import('./components/AlertReportModal'));
 import { calculateStandardVoting, calculateExperimentalSignal, calculateScoringSignal, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, isNyseTradingSessionActive, DEFAULT_WEIGHTS, type ScoringWeights } from './utils/indicators';
 import { resolveOperationalTrade } from './utils/operationalTrade';
 import { isCryptoAsset } from './utils/tradeLevels';
@@ -17,7 +44,7 @@ import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue,
 import { evaluateAlertEmission } from './utils/alertEmission';
 import { APP_VERSION } from './version';
 import { getMsUntilNextAlignedScan } from './utils/scanSchedule';
-import { computeAlertLatencySec, computeExecutionCostR, loadAlertArchive, mergeIntoAlertArchive, saveAlertArchive, type ArchivedAlert } from './utils/alertReport';
+import { computeAlertLatencySec, computeExecutionCostR, loadAlertArchive, mergeIntoAlertArchive, saveAlertArchive, ACTIVE_STATUSES, type ArchivedAlert } from './utils/alertReport';
 import {
   updateAlertsOutcome,
   calculateSessionStats,
@@ -44,6 +71,7 @@ import {
 import { formatSmartPrice } from './utils/formatters';
 import type { AlertOverlay } from './components/Chart';
 import type { AlertCooldownRecord } from './utils/radarFilters';
+import { acquireScannerLeadership } from './utils/scannerLeadership';
 
 function loadSavedAlertCooldowns(): Record<string, number | AlertCooldownRecord> {
   try {
@@ -82,8 +110,16 @@ function App() {
 
   // Resolved alerts are archived (90 days) for the performance report, independent of the
   // 100-entry / 7-day live log and of the LIMPIAR button.
+  // Debounced to avoid blocking synchronous I/O (parsing up to 3,000 JSON entries) on high-frequency kline updates.
   useEffect(() => {
-    saveAlertArchive(mergeIntoAlertArchive(loadAlertArchive(), alertsLog));
+    const hasClosedOrFilled = alertsLog.some(a => !ACTIVE_STATUSES.has(a.status) || a.userFillPrice !== undefined);
+    if (!hasClosedOrFilled) return;
+
+    const handler = setTimeout(() => {
+      saveAlertArchive(mergeIntoAlertArchive(loadAlertArchive(), alertsLog));
+    }, 1500);
+
+    return () => clearTimeout(handler);
   }, [alertsLog]);
 
   const recordUserFill = useCallback((alertId: string, price: number | undefined) => {
@@ -128,6 +164,37 @@ function App() {
 
   // Cooldown for notifications/logging per symbol and timeframe (persisted in localStorage)
   const alertCooldownsRef = useRef<Record<string, number | AlertCooldownRecord>>(loadSavedAlertCooldowns());
+
+  // Only one tab scans and emits alerts; the others mirror its alert log (see scannerLeadership.ts)
+  const [isScannerLeader, setIsScannerLeader] = useState(false);
+  const isScannerLeaderRef = useRef(false);
+  useEffect(() => acquireScannerLeadership(() => {
+    // State written by the previous leader tab while this one was waiting
+    alertCooldownsRef.current = loadSavedAlertCooldowns();
+    isScannerLeaderRef.current = true;
+    setIsScannerLeader(true);
+  }), []);
+  // The lock is granted asynchronously even in a single tab: only label this tab as follower if it persists
+  const [showFollowerNotice, setShowFollowerNotice] = useState(false);
+  useEffect(() => {
+    if (isScannerLeader) return;
+    const timer = setTimeout(() => setShowFollowerNotice(true), 2000);
+    return () => clearTimeout(timer);
+  }, [isScannerLeader]);
+  useEffect(() => {
+    if (isScannerLeader) return;
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key !== 'terminal_alerts_log' || !e.newValue) return;
+      try {
+        const parsed = JSON.parse(e.newValue);
+        if (Array.isArray(parsed)) setAlertsLog(parsed);
+      } catch (err) {
+        console.error('Error parsing terminal_alerts_log from another tab', err);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, [isScannerLeader]);
   const [alertCooldowns, setAlertCooldownsState] = useState<Record<string, number | AlertCooldownRecord>>(loadSavedAlertCooldowns);
 
   const setAlertCooldown = useCallback((key: string, timestamp: number, outcome?: 'SL' | 'TP' | 'TIMEOUT' | 'ENTRY' | string) => {
@@ -156,7 +223,10 @@ function App() {
     const toUpdate = targetSymbol
       ? prevAlerts.filter(a => a.symbol === targetSymbol)
       : prevAlerts;
-    const updates = new Map(updateAlertsOutcome(toUpdate, klinesMap).map(a => [a.id, a]));
+    // After the regular session, intraday equity positions are closed at the last price (with friction)
+    // inside the tracker, so the realized R reflects the actual exit instead of a 0R placeholder.
+    const isNyseActive = isNyseTradingSessionActive(Date.now());
+    const updates = new Map(updateAlertsOutcome(toUpdate, klinesMap, { squareOffIntraday: !isNyseActive }).map(a => [a.id, a]));
     const updated = trimAlertsPreservingActive(prevAlerts.map(a => updates.get(a.id) ?? a), 100);
 
     const newlyClosed = detectClosedAlertTransitions(prevAlerts, updates);
@@ -175,7 +245,6 @@ function App() {
     // If the regular NYSE trading session is closed for the day (!isNyseTradingSessionActive(Date.now()))
     // and an alert is an intraday day trading equity position still marked OPEN or TP1_HIT:
     // square it off cleanly as EXPIRED so that positions never remain open overnight or over the weekend.
-    const isNyseActive = isNyseTradingSessionActive(Date.now());
     const finalAlerts = isNyseActive
       ? updated
       : updated.map(alert => {
@@ -183,10 +252,13 @@ function App() {
           const isDayTrade = alert.interval === '5m' || alert.interval === '1m' || alert.interval === '3m';
           const isSwingVCME = (alert.strategyKey === 'multitemporal' || alert.strategy?.includes('VCME')) && alert.executionStyle === 'swing';
           if (!isCrypto && isDayTrade && !isSwingVCME && (alert.status === 'OPEN' || alert.status === 'TP1_HIT')) {
+            // Fallback when this pass had no klines for the symbol: realize the last floating net P&L.
+            const riskPct = alert.entryPrice > 0 ? Math.abs(alert.entryPrice - alert.stopLoss) / alert.entryPrice * 100 : 0;
             return {
               ...alert,
               status: 'EXPIRED' as const,
-              executionWarning: 'Posición intradía cerrada al cierre de sesión regular (16:00 ET).'
+              realizedR: riskPct > 0 ? Number((alert.pnlPercent / riskPct).toFixed(2)) : 0,
+              executionWarning: 'Posición intradía cerrada al cierre de sesión regular (16:00 ET), con el último precio observado.'
             };
           }
           return alert;
@@ -202,10 +274,39 @@ function App() {
   }, [setAlertCooldown]);
 
   const [mainView, setMainView] = useState<'chart' | 'radar'>('chart');
+  const [mobileTab, setMobileTab] = useState<'chart' | 'radar' | 'signals' | 'alerts' | 'watchlist'>('chart');
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('terminal_left_collapsed') === 'true'; } catch { return false; }
+  });
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('terminal_right_collapsed') === 'true'; } catch { return false; }
+  });
+  const toggleLeftSidebar = useCallback(() => {
+    setLeftCollapsed(prev => {
+      const next = !prev;
+      try { localStorage.setItem('terminal_left_collapsed', String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+  const toggleRightSidebar = useCallback(() => {
+    setRightCollapsed(prev => {
+      const next = !prev;
+      try { localStorage.setItem('terminal_right_collapsed', String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const [currentAsset, setCurrentAsset] = useState(() => {
     return localStorage.getItem('terminal_current_asset') || 'BTCUSDT';
   });
   const [searchVal, setSearchVal] = useState(currentAsset);
+
+  const activeSignalsKey = useMemo(() => {
+    return alertsLog
+      .filter(a => a.status === 'OPEN' || a.status === 'TP1_HIT' || a.status === 'TP2_HIT')
+      .map(a => `${a.symbol}:${a.signal}`)
+      .sort()
+      .join('|');
+  }, [alertsLog]);
 
   const activeSignals = useMemo(() => {
     const map: Record<string, string> = {};
@@ -215,7 +316,8 @@ function App() {
       }
     });
     return map;
-  }, [alertsLog]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- derived purely from active symbols and signals
+  }, [activeSignalsKey]);
   
   // Sync search input when currentAsset changes from external sources (e.g. watchlist click)
   /* eslint-disable react-hooks/set-state-in-effect -- intentional sync of controlled input */
@@ -227,6 +329,32 @@ function App() {
   const [interval, setTimeInterval] = useState(() => {
     return localStorage.getItem('terminal_time_interval') || '1h';
   });
+  const [splitView, setSplitView] = useState<boolean>(() => {
+    try { return localStorage.getItem('terminal_split_view') === 'true'; } catch { return false; }
+  });
+  const [splitInterval, setSplitInterval] = useState<'5m' | '1h' | '1d'>(() => {
+    try {
+      const saved = localStorage.getItem('terminal_split_interval');
+      if (saved === '5m' || saved === '1h' || saved === '1d') return saved;
+    } catch { /* ignore */ }
+    return '1h';
+  });
+  const toggleSplitView = useCallback(() => {
+    setSplitView(prev => {
+      const next = !prev;
+      try { localStorage.setItem('terminal_split_view', String(next)); } catch { /* ignore */ }
+      if (next && splitInterval === interval) {
+        const fallback = interval === '5m' ? '1h' : '5m';
+        setSplitInterval(fallback);
+        try { localStorage.setItem('terminal_split_interval', fallback); } catch { /* ignore */ }
+      }
+      return next;
+    });
+  }, [interval, splitInterval]);
+  const handleSelectSplitInterval = useCallback((tf: '5m' | '1h' | '1d') => {
+    setSplitInterval(tf);
+    try { localStorage.setItem('terminal_split_interval', tf); } catch { /* ignore */ }
+  }, []);
   const [showBB, setShowBB] = useState(() => {
     return localStorage.getItem('terminal_show_bb') === 'true';
   });
@@ -296,7 +424,12 @@ function App() {
   // ── Confluence Matrix & Earnings Events States ───────────────────────────
   const [confluenceSignals, setConfluenceSignals] = useState<Record<string, string>>({ '5m': '...', '1h': '...', '1d': '...' });
   const [allKlines, setAllKlines] = useState<Record<string, Kline[]>>({ '5m': [], '1h': [], '1d': [] });
-  const [earningsDate, setEarningsDate] = useState<number | null>(null);
+  const earningsSymbols = useMemo(() => [...watchlistSymbols, currentAsset], [watchlistSymbols, currentAsset]);
+  const earningsEvents = useEarningsCalendar(earningsSymbols);
+  const earningsEventsRef = useRef(earningsEvents);
+  useEffect(() => {
+    earningsEventsRef.current = earningsEvents;
+  }, [earningsEvents]);
 
   const computeOverallSignal = (data: Kline[], tf: string, allData?: Record<string, Kline[]>): string => {
     if (data.length < 35) return 'WAITING...';
@@ -354,14 +487,7 @@ function App() {
     const loadExtraData = async () => {
       setLoading(true);
       setConfluenceSignals({ '5m': '...', '1h': '...', '1d': '...' });
-      setEarningsDate(null);
       setAllKlines({ '5m': [], '1h': [], '1d': [] });
-
-      if (!isCryptoAsset(currentAsset)) {
-        fetchEarningsDate(currentAsset).then(date => {
-          if (isMounted) setEarningsDate(date);
-        });
-      }
 
       const timeframes = ['5m', '1h', '1d'];
       const fetchedKlines: Record<string, Kline[]> = {};
@@ -393,7 +519,7 @@ function App() {
           klinesMap[`${currentAsset}:${tf}`] = fetchedKlines[tf];
         }
       });
-      setAlertsLog(prev => syncAlertOutcomesAndCooldowns(prev, klinesMap, currentAsset));
+      if (isScannerLeaderRef.current) setAlertsLog(prev => syncAlertOutcomesAndCooldowns(prev, klinesMap, currentAsset));
 
       timeframes.forEach((tf) => {
         const data = fetchedKlines[tf] || [];
@@ -424,20 +550,28 @@ function App() {
   }, [interval, allKlines]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // 3. Effect for real-time polling updates only on the active asset + interval
+  // 3. Effect for real-time polling updates only on the active asset + interval (and secondary split pane if active)
   useEffect(() => {
     let isMounted = true;
 
     const pollInterval = setInterval(async () => {
       try {
-        const data = await fetchKlines(currentAsset, interval);
+        const shouldPollSplit = splitView && splitInterval !== interval;
+        const [data, splitData] = await Promise.all([
+          fetchKlines(currentAsset, interval),
+          shouldPollSplit ? fetchKlines(currentAsset, splitInterval) : Promise.resolve(null),
+        ]);
         if (isMounted) {
           setKlines(data);
           // Fix #5: use the functional form of setAllKlines so that `prev` is always
           // the current state, not the stale closure value captured when the effect ran.
           // This prevents computing the confluence signal with outdated 1h/1d klines.
           setAllKlines(prev => {
-            const updatedAllKlines = { ...prev, [interval]: data };
+            const updatedAllKlines = {
+              ...prev,
+              [interval]: data,
+              ...(splitData ? { [splitInterval]: splitData } : {}),
+            };
             if (data.length >= 35) {
               const closedData = getConfirmedClosedKlines(data, interval, currentAsset);
               const signal = computeOverallSignal(closedData, interval, updatedAllKlines);
@@ -456,7 +590,7 @@ function App() {
       clearInterval(pollInterval);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- computeOverallSignal is intentionally excluded (stable function, would cause loops)
-  }, [currentAsset, interval]);
+  }, [currentAsset, interval, splitView, splitInterval]);
 
   useEffect(() => {
     if (klines.length >= 35) {
@@ -529,6 +663,7 @@ function App() {
   const maxConcurrentSymbolScans = 4;
 
   useEffect(() => {
+    if (!isScannerLeader) return;
     let isMounted = true;
 
     const checkAllSignals = async () => {
@@ -727,6 +862,8 @@ function App() {
             // Set alert cooldown timestamp with persistence
             setAlertCooldown(cooldownKey, now, 'ENTRY');
 
+            const eventNotice = isCrypto ? undefined : buildAlertEventNotice(earningsEventsRef.current[symbol.toUpperCase()], now);
+
               const desktopNotificationsEnabled = localStorage.getItem('terminal_notifications_enabled') === 'true'
                 && ('Notification' in window) && Notification.permission === 'granted';
 
@@ -738,7 +875,7 @@ function App() {
                   ? ' 🔬 [Exploratoria / Sin Ventaja]'
                   : bestConfidence === 'LIMITED'
                     ? ' ⚠️ [Muestra Limitada]'
-                    : ' 🎯 [Validada]';
+                    : ' 📊 [Backtest favorable]';
                 const confidenceString = bestStrategy === 'multitemporal' && signalConfidence ? ` [Confianza: ${signalConfidence}]` : '';
 
                 const hasDistinctTP2 = levels.takeProfit2 !== undefined && levels.takeProfit2 !== levels.takeProfit1;
@@ -752,7 +889,7 @@ function App() {
                   : `🚨 Señal en ${symbol} (${signalInterval.toUpperCase()})${confidenceTag}${confidenceString}`;
 
                 new Notification(notifTitle, {
-                  body: `${overallSignal} · vía ${strategyLabel} (${pfNotice})\n${levelInfo}`,
+                  body: `${overallSignal} · vía ${strategyLabel} (${pfNotice})\n${levelInfo}${eventNotice ? `\n⚠️ ${eventNotice}` : ''}`,
                   tag: `${symbol}-${signalInterval}`,
                 });
               }
@@ -786,6 +923,8 @@ function App() {
               dedupKey,
               alertType: isExploratoryAlert ? 'EXPLORATORY' : 'PRIMARY',
               alertLatencySec: computeAlertLatencySec(candleTimestamp, signalInterval, now),
+              appVersion: APP_VERSION,
+              eventNotice,
             };
 
             // Register in persistent atomic deduplication registry
@@ -876,7 +1015,7 @@ function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
     // Include executionStyle, triggerMode, scoringWeights, and memoized callbacks
-  }, [watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights, syncAlertOutcomesAndCooldowns, setAlertCooldown]);
+  }, [isScannerLeader, watchlistSymbols, currentAsset, interval, executionStyle, triggerMode, scoringWeights, syncAlertOutcomesAndCooldowns, setAlertCooldown]);
 
   const latestClose = klines.length > 0 ? klines[klines.length - 1].close : 0;
   const latestVolume = useMemo(() => {
@@ -888,6 +1027,16 @@ function App() {
   const closes = useMemo(() => klines.map(k => k.close), [klines]);
 
   const isCurrentInWatchlist = watchlistSymbols.includes(currentAsset);
+
+  const handleSelectAssetFromWatchlist = useCallback((sym: string) => {
+    setCurrentAsset(sym);
+    setMainView('chart');
+    setMobileTab('chart');
+  }, [setCurrentAsset, setMainView, setMobileTab]);
+
+  const handleRemoveAssetFromWatchlist = useCallback((sym: string) => {
+    setWatchlistSymbols(prev => prev.filter(s => s !== sym));
+  }, [setWatchlistSymbols]);
 
   return (
     <div className="app-container">
@@ -968,32 +1117,38 @@ function App() {
       {/* Main Content Area */}
       <div className="main-content">
         {/* Left Sidebar - Watchlist & Alert History */}
-        <aside className="sidebar-left">
-          <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div className="panel-header">WATCHLIST</div>
+        <aside className={`sidebar-left ${leftCollapsed ? 'is-collapsed' : ''} ${mobileTab !== 'watchlist' && mobileTab !== 'alerts' ? 'mobile-hidden' : ''}`}>
+          <div className={`sidebar-section ${mobileTab === 'alerts' ? 'mobile-hidden' : ''}`} style={{ flex: 1.3, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>WATCHLIST</span>
+              <EventBadge notice={getMacroNotice()} />
+            </div>
             <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
               <Watchlist 
                 symbols={watchlistSymbols}
-                onSelectAsset={(sym) => {
-                  setCurrentAsset(sym);
-                  setMainView('chart');
-                }} 
+                onSelectAsset={handleSelectAssetFromWatchlist} 
                 currentAsset={currentAsset} 
-                onRemoveAsset={(sym) => setWatchlistSymbols(prev => prev.filter(s => s !== sym))}
+                onRemoveAsset={handleRemoveAssetFromWatchlist}
                 activeSignals={activeSignals}
+                earningsEvents={earningsEvents}
               />
             </div>
           </div>
           
-          <div style={{ height: '1px', backgroundColor: 'var(--border-color)' }} />
+          <div className={mobileTab === 'alerts' || mobileTab === 'watchlist' ? 'mobile-hidden' : ''} style={{ height: '1px', backgroundColor: 'var(--border-color)' }} />
           
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div className={`sidebar-section ${mobileTab === 'watchlist' ? 'mobile-hidden' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span>HISTORIAL DE ALERTAS</span>
                 {/* task #3: last scanner run timestamp */}
-                {lastScanTime && notificationsEnabled && (
-                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: '400' }}>
+                {!isScannerLeader && showFollowerNotice && (
+                  <span title="Sólo una pestaña revisa el mercado y emite alertas; esta muestra las mismas alertas" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: '400' }}>
+                    Escáner activo en otra pestaña
+                  </span>
+                )}
+                {isScannerLeader && lastScanTime && notificationsEnabled && (
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: '400' }}>
                     Última revisión: {lastScanTime}
                   </span>
                 )}
@@ -1001,36 +1156,18 @@ function App() {
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
               <button
                 onClick={toggleInformationalAlerts}
+                className={`term-btn term-btn--purple ${logInformationalAlerts ? 'is-active' : ''}`}
                 title={logInformationalAlerts
                   ? 'Registrando señales informativas (Estándar, Scoring, VCME, Multifractal, MFLS) sin notificarlas. Click para dejar de registrarlas.'
                   : 'Registrar las señales informativas para evaluarlas con resultados reales (no notifican ni bloquean las alertas principales).'}
-                style={{
-                  background: logInformationalAlerts ? 'rgba(168, 85, 247, 0.15)' : 'rgba(255, 255, 255, 0.03)',
-                  border: `1px solid ${logInformationalAlerts ? 'rgba(168, 85, 247, 0.4)' : 'var(--border-color)'}`,
-                  color: logInformationalAlerts ? '#c084fc' : 'var(--text-muted)',
-                  cursor: 'pointer',
-                  fontSize: '9px',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  fontWeight: 'bold',
-                  whiteSpace: 'nowrap',
-                }}
               >
-                🔬 {logInformationalAlerts ? 'ON' : 'OFF'}
+                <FlaskConical size={11} />
+                <span>{logInformationalAlerts ? 'ON' : 'OFF'}</span>
               </button>
               <button
                 onClick={openAlertReport}
+                className="term-btn"
                 title="Informe de alertas reales por estrategia, franja horaria, demora y ejecución"
-                style={{
-                  background: 'rgba(255, 255, 255, 0.03)',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-secondary)',
-                  cursor: 'pointer',
-                  fontSize: '9px',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  fontWeight: 'bold',
-                }}
               >
                 INFORME
               </button>
@@ -1046,27 +1183,7 @@ function App() {
                     setDiscardStats(initial);
                     seenDiscardKeysRef.current.clear();
                   }}
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-muted)',
-                    cursor: 'pointer',
-                    fontSize: '9px',
-                    padding: '2px 8px',
-                    borderRadius: '4px',
-                    fontWeight: 'bold',
-                    transition: 'all 0.2s'
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.color = 'var(--accent-red)';
-                    e.currentTarget.style.borderColor = 'rgba(244, 63, 94, 0.2)';
-                    e.currentTarget.style.backgroundColor = 'rgba(244, 63, 94, 0.05)';
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.color = 'var(--text-muted)';
-                    e.currentTarget.style.borderColor = 'var(--border-color)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
-                  }}
+                  className="term-btn term-btn--danger"
                 >
                   LIMPIAR
                 </button>
@@ -1254,41 +1371,29 @@ function App() {
                   {discardStats.total > 0 && (
                     <div style={{
                       borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-                      paddingTop: '4px',
+                      paddingTop: '6px',
                       width: '100%',
                       position: 'relative'
                     }}>
                       <div className="stats-badge-wrapper" style={{ width: '100%' }}>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          width: '100%',
-                          padding: '3px 6px',
-                          borderRadius: '4px',
-                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                          border: '1px solid rgba(245, 158, 11, 0.22)',
-                          color: '#fbbf24',
-                          fontSize: '0.62rem',
-                          cursor: 'pointer',
-                          boxSizing: 'border-box'
-                        }}>
-                          <span style={{ fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>
-                            🛡️ {discardStats.total} descartes
+                        <div className="discard-pill">
+                          <span style={{ fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
+                            <Shield size={12} /> {discardStats.total} descartes
                           </span>
                           <span style={{
                             fontFamily: 'var(--font-mono)',
-                            fontSize: '0.58rem',
-                            color: 'rgba(255, 255, 255, 0.75)',
+                            fontSize: 'var(--text-xs)',
+                            color: 'rgba(255, 255, 255, 0.8)',
                             display: 'inline-flex',
-                            gap: '4px',
+                            alignItems: 'center',
+                            gap: '6px',
                             whiteSpace: 'nowrap'
                           }}>
-                            {discardStats.friction > 0 && <span title="Fricción comisiones">⚡{discardStats.friction}</span>}
-                            {discardStats.marketHours > 0 && <span title="Horario / Sesión">🕒{discardStats.marketHours}</span>}
-                            {discardStats.cooldown > 0 && <span title="Cooldown">⏱️{discardStats.cooldown}</span>}
-                            {discardStats.activeTrade > 0 && <span title="Posición ya abierta">⏳{discardStats.activeTrade}</span>}
-                            {discardStats.geometry > 0 && <span title="Geometría">📐{discardStats.geometry}</span>}
+                            {discardStats.friction > 0 && <span title="Fricción comisiones" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}><Zap size={10} />{discardStats.friction}</span>}
+                            {discardStats.marketHours > 0 && <span title="Horario / Sesión" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}><Clock size={10} />{discardStats.marketHours}</span>}
+                            {discardStats.cooldown > 0 && <span title="Cooldown" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}><Timer size={10} />{discardStats.cooldown}</span>}
+                            {discardStats.activeTrade > 0 && <span title="Posición ya abierta" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}><Hourglass size={10} />{discardStats.activeTrade}</span>}
+                            {discardStats.geometry > 0 && <span title="Geometría" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}><Ruler size={10} />{discardStats.geometry}</span>}
                           </span>
                         </div>
 
@@ -1300,12 +1405,12 @@ function App() {
                             marginBottom: '6px',
                             borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
                             paddingBottom: '4px',
-                            fontSize: '0.62rem',
+                            fontSize: 'var(--text-xs)',
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center'
                           }}>
-                            <span>🛡️ SEÑALES FILTRADAS HOY</span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Shield size={12} /> SEÑALES FILTRADAS HOY</span>
                             <span style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{discardStats.total} total</span>
                           </div>
                           {(['friction', 'marketHours', 'cooldown', 'activeTrade', 'geometry', 'confidence'] as LiveDiscardReason[]).map(reason => {
@@ -1318,12 +1423,12 @@ function App() {
                                   display: 'flex',
                                   justifyContent: 'space-between',
                                   alignItems: 'center',
-                                  fontSize: '0.58rem',
+                                  fontSize: 'var(--text-xs)',
                                   padding: '2px 0',
-                                  opacity: count > 0 ? 1 : 0.4
+                                  opacity: count > 0 ? 1 : 0.45
                                 }}
                               >
-                                <span style={{ color: 'var(--text-secondary)' }}>{meta.icon} {meta.short}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{meta.short}</span>
                                 <span style={{
                                   color: count > 0 ? '#fff' : 'var(--text-muted)',
                                   fontWeight: count > 0 ? '800' : '500',
@@ -1338,9 +1443,9 @@ function App() {
                             marginTop: '6px',
                             paddingTop: '4px',
                             borderTop: '1px dashed rgba(255,255,255,0.15)',
-                            fontSize: '0.52rem',
+                            fontSize: 'var(--text-xs)',
                             color: 'var(--text-muted)',
-                            lineHeight: '1.25'
+                            lineHeight: '1.3'
                           }}>
                             Filtros de protección: descartan señales con riesgo menor a 0.314% (fricción &gt; 35%), fuera de horario, cooldown o posición abierta.
                           </div>
@@ -1353,97 +1458,93 @@ function App() {
 
               {alertsLog.length === 0 ? (
                 <div style={{ 
-                  fontSize: '0.75rem', 
+                  fontSize: 'var(--text-sm)', 
                   color: 'var(--text-muted)', 
                   textAlign: 'center', 
                   marginTop: '24px', 
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  gap: '6px'
+                  gap: '8px'
                 }}>
-                  <span style={{ fontStyle: 'italic' }}>Sin alertas recientes.</span>
+                  <span>Sin alertas recientes.</span>
                   {discardStats.total > 0 && (
-                    <span style={{ fontSize: '0.64rem', color: 'var(--text-secondary)', maxWidth: '280px' }}>
-                      🛡️ <strong>{discardStats.total}</strong> señales técnicas filtradas hoy por control de riesgo y fricción.
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', maxWidth: '280px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <Shield size={12} /> <strong>{discardStats.total}</strong> señales filtradas hoy por riesgo/fricción.
                     </span>
                   )}
                 </div>
               ) : (
                 alertsLog.map((alert) => {
                   const isBuy = alert.signal.includes('BUY');
-                  const signalColor = isBuy ? 'var(--accent-green)' : 'var(--accent-red)';
-                  const signalBg = isBuy ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
                   const isStrong = alert.signal.includes('STRONG');
 
                   const riskDist = Math.abs(alert.entryPrice - alert.stopLoss);
                   const r1 = riskDist > 0 ? Math.abs(alert.takeProfit1 - alert.entryPrice) / riskDist : 1.5;
 
                   let statusLabel = 'EN VIVO';
-                  let statusBg = 'rgba(59, 130, 246, 0.15)';
-                  let statusColor = 'var(--accent-blue)';
+                  let statusBadgeClass = 'term-badge term-badge--blue';
+                  let StatusIcon = Hourglass;
 
                   if (alert.status === 'TP1_CLOSED') {
                     const rVal = alert.realizedR || 0;
-                    statusLabel = `TP1 (+${rVal > 0 ? rVal.toFixed(2) : r1.toFixed(2)}R) ✅`;
-                    statusBg = 'rgba(16, 185, 129, 0.2)';
-                    statusColor = 'var(--accent-green)';
+                    statusLabel = `TP1 (+${rVal > 0 ? rVal.toFixed(2) : r1.toFixed(2)}R)`;
+                    statusBadgeClass = 'term-badge term-badge--buy';
+                    StatusIcon = CheckCircle2;
                   } else if (alert.status === 'TP2_CLOSED') {
                     const rVal = alert.realizedR || 0;
-                    statusLabel = `TP2 (+${rVal > 0 ? rVal.toFixed(2) : '2.00'}R) ✅`;
-                    statusBg = 'rgba(16, 185, 129, 0.2)';
-                    statusColor = 'var(--accent-green)';
+                    statusLabel = `TP2 (+${rVal > 0 ? rVal.toFixed(2) : '2.00'}R)`;
+                    statusBadgeClass = 'term-badge term-badge--buy';
+                    StatusIcon = CheckCircle2;
                   } else if (alert.status === 'TP2_HIT') {
                     const rVal = alert.realizedR || 0;
-                    statusLabel = `TP2 Runner (+${rVal > 0 ? rVal.toFixed(2) : '1.38'}R) 🏃`;
-                    statusBg = 'rgba(16, 185, 129, 0.15)';
-                    statusColor = 'var(--accent-green)';
+                    statusLabel = `TP2 Runner (+${rVal > 0 ? rVal.toFixed(2) : '1.38'}R)`;
+                    statusBadgeClass = 'term-badge term-badge--buy';
+                    StatusIcon = TrendingUp;
                   } else if (alert.status === 'TP1_BE_CLOSED') {
                     const rVal = alert.realizedR || 0;
-                    statusLabel = `TP1/BE (+${rVal > 0 ? rVal.toFixed(2) : (0.5 * r1).toFixed(2)}R) ✅`;
-                    statusBg = 'rgba(16, 185, 129, 0.15)';
-                    statusColor = 'var(--accent-green)';
+                    statusLabel = `TP1/BE (+${rVal > 0 ? rVal.toFixed(2) : (0.5 * r1).toFixed(2)}R)`;
+                    statusBadgeClass = 'term-badge term-badge--buy';
+                    StatusIcon = CheckCircle2;
                   } else if (alert.status === 'TP1_HIT') {
-                    statusLabel = `TP1 (+${r1.toFixed(1)}R) 🎯`;
-                    statusBg = 'rgba(16, 185, 129, 0.15)';
-                    statusColor = 'var(--accent-green)';
+                    statusLabel = `TP1 (+${r1.toFixed(1)}R)`;
+                    statusBadgeClass = 'term-badge term-badge--buy';
+                    StatusIcon = CheckCircle2;
                   } else if (alert.status === 'SL_HIT') {
-                    statusLabel = 'SL (-1.0R) ❌';
-                    statusBg = 'rgba(244, 63, 94, 0.18)';
-                    statusColor = 'var(--accent-red)';
+                    statusLabel = 'SL (-1.0R)';
+                    statusBadgeClass = 'term-badge term-badge--sell';
+                    StatusIcon = XCircle;
                   } else if (alert.status === 'EXPIRED') {
                     const rVal = alert.realizedR || 0;
                     const rFormatted = `${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)}R`;
+                    statusLabel = `EXP (${rFormatted})`;
+                    StatusIcon = Clock;
                     if (rVal > 0.05) {
-                      statusLabel = `EXP (${rFormatted}) ⏱️`;
-                      statusBg = 'rgba(16, 185, 129, 0.15)';
-                      statusColor = 'var(--accent-green)';
+                      statusBadgeClass = 'term-badge term-badge--buy';
                     } else if (rVal < -0.05) {
-                      statusLabel = `EXP (${rFormatted}) ⏱️`;
-                      statusBg = 'rgba(244, 63, 94, 0.15)';
-                      statusColor = 'var(--accent-red)';
+                      statusBadgeClass = 'term-badge term-badge--sell';
                     } else {
-                      statusLabel = `EXP (${rFormatted})`;
-                      statusBg = 'rgba(255, 255, 255, 0.06)';
-                      statusColor = 'var(--text-muted)';
+                      statusBadgeClass = 'term-badge term-badge--muted';
                     }
                   } else {
                     const pnl = alert.pnlPercent ?? 0;
                     const pnlText = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%`;
-                    statusLabel = `⏳ ${pnlText}`;
+                    statusLabel = pnlText;
                   }
 
-                  const borderGlow = isStrong 
-                    ? `1px solid ${isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`
-                    : '1px solid var(--border-color)';
-                  
+                  const cardModifier = isStrong
+                    ? (isBuy ? 'alert-card--strong-buy' : 'alert-card--strong-sell')
+                    : '';
+
                   return (
-                    <div 
+                    <div
                       key={alert.id}
+                      className={`alert-card ${cardModifier}`}
                       onClick={() => {
                         if (!alert.symbol) return;
                         setCurrentAsset(alert.symbol);
                         setMainView('chart');
+                        setMobileTab('chart');
                         setTimeInterval(alert.interval || '5m');
                         if (alert.entryPrice && alert.stopLoss && alert.takeProfit1) {
                           setSelectedAlertOverlay({
@@ -1456,86 +1557,44 @@ function App() {
                           });
                         }
                       }}
-                      style={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.01)',
-                        border: borderGlow,
-                        borderRadius: 'var(--border-radius-sm)',
-                        padding: '8px 10px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px',
-                        transition: 'all 0.2s',
-                        boxShadow: isStrong ? `0 0 8px ${isBuy ? 'rgba(16, 185, 129, 0.05)' : 'rgba(244, 63, 94, 0.05)'}` : 'none'
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
-                        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.01)';
-                        e.currentTarget.style.borderColor = isStrong 
-                          ? (isBuy ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)')
-                          : 'var(--border-color)';
-                      }}
                       title={`Click para abrir gráfico con líneas Entry/SL/TP de ${alert.symbol} (${(alert.interval || '').toUpperCase()})`}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-                          {alert.symbol} <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '500' }}>({(alert.interval || '').toUpperCase()})</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                          {alert.symbol} <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontWeight: '500' }}>({(alert.interval || '').toUpperCase()})</span>
                         </span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <span style={{
-                            fontSize: '0.58rem',
-                            fontWeight: '800',
-                            color: statusColor,
-                            backgroundColor: statusBg,
-                            padding: '1px 6px',
-                            borderRadius: '4px',
-                            fontFamily: 'var(--font-mono)'
-                          }}>
+                          <span className={statusBadgeClass}>
+                            <StatusIcon size={11} />
                             {statusLabel}
                           </span>
-                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                             {alert.time}
                           </span>
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.65rem' }}>
-                        <span style={{ 
-                          color: signalColor, 
-                          fontWeight: '800', 
-                          padding: '1px 5px', 
-                          backgroundColor: signalBg, 
-                          borderRadius: '3px',
-                          fontSize: '0.6rem',
-                          letterSpacing: '0.5px'
-                        }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 'var(--text-xs)' }}>
+                        <span className={`term-badge ${isBuy ? 'term-badge--buy' : 'term-badge--sell'}`}>
                           {alert.signal}
                         </span>
-                        <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>
-                          {alert.strategy} · <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{alert.pf !== null && alert.pf !== undefined ? `PF ${alert.pf.toFixed(1)}` : 'PF N/D'}</span>
+                        <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+                          {alert.strategy} · <strong style={{ color: 'var(--text-primary)' }}>{alert.pf !== null && alert.pf !== undefined ? `PF ${alert.pf.toFixed(1)}` : 'PF N/D'}</strong>
                         </span>
                       </div>
-                      
-                      {/* Entry, SL and TP Targets */}
+
+                      {alert.eventNotice && (
+                        <div role="note" title="Evento programado al emitirse la alerta (solo informativo)" style={{ color: '#eab308', fontSize: 'var(--text-xs)', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <AlertTriangle size={11} /> {alert.eventNotice}
+                        </div>
+                      )}
                       {(alert.executionWarning || alert.dataWarning) && (
-                        <div role="note" style={{ color: '#eab308', fontSize: '0.65rem', marginTop: '4px' }}>
+                        <div role="note" style={{ color: '#eab308', fontSize: 'var(--text-xs)' }}>
                           {[alert.executionWarning, alert.dataWarning].filter(Boolean).join(' ')}
                         </div>
                       )}
                       {alert.entryPrice > 0 && (
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          fontSize: '0.6rem',
-                          color: 'var(--text-muted)',
-                          fontFamily: 'var(--font-mono)',
-                          borderTop: '1px dashed rgba(255, 255, 255, 0.06)',
-                          paddingTop: '3px',
-                          marginTop: '2px'
-                        }}>
+                        <div className="alert-card__levels">
                           <span>In: <strong style={{ color: '#fff' }}>{formatSmartPrice(alert.entryPrice)}</strong></span>
                           <span>SL: <span style={{ color: 'var(--accent-red)' }}>{formatSmartPrice(alert.stopLoss)}</span></span>
                           {alert.takeProfit2 !== undefined && alert.takeProfit2 !== alert.takeProfit1 ? (
@@ -1551,10 +1610,7 @@ function App() {
                       {alert.entryPrice > 0 && (alert.alertType ?? 'PRIMARY') === 'PRIMARY' && (() => {
                         const costR = computeExecutionCostR(alert);
                         return (
-                          <div
-                            onClick={e => e.stopPropagation()}
-                            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}
-                          >
+                          <div className="alert-card__fill" onClick={e => e.stopPropagation()}>
                             <span title="Precio al que ejecutaste esta alerta, para medir el costo real de ejecución en el informe">Mi entrada:</span>
                             <input
                               key={`${alert.id}-${alert.userFillPrice ?? ''}`}
@@ -1569,14 +1625,11 @@ function App() {
                                 const next = Number.isFinite(value) && value > 0 ? value : undefined;
                                 if (next !== alert.userFillPrice) recordUserFill(alert.id, next);
                               }}
-                              style={{
-                                width: '74px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)',
-                                borderRadius: '3px', color: '#fff', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', padding: '1px 4px',
-                              }}
+                              className="alert-card__fill-input"
                             />
                             {alert.alertLatencySec !== undefined && (
-                              <span title="Segundos entre el cierre de la vela y la emisión de la alerta" style={{ color: alert.alertLatencySec > 60 ? '#eab308' : 'var(--text-muted)' }}>
-                                ⏱ {alert.alertLatencySec}s
+                              <span title="Segundos entre el cierre de la vela y la emisión de la alerta" style={{ color: alert.alertLatencySec > 60 ? '#eab308' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                                <Timer size={11} /> {alert.alertLatencySec}s
                               </span>
                             )}
                             {costR !== undefined && (
@@ -1596,14 +1649,21 @@ function App() {
         </aside>
 
         {/* Center - Chart & Market Radar */}
-        <main className="chart-area" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <main className={`chart-area ${mobileTab !== 'chart' && mobileTab !== 'radar' ? 'mobile-hidden' : ''}`} style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+              <button
+                onClick={toggleLeftSidebar}
+                className={`panel-collapse-btn ${leftCollapsed ? 'is-active' : ''}`}
+                title={leftCollapsed ? 'Mostrar panel izquierdo (Watchlist y Alertas)' : 'Ocultar panel izquierdo (Modo Focus)'}
+              >
+                {leftCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+              </button>
               {/* Main View Switcher */}
               <div style={{ display: 'flex', gap: '4px', background: 'rgba(0, 0, 0, 0.3)', padding: '3px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                 <button
                   className={`view-toggle-btn ${mainView === 'chart' ? 'active' : ''}`}
-                  onClick={() => setMainView('chart')}
+                  onClick={() => { setMainView('chart'); setMobileTab('chart'); }}
                   title="Vista de gráfico individual"
                 >
                   <LineChart size={13} />
@@ -1611,7 +1671,7 @@ function App() {
                 </button>
                 <button
                   className={`view-toggle-btn ${mainView === 'radar' ? 'active' : ''}`}
-                  onClick={() => setMainView('radar')}
+                  onClick={() => { setMainView('radar'); setMobileTab('radar'); }}
                   title="Radar multi-activo en tiempo real"
                 >
                   <LayoutGrid size={13} />
@@ -1620,7 +1680,7 @@ function App() {
               </div>
 
               {mainView === 'chart' ? (
-                <div>
+                <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {currentAsset} - <span style={{ color: 'var(--text-secondary)' }}>{interval.toUpperCase()} CHART</span>
                   {latestClose > 0 && <span style={{ marginLeft: '14px', color: 'var(--accent-blue)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(latestClose)}</span>}
                 </div>
@@ -1631,6 +1691,7 @@ function App() {
               )}
             </div>
 
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             {mainView === 'chart' && (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <button 
@@ -1644,14 +1705,14 @@ function App() {
                     cursor: 'pointer',
                     fontSize: '0.8rem',
                     fontWeight: showBB ? 'bold' : 'normal',
-                    marginRight: '8px',
+                    marginRight: '4px',
                     transition: 'all 0.2s',
                   }}
                   title="Mostrar/Ocultar Bandas de Bollinger"
                 >
                   BB
                 </button>
-                <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', marginRight: '8px' }}></div>
+                <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', marginRight: '4px' }}></div>
                 {['5m', '1h', '1d'].map((t) => (
                   <button
                     key={t}
@@ -1673,34 +1734,100 @@ function App() {
                     {t.toUpperCase()}
                   </button>
                 ))}
+                <div className="chart-split-controls">
+                  <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)', margin: '0 2px' }}></div>
+                  <button
+                    onClick={toggleSplitView}
+                    className={`panel-collapse-btn ${splitView ? 'is-active' : ''}`}
+                    style={{ width: 'auto', padding: '0 8px', gap: '5px', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+                    title={splitView ? 'Cerrar vista dividida' : 'Comparar dos temporalidades en paralelo'}
+                  >
+                    <Columns2 size={13} />
+                    <span>SPLIT</span>
+                  </button>
+                  {splitView && (
+                    <div className="split-tf-group" title="Temporalidad del gráfico secundario">
+                      {(['5m', '1h', '1d'] as const).map((tf) => (
+                        <button
+                          key={tf}
+                          onClick={() => handleSelectSplitInterval(tf)}
+                          className={`split-tf-btn ${splitInterval === tf ? 'active' : ''}`}
+                        >
+                          {tf.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
+              <button
+                onClick={toggleRightSidebar}
+                className={`panel-collapse-btn ${rightCollapsed ? 'is-active' : ''}`}
+                title={rightCollapsed ? 'Mostrar panel de señales e indicadores' : 'Ocultar panel de señales'}
+              >
+                {rightCollapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
+              </button>
+            </div>
           </div>
           <div className="chart-container" style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
             {mainView === 'chart' ? (
-              klines.length > 0 && <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
+              klines.length > 0 && (
+                splitView ? (
+                  <div className="chart-split-grid">
+                    <div className="chart-split-pane">
+                      <span className="chart-split-badge">{currentAsset} · {interval.toUpperCase()}</span>
+                      <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
+                    </div>
+                    <div className="chart-split-pane chart-split-pane--secondary">
+                      <span className="chart-split-badge">{currentAsset} · {splitInterval.toUpperCase()}</span>
+                      {(allKlines[splitInterval]?.length ?? 0) > 0 ? (
+                        <Chart
+                          data={allKlines[splitInterval]}
+                          showBB={showBB}
+                          symbol={currentAsset}
+                          interval={splitInterval}
+                          activeAlertOverlay={splitInterval === interval ? selectedAlertOverlay : null}
+                        />
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
+                          Cargando {splitInterval.toUpperCase()}...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <Chart data={klines} showBB={showBB} symbol={currentAsset} interval={interval} activeAlertOverlay={selectedAlertOverlay} />
+                )
+              )
             ) : (
-              <MarketRadar
-                watchlistSymbols={watchlistSymbols}
-                currentAsset={currentAsset}
-                onSelectAsset={(sym) => setCurrentAsset(sym)}
-                onNavigateToChart={(sym) => {
-                  setCurrentAsset(sym);
-                  setMainView('chart');
-                }}
-                activeSignals={activeSignals}
-                alertCooldowns={alertCooldowns}
-                executionStyle={executionStyle}
-                triggerMode={triggerMode}
-                scoringWeights={scoringWeights}
-                allowExploratory={logInformationalAlerts || localStorage.getItem('terminal_exploratory_notifications') === 'true'}
-              />
+              <Suspense fallback={
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
+                  Cargando Radar de Mercado...
+                </div>
+              }>
+                <MarketRadar
+                  watchlistSymbols={watchlistSymbols}
+                  currentAsset={currentAsset}
+                  onSelectAsset={(sym) => setCurrentAsset(sym)}
+                  onNavigateToChart={(sym) => {
+                    setCurrentAsset(sym);
+                    setMainView('chart');
+                  }}
+                  activeSignals={activeSignals}
+                  alertCooldowns={alertCooldowns}
+                  executionStyle={executionStyle}
+                  triggerMode={triggerMode}
+                  scoringWeights={scoringWeights}
+                  allowExploratory={logInformationalAlerts || localStorage.getItem('terminal_exploratory_notifications') === 'true'}
+                />
+              </Suspense>
             )}
           </div>
         </main>
 
         {/* Right Sidebar - Signals & News */}
-        <aside className="sidebar-right">
+        <aside className={`sidebar-right ${rightCollapsed ? 'is-collapsed' : ''} ${mobileTab !== 'signals' ? 'mobile-hidden' : ''}`}>
           <div className="panel-header">AI SIGNAL & INDICATORS</div>
           <SignalPanel 
             symbol={currentAsset} 
@@ -1711,7 +1838,7 @@ function App() {
             notificationsEnabled={notificationsEnabled}
             toggleNotifications={toggleNotifications}
             confluenceSignals={confluenceSignals}
-            earningsDate={earningsDate}
+            earningsEvent={earningsEvents[currentAsset.toUpperCase()] ?? null}
             allKlines={allKlines}
             executionStyle={executionStyle}
             setExecutionStyle={setExecutionStyle}
@@ -1723,9 +1850,59 @@ function App() {
         </aside>
       </div>
 
+      {/* Mobile Bottom Navigation */}
+      <nav className="mobile-bottom-nav" aria-label="Navegación móvil">
+        <button
+          className={`mobile-nav-btn ${mobileTab === 'chart' ? 'active' : ''}`}
+          onClick={() => { setMobileTab('chart'); setMainView('chart'); }}
+        >
+          <LineChart size={16} />
+          <span>Gráfico</span>
+        </button>
+        <button
+          className={`mobile-nav-btn ${mobileTab === 'radar' ? 'active' : ''}`}
+          onClick={() => { setMobileTab('radar'); setMainView('radar'); }}
+        >
+          <LayoutGrid size={16} />
+          <span>Radar</span>
+        </button>
+        <button
+          className={`mobile-nav-btn ${mobileTab === 'signals' ? 'active' : ''}`}
+          onClick={() => setMobileTab('signals')}
+        >
+          <Activity size={16} />
+          <span>Señales</span>
+        </button>
+        <button
+          className={`mobile-nav-btn ${mobileTab === 'alerts' ? 'active' : ''}`}
+          onClick={() => setMobileTab('alerts')}
+        >
+          <Bell size={16} />
+          <span>Alertas</span>
+          {sessionStats.openCount > 0 && (
+            <span className="mobile-nav-badge">{sessionStats.openCount}</span>
+          )}
+        </button>
+        <button
+          className={`mobile-nav-btn ${mobileTab === 'watchlist' ? 'active' : ''}`}
+          onClick={() => setMobileTab('watchlist')}
+        >
+          <List size={16} />
+          <span>Lista</span>
+        </button>
+      </nav>
+
       {/* ── Help Modal ─────────────────────────────── */}
-      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
-      {reportAlerts && <AlertReportModal alerts={reportAlerts} onClose={() => setReportAlerts(null)} />}
+      {showHelp && (
+        <Suspense fallback={null}>
+          <HelpModal onClose={() => setShowHelp(false)} />
+        </Suspense>
+      )}
+      {reportAlerts && (
+        <Suspense fallback={null}>
+          <AlertReportModal alerts={reportAlerts} onClose={() => setReportAlerts(null)} />
+        </Suspense>
+      )}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { BacktestResult } from '../utils/backtester';
 
 interface BacktestCardProps {
@@ -21,7 +22,7 @@ function getRatingLabel(profitFactor: number | null, resolved: number): string {
   return '↓ Pobre';
 }
 
-export default function BacktestCard({ name, result }: BacktestCardProps) {
+function BacktestCard({ name, result }: BacktestCardProps) {
   const isLoading = result === null;
   const isInsufficient = result?.insufficient ?? false;
 
@@ -343,3 +344,5 @@ export default function BacktestCard({ name, result }: BacktestCardProps) {
     </div>
   );
 }
+
+export default memo(BacktestCard);

@@ -5,6 +5,6 @@
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/.tmp/execution-tests.tsbuildinfo"
   },
-  "include": ["src/utils/__tests__/execution.test.ts", "src/utils/__tests__/chartRecovery.test.ts", "src/utils/__tests__/trackingIntegrity.test.ts", "src/utils/__tests__/mfls.test.ts", "scripts/benchmark-execution.ts"],
-  "exclude": []
+  "include": ["src/utils/__tests__/*.test.ts", "scripts/benchmark-execution.ts"],
+  "exclude": ["src/utils/__tests__/backtester.test.ts"]
 }

@@ -24,6 +24,9 @@ import { getMsUntilNextAlignedScan } from '../utils/scanSchedule';
 import { getKlinesFingerprint } from '../utils/backtester';
 import { resolveOperationalTrade } from '../utils/operationalTrade';
 import { isCryptoAsset } from '../utils/tradeLevels';
+import { getEarningsNotice } from '../utils/marketEvents';
+import { useEarningsCalendar } from '../hooks/useEarningsCalendar';
+import EventBadge from './EventBadge';
 import {
   isRadarRowActive,
   checkAlertCooldownStatus,
@@ -160,6 +163,7 @@ export default function MarketRadar({
     }
     return PRESET_POOLS[activePreset] || [];
   }, [activePreset, watchlistSymbols]);
+  const earningsEvents = useEarningsCalendar(symbolsToScan);
 
   // Scan single symbol multitemporal data
   const scanSymbol = async (symbol: string, forceFresh: boolean = false, targetGen?: number): Promise<RadarRowData> => {
@@ -951,10 +955,11 @@ export default function MarketRadar({
                     >
                       {/* 1. Symbol & Market Tag */}
                       <td style={{ padding: '12px 14px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <span style={{ fontWeight: '800', color: '#fff', fontSize: '0.82rem' }}>
                             {row.symbol}
                           </span>
+                          <EventBadge notice={getEarningsNotice(earningsEvents[row.symbol.toUpperCase()])} />
                           <span style={{
                             fontSize: '0.55rem',
                             fontWeight: '700',
@@ -1194,7 +1199,7 @@ export default function MarketRadar({
                                 : row.qveConfidence;
                               const titleText = (!row.isFallbackSignal && hasActiveSignal && row.actionableReasoning)
                                 ? row.actionableReasoning
-                                : (row.qveReasoning || (effectiveLeaderConfidence === 'HIGH' ? 'Alta Confianza (Muestra representativa)' : 'Muestra Limitada'));
+                                : (row.qveReasoning || (effectiveLeaderConfidence === 'HIGH' ? 'Backtest favorable (no validado fuera de muestra)' : 'Backtest con muestra limitada'));
 
                               return (
                                 <div 

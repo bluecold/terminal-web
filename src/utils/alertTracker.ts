@@ -40,8 +40,10 @@ export interface AuditAlertItem {
   executionState?: TradeExecutionState;
   executionWarning?: string;
   dataWarning?: string;
+  eventNotice?: string;       // Earnings/macro catalysts at emission time (snapshot, informational only)
   entryBarObservation?: { time: number; high: number; low: number };
-  alertLatencySec?: number;   // Seconds from the trigger candle close to the moment the alert was emitted
+  appVersion?: string;        // App version (rule set) that emitted the alert; absent before v2026.11.16.1
+  alertLatencySec?: number;  // Seconds from the trigger candle close to the moment the alert was emitted
   userFillPrice?: number;     // Price at which the trader actually executed the alert (manual entry)
   userFillTime?: number;      // Unix ms timestamp when the trader recorded the fill
 }
@@ -159,7 +161,11 @@ export function getStrategyExpiryCandles(
  */
 export function updateAlertsOutcome(
   alerts: AuditAlertItem[],
-  klinesBySymbol: Record<string, Kline[]>
+  klinesBySymbol: Record<string, Kline[]>,
+  options: {
+    /** Regular NYSE session is over: close intraday equity positions at the last price with friction. */
+    squareOffIntraday?: boolean;
+  } = {}
 ): AuditAlertItem[] {
   interface IndicatorContext {
     vwapSeries: number[];
@@ -202,10 +208,26 @@ export function updateAlertsOutcome(
 
     const isCandleClosed = (k: Kline) => (k.time + durationSec) * 1000 <= snapshotTime;
 
+    // Checkpoints saved before feeds were grid-normalized may sit on an off-grid live quote
+    // (e.g. 09:37:28). Re-anchor them to the containing bar as still forming, otherwise that bar
+    // sorts before the cursor, is skipped, and its close (and the time stop) is never observed.
+    let executionState = alert.executionState;
+    const savedCursor = executionState?.cursor;
+    if (executionState && savedCursor && !executionState.exit) {
+      for (let i = symbolKlines.length - 1; i >= 0; i--) {
+        const k = symbolKlines[i];
+        if (k.time > savedCursor.bar.time) continue;
+        if (k.time !== savedCursor.bar.time && savedCursor.bar.time < k.time + durationSec) {
+          executionState = { ...executionState, cursor: { bar: { ...savedCursor.bar, time: k.time }, closed: false } };
+        }
+        break;
+      }
+    }
+
     // Sanitized feeds are sorted. A persisted cursor needs only its own bar and
     // new bars; indicators below still use full history for stable warmup.
     let evaluationStart = 0;
-    const cursorTime = alert.executionState?.cursor?.bar.time;
+    const cursorTime = executionState?.cursor?.bar.time;
     if (cursorTime !== undefined) {
       let end = symbolKlines.length;
       while (evaluationStart < end) {
@@ -319,6 +341,9 @@ export function updateAlertsOutcome(
     const maxExpiryTimestampMs = isCrypto ? alert.timestamp + maxExpiryCandles * intervalMs : undefined;
 
     const isSwingVCME = isVCME && (alert.executionStyle === 'swing' || alert.strategy?.includes('Swing'));
+    // Without a floating quote the engine closes any remaining position at the last observed bar,
+    // charging slippage and commission like any other market exit.
+    const squareOff = !!options.squareOffIntraday && isSessionBased && isDayTrading && !isSwingVCME;
 
     const wasTp1 = alert.tp1Hit ?? (alert.status === 'TP1_HIT' || alert.status === 'TP2_HIT');
     const wasTp2 = alert.tp2Hit ?? (alert.status === 'TP2_HIT');
@@ -350,10 +375,10 @@ export function updateAlertsOutcome(
       ema9Series: mappedEma9Series,
       frictionPct: DEFAULT_FRICTION_PCT,
       frictionModel: 'proportional',
-      floatingClosePrice: latestPrice,
+      floatingClosePrice: squareOff ? undefined : latestPrice,
       maxExpiryTimestampMs,
       isCandleClosed,
-      executionState: alert.executionState,
+      executionState,
       observedAtMs: snapshotTime,
       initialState: {
         tp1Hit: wasTp1,
@@ -373,7 +398,7 @@ export function updateAlertsOutcome(
       && !wasTp1 && !wasTp2
       && candlesToEvaluate.length > 0
       && (candlesToEvaluate[0].time - entryCandle.time > durationSec * 3)
-      && (!alert.executionState?.cursor || alert.executionState.cursor.bar.time <= entryCandle.time);
+      && (!executionState?.cursor || executionState.cursor.bar.time <= entryCandle.time);
 
     if (isFirstCandleAcrossSessionGap) {
       return {
@@ -406,7 +431,9 @@ export function updateAlertsOutcome(
       entryBarObservation,
       dataWarning: undefined,
       executionWarning: sim.executionState.historyQuality === 'legacy'
-        ? 'Estado antiguo: parciales importados; la cronología previa puede estar incompleta.' : undefined
+        ? 'Estado antiguo: parciales importados; la cronología previa puede estar incompleta.'
+        : squareOff && sim.executionState.exit?.reason === 'TIMEOUT'
+          ? 'Posición intradía cerrada al cierre de sesión regular (16:00 ET).' : undefined
     };
   });
 }

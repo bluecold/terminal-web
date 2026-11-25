@@ -18,9 +18,11 @@ import {
   computeAlertLatencySec,
   computeExecutionCostR,
   mergeIntoAlertArchive,
+  toArchivedAlert,
   type ArchivedAlert,
 } from '../alertReport';
 import type { AuditAlertItem } from '../alertTracker';
+import { acquireScannerLeadership } from '../scannerLeadership';
 
 // Zig-zag uptrend: four +0.12 candles and one -0.08 candle per cycle, constant volume.
 function zigzag(startSec: number, n: number, p0: number): Kline[] {
@@ -37,7 +39,8 @@ function zigzag(startSec: number, n: number, p0: number): Kline[] {
 }
 
 // 2026-09-28 14:00–16:00 ET, then 2026-09-29 from the 09:30 ET open
-const prevSession = zigzag(Date.UTC(2026, 8, 28, 18, 0) / 1000, 24, 100);
+// Base price 15 keeps ATR(14) around 0.7–0.9% of the price, above the 0.5% volatility guard
+const prevSession = zigzag(Date.UTC(2026, 8, 28, 18, 0) / 1000, 24, 15);
 const session = zigzag(Date.UTC(2026, 8, 29, 13, 30) / 1000, 66, prevSession[prevSession.length - 1].close);
 const klines = [...prevSession, ...session];
 const MORNING_IDX = 26;   // 09:40 ET candle
@@ -147,4 +150,94 @@ test('Alert report: latency, execution cost, first alert of the day and archive'
   assert.equal(report.latency.over60s, 1);
   assert.equal(report.execution.n, 1);
   assert.ok(Math.abs(report.execution.avgCostR - 0.1) < 1e-9);
+});
+
+test('Alert report: day as the unit, clustered interval, best/worst day and rule-version filter', () => {
+  const now = Date.UTC(2026, 10, 6, 21, 0);
+  const at = (day: number, minute: number) => Date.UTC(2026, 10, day, 14, minute) / 1000;
+  const mk = (id: string, day: number, minute: number, realizedR: number, appVersion?: string) => toArchivedAlert(alert({
+    id, realizedR, appVersion, candleTimestamp: at(day, minute), timestamp: (at(day, minute) + 310) * 1000,
+    status: realizedR > 0 ? 'TP1_CLOSED' : 'SL_HIT',
+  }));
+  const archive = [
+    mk('a1', 3, 35, -1), mk('a2', 3, 40, -1),
+    mk('b1', 4, 35, -1, 'v2026.11.4.2'),
+    mk('c1', 5, 35, 1.5, 'v2026.11.10.1'), mk('c2', 5, 40, 1.5, 'v2026.11.10.1'), mk('c3', 5, 45, 1.5, 'v2026.11.10.1'),
+  ];
+
+  const report = buildAlertPerformanceReport(archive, now, 7);
+  assert.deepEqual(report.byDay.days.map(d => [d.day, d.bucket.n, d.bucket.totalR]), [['2026-11-05', 3, 4.5], ['2026-11-04', 1, -1], ['2026-11-03', 2, -2]]);
+  assert.equal(report.byDay.bestDay?.day, '2026-11-05');
+  assert.equal(report.byDay.avgRWithoutBestDay, -1);
+  assert.equal(report.byDay.worstDay?.day, '2026-11-03');
+  assert.equal(report.byDay.avgRWithoutWorstDay, 0.875);
+  // mean 0.25; day residuals -2.5, -1.25, 3.75 → se = sqrt(1.5 × 21.875) / 6; t(2 df) = 4.303
+  assert.ok(Math.abs(report.byDay.ci95HalfWidth! - 4.303 * Math.sqrt(1.5 * 21.875) / 6) < 1e-9);
+  // Numeric ordering: v2026.11.10.1 is newer than v2026.11.4.2
+  assert.deepEqual(report.versions, ['v2026.11.10.1', 'v2026.11.4.2']);
+  assert.equal(report.unversioned, 2);
+
+  const filtered = buildAlertPerformanceReport(archive, now, 7, { minVersion: 'v2026.11.4.2' });
+  assert.equal(filtered.primary.n, 4);
+  assert.deepEqual(filtered.versions, report.versions);
+  assert.equal(buildAlertPerformanceReport(archive, now, 7, { minVersion: 'v2026.11.10.1' }).primary.n, 3);
+
+  // Fewer than 3 days: no interval; a single day: no best/worst comparison
+  const twoDays = buildAlertPerformanceReport(archive.slice(0, 3), now, 7);
+  assert.equal(twoDays.byDay.ci95HalfWidth, undefined);
+  assert.equal(twoDays.byDay.bestDay?.day, '2026-11-04');
+  assert.equal(buildAlertPerformanceReport(archive.slice(0, 2), now, 7).byDay.bestDay, undefined);
+});
+
+test('Alert archive keeps one alert per candle, strategy and direction', () => {
+  const now = Date.UTC(2026, 9, 6, 21, 0);
+  const candle = Date.UTC(2026, 9, 6, 13, 35) / 1000;
+  const first = alert({ id: 'HUT-5m-1', symbol: 'HUT', candleTimestamp: candle, timestamp: candle * 1000 + 300_000 + 20_000 });
+  const second = alert({ id: 'HUT-5m-2', symbol: 'HUT', candleTimestamp: candle, timestamp: first.timestamp + 73 });
+
+  // Duplicate emission from a second scanner (e.g. another tab), in either order and in an already-stored archive
+  assert.deepEqual(mergeIntoAlertArchive([], [first, second], now).map(a => a.id), ['HUT-5m-1']);
+  assert.deepEqual(mergeIntoAlertArchive([], [second, first], now).map(a => a.id), ['HUT-5m-1']);
+  const stored = [toArchivedAlert(second), toArchivedAlert(first)];
+  assert.deepEqual(mergeIntoAlertArchive(stored, [], now).map(a => a.id), ['HUT-5m-1']);
+
+  // The same alert still updates in place
+  const updated = mergeIntoAlertArchive([toArchivedAlert(first)], [{ ...first, status: 'TP1_CLOSED', realizedR: 1.4 }], now);
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].realizedR, 1.4);
+
+  // Other direction, strategy or candle are distinct alerts
+  const distinct = mergeIntoAlertArchive([], [
+    first,
+    alert({ id: 'sell', symbol: 'HUT', candleTimestamp: candle, signal: 'SELL' }),
+    alert({ id: 'std', symbol: 'HUT', candleTimestamp: candle, strategy: 'Estándar (Informativa)' }),
+    alert({ id: 'next', symbol: 'HUT', candleTimestamp: candle + 300 }),
+  ], now);
+  assert.equal(distinct.length, 4);
+});
+
+test('Only one tab holds the scanner lock; the next tab takes over when it is released', async () => {
+  const queue: (() => Promise<void>)[] = [];
+  let running = false;
+  const pump = async () => {
+    if (running) return;
+    running = true;
+    while (queue.length) await queue.shift()!();
+    running = false;
+  };
+  const locks = { request: (_name: string, cb: () => Promise<void>) => { queue.push(cb); void pump(); return Promise.resolve(); } };
+  const flush = () => new Promise(r => setTimeout(r, 0));
+
+  const leaders: string[] = [];
+  const releaseA = acquireScannerLeadership(() => leaders.push('A'), locks);
+  acquireScannerLeadership(() => leaders.push('B'), locks);
+  await flush();
+  assert.deepEqual(leaders, ['A']);
+  releaseA();
+  await flush();
+  assert.deepEqual(leaders, ['A', 'B']);
+
+  const fallback: string[] = [];
+  acquireScannerLeadership(() => fallback.push('no-locks'), undefined);
+  assert.deepEqual(fallback, ['no-locks']);
 });

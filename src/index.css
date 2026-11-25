@@ -18,6 +18,13 @@
   --accent-blue-bg: rgba(59, 130, 246, 0.15);
   --accent-yellow: #f59e0b;
   --accent-yellow-bg: rgba(245, 158, 11, 0.1);
+  --accent-purple: #c084fc;
+  --accent-purple-bg: rgba(168, 85, 247, 0.12);
+  --surface-subtle: rgba(255, 255, 255, 0.025);
+  --surface-elevated: rgba(13, 17, 28, 0.72);
+  --text-xs: 0.7rem;
+  --text-sm: 0.78rem;
+  --text-base: 0.875rem;
   --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: 'Fira Code', 'JetBrains Mono', Consolas, monospace;
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);

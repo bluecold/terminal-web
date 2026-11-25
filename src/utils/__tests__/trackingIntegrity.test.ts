@@ -194,15 +194,15 @@ for (const provider of ['Binance', 'Yahoo'] as const) {
   });
 }
 
-test('Yahoo 1h: retries with range=2y when range=730d is rejected (recently listed symbols such as IBIT)', async () => {
+test('Yahoo 1h: uses range=2y directly to avoid 422 on recently listed symbols such as IBIT, and falls back to range=1y if rejected', async () => {
   const realFetch = globalThis.fetch;
   const urls: string[] = [];
-  const bars = [bar(-1), bar(0)];
+  const bars = [bar(-12), bar(0)]; // one hour apart, as Yahoo 1h bars are
   try {
     globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input);
       urls.push(url);
-      if (url.includes('range=730d')) {
+      if (url.includes('range=2y')) {
         return new Response(JSON.stringify({ chart: { result: null, error: { code: 'Unprocessable Entity' } } }), { status: 422 });
       }
       const payload = { chart: { result: [{ timestamp: bars.map(k => k.time), indicators: { quote: [{
@@ -213,8 +213,8 @@ test('Yahoo 1h: retries with range=2y when range=730d is rejected (recently list
     };
     const klines = await fetchYahooKlines('RANGE_FALLBACK_TEST', '1h');
     assert.equal(urls.length, 2);
-    assert.ok(urls[0].includes('range=730d&interval=1h'));
-    assert.ok(urls[1].includes('range=2y&interval=1h'));
+    assert.ok(urls[0].includes('range=2y&interval=1h'));
+    assert.ok(urls[1].includes('range=1y&interval=1h'));
     assert.equal(klines.length, 2);
   } finally { globalThis.fetch = realFetch; }
 });

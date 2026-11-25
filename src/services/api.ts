@@ -1,5 +1,14 @@
 import { getKlineSnapshotTime, stampKlineSnapshot } from './marketDataSnapshot';
 import { isCryptoAsset } from '../utils/indicators';
+import {
+  buildEarningsEvent,
+  getEarningsCalendarDateKeys,
+  parseNasdaqEarningsRows,
+  parseZacksEarningsDate,
+  type EarningsEvent,
+  type EarningsTiming,
+  type ZacksEarningsDate,
+} from '../utils/marketEvents';
 
 export interface Kline {
   time: number;
@@ -125,6 +134,44 @@ export function sanitizeKlines(rawKlines: Kline[]): Kline[] {
   return valid;
 }
 
+const YAHOO_INTRADAY_STEP_SEC: Record<string, number> = { '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '60m': 3600, '90m': 5400, '1h': 3600 };
+
+/**
+ * During the regular session Yahoo appends a live quote point stamped with the last trade time
+ * (e.g. 09:36:51, volume 0) after the forming bar. Left as its own bar it makes the forming bar look
+ * closed to getConfirmedClosedKlines, and gives trackers off-grid bars whose real candle is never
+ * observed closing. Fold every off-grid point into the bar whose span contains it (bar grid anchored
+ * on the previous bar, so 09:30-anchored 1h bars stay aligned); daily points merge by session date.
+ */
+export function normalizeYahooKlines(klines: Kline[], interval: string): Kline[] {
+  if (klines.length < 2) return klines;
+  const step = YAHOO_INTRADAY_STEP_SEC[interval];
+  const isDaily = interval === '1d';
+  if (!step && !isDaily) return klines;
+
+  // US session dates: every regular-session timestamp is 13:30–21:00 UTC, so a fixed −5h shift
+  // yields the New York calendar date in both EST and EDT.
+  const sessionDate = (t: number) => Math.floor((t - 5 * 3600) / 86400);
+  const out: Kline[] = [{ ...klines[0] }];
+  for (let i = 1; i < klines.length; i++) {
+    const k = klines[i];
+    const prev = out[out.length - 1];
+    const delta = k.time - prev.time;
+    const sameBar = step ? delta < step : delta < 20 * 3600 && sessionDate(k.time) === sessionDate(prev.time);
+    if (sameBar) {
+      prev.high = Math.max(prev.high, k.high);
+      prev.low = Math.min(prev.low, k.low);
+      prev.close = k.close;
+      prev.volume += k.volume;
+    } else if (step && delta % step !== 0) {
+      out.push({ ...k, time: prev.time + Math.floor(delta / step) * step });
+    } else {
+      out.push({ ...k });
+    }
+  }
+  return out;
+}
+
 export function resampleKlines(klines: Kline[], targetIntervalSec: number): Kline[] {
   if (!klines || klines.length === 0) return [];
   const buckets = new Map<number, Kline[]>();
@@ -205,6 +252,25 @@ export async function fetchBinanceKlines(symbol: string, interval: string = '1h'
   }, getKlineCacheBoundaryMs(interval));
 }
 
+/**
+ * Executes a fetch against the Yahoo Finance proxy with a single retry for transient
+ * gateway errors (500, 502, 503, 504) or network interruptions.
+ */
+export async function fetchYahooWithRetry(url: string, retries: number = 1, delayMs: number = 250): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) return resp;
+      if (resp.status < 500 && resp.status !== 429) return resp;
+      if (attempt === retries) return resp;
+    } catch (err) {
+      if (attempt === retries) throw err;
+    }
+    await new Promise(resolve => setTimeout(resolve, delayMs * (attempt + 1)));
+  }
+  return fetch(url);
+}
+
 export async function fetchYahooKlines(symbol: string, interval: string = '1h'): Promise<Kline[]> {
   // Yahoo does not provide native 4h candles; construct from 1h candles
   if (interval === '4h') {
@@ -217,17 +283,19 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
     const snapshotTime = Date.now();
     try {
       // Convert interval to a valid range for Yahoo — wider ranges to support backtesting (300+ candles)
-      let range = '730d'; // 1h default: up to 730 days (~3500 hourly candles for US stocks/crypto)
+      // Note: Yahoo 1h interval is capped at 730 calendar days. Using '2y' respects this cap natively
+      // across all tickers (including recently listed ones like IBIT, FBTC, RDDT) without triggering
+      // the 422 Unprocessable Entity error that '730d' causes (since Yahoo resolves '730d' to 730 trading days).
+      let range = '2y'; // 1h default: up to 2 years (~3500 hourly candles for US stocks/crypto)
       if (interval === '1d') range = '2y';  // ~500 daily candles
       if (interval === '1wk') range = '5y';
       if (interval === '5m' || interval === '15m' || interval === '30m' || interval === '90m') range = '60d';
       
-      let response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
-      // Yahoo resolves range=730d for symbols listed less than ~730 trading days ago (e.g. IBIT) to their
-      // listing date, then rejects it with 422 because 1h data is capped at 730 calendar days. '2y' stays within the cap.
-      if (!response.ok && range === '730d') {
-        range = '2y';
-        response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+      let response = await fetchYahooWithRetry(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
+      // Fallback: if '2y' is rejected for an ultra-short-lived or exotic symbol, gracefully retry with '1y'
+      if (!response.ok && range === '2y' && interval === '1h') {
+        range = '1y';
+        response = await fetchYahooWithRetry(`/api/yahoo/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`);
       }
       if (!response.ok) {
         console.error(`Yahoo Finance API error: ${response.status} ${response.statusText} for ${symbol} ${interval}`);
@@ -255,7 +323,7 @@ export async function fetchYahooKlines(symbol: string, interval: string = '1h'):
         });
       }
 
-      const klines = sanitizeKlines(rawKlines);
+      const klines = normalizeYahooKlines(sanitizeKlines(rawKlines), interval);
 
       // Pre-populate ticker summary cache if fetching daily klines
       if (interval === '1d' && klines.length >= 1) {
@@ -314,7 +382,7 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
       let searchSymbol = symbol;
       if (isCryptoAsset(symbol)) searchSymbol = symbol.replace(/(USDT|BUSD|USDC|FDUSD)$/, '-USD');
       
-      const response = await fetch(`/api/yahoo/v1/finance/search?q=${searchSymbol}`);
+      const response = await fetchYahooWithRetry(`/api/yahoo/v1/finance/search?q=${searchSymbol}`);
       const data = await response.json();
       
       if (!data || !data.news || !Array.isArray(data.news)) return [];
@@ -339,22 +407,71 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
   });
 }
 
-export async function fetchEarningsDate(symbol: string): Promise<number | null> {
-  if (isCryptoAsset(symbol)) {
-    return null; // Crypto doesn't have corporate earnings reports
+const ZACKS_BATCH_SIZE = 40;
+
+async function fetchZacksEarningsDates(symbols: string[]): Promise<Record<string, ZacksEarningsDate | null>> {
+  const out: Record<string, ZacksEarningsDate | null> = {};
+  const missing: string[] = [];
+  for (const symbol of symbols) {
+    const cached = apiCache.get(`earnings_date_${symbol}`) as CacheEntry<ZacksEarningsDate | null> | undefined;
+    if (cached && Date.now() - cached.timestamp < EXTRA_INFO_TTL_MS) out[symbol] = cached.data;
+    else missing.push(symbol);
   }
-  const cacheKey = `earnings_${symbol}`;
-  return fetchWithDeduplication(cacheKey, EXTRA_INFO_TTL_MS, async () => {
+  for (let i = 0; i < missing.length; i += ZACKS_BATCH_SIZE) {
+    const batch = missing.slice(i, i + ZACKS_BATCH_SIZE);
+    const data = await fetchWithDeduplication(`earnings_zacks_${batch.join(',')}`, EXTRA_INFO_TTL_MS, async () => {
+      try {
+        const response = await fetch(`/api/zacks/index?t=${batch.join(',')}&cb=${Date.now()}`);
+        if (!response.ok) throw new Error(`Zacks responded with status ${response.status}`);
+        return await response.json() as Record<string, Parameters<typeof parseZacksEarningsDate>[0]>;
+      } catch (error) {
+        console.warn('Zacks earnings dates fetch failed', error);
+        return null;
+      }
+    });
+    if (!data) continue;
+    for (const symbol of batch) {
+      out[symbol] = parseZacksEarningsDate(data[symbol]);
+      apiCache.set(`earnings_date_${symbol}`, { timestamp: Date.now(), data: out[symbol] });
+    }
+  }
+  return out;
+}
+
+async function fetchNasdaqEarningsDay(dateKey: string): Promise<Record<string, EarningsTiming> | null> {
+  return fetchWithDeduplication(`earnings_nasdaq_${dateKey}`, EXTRA_INFO_TTL_MS, async () => {
     try {
-      const response = await fetch(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=calendarEvents`);
+      const response = await fetch(`/api/nasdaq/api/calendar/earnings?date=${dateKey}`);
+      if (!response.ok) throw new Error(`Nasdaq responded with status ${response.status}`);
       const data = await response.json();
-      const earningsTimestamp = data.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0]?.raw;
-      return earningsTimestamp || null;
+      return parseNasdaqEarningsRows(data?.data?.rows);
     } catch (error) {
-      console.error("Error fetching earnings date", error);
+      console.warn(`Nasdaq earnings calendar fetch failed for ${dateKey}`, error);
       return null;
     }
   });
+}
+
+/** Next earnings report per symbol. Without the Nasdaq calendar the dates still work, with unknown timing. */
+export async function fetchEarningsCalendar(symbols: string[]): Promise<Record<string, EarningsEvent>> {
+  const eligible = [...new Set(symbols.map(s => s.toUpperCase()))].filter(s => !isCryptoAsset(s) && /^[A-Z][A-Z.-]{0,6}$/.test(s));
+  if (eligible.length === 0) return {};
+
+  const nowMs = Date.now();
+  const dateKeys = getEarningsCalendarDateKeys(nowMs);
+  const [zacks, days] = await Promise.all([
+    fetchZacksEarningsDates(eligible),
+    Promise.all(dateKeys.map(fetchNasdaqEarningsDay)),
+  ]);
+  const calendars: Record<string, Record<string, EarningsTiming>> = {};
+  dateKeys.forEach((key, i) => { calendars[key] = days[i] ?? {}; });
+
+  const out: Record<string, EarningsEvent> = {};
+  for (const symbol of eligible) {
+    const event = buildEarningsEvent(symbol, zacks[symbol] ?? null, calendars, nowMs);
+    if (event) out[symbol] = event;
+  }
+  return out;
 }
 
 export interface TickerSummary {
@@ -403,7 +520,7 @@ export async function fetchTickerSummary(symbol: string, prettyName: string): Pr
   // 3. Otherwise fetch via deduplicated network request
   return fetchWithDeduplication(cacheKey, TICKER_SUMMARY_TTL_MS, async () => {
     try {
-      const response = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?range=1d&interval=1d`);
+      const response = await fetchYahooWithRetry(`/api/yahoo/v8/finance/chart/${symbol}?range=1d&interval=1d`);
       const data = await response.json();
       const meta = data.chart?.result?.[0]?.meta;
       if (!meta) return null;
@@ -496,7 +613,7 @@ export async function fetchStockExtraInfo(symbol: string): Promise<StockExtraInf
       // 2. Fetch Yahoo data for target price
       let yahooTargetPrice: number | null = null;
       try {
-        const response = await fetch(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=financialData`);
+        const response = await fetchYahooWithRetry(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=financialData`);
         if (response.ok) {
           const data = await response.json();
           const result = data.quoteSummary?.result?.[0];
@@ -520,7 +637,7 @@ export async function fetchStockExtraInfo(symbol: string): Promise<StockExtraInf
       if (yahooTargetPrice) {
         let beta: number | null = null;
         try {
-          const response = await fetch(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=defaultKeyStatistics`);
+          const response = await fetchYahooWithRetry(`/api/yahoo/v10/finance/quoteSummary/${symbol}?modules=defaultKeyStatistics`);
           if (response.ok) {
             const data = await response.json();
             const result = data.quoteSummary?.result?.[0];

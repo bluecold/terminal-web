@@ -1,14 +1,16 @@
 import { useMemo, useState, useEffect } from 'react';
 import { calculateExperimentalSignal, calculateScoringSignal, calculateStandardVoting, calculateVCMESniperSignal, calculateMultifractalMTFSignal, calculateMFLSSignal, getConfirmedClosedKlines, getEffectiveExecutionPrice, type VCMESniperResult, type MultifractalMTFSignalResult, type MFLSEvaluationResult, type ScoringWeights, DEFAULT_WEIGHTS } from '../utils/indicators';
 import { runQVESelection, selectActionableStrategy, buildStrategyCandidateQueue, resolveCandidateCascade, resolveTournamentLeader, isInformationalStrategy } from '../utils/tournament';
-import { fetchNews, fetchStockExtraInfo, fetchCryptoFearAndGreed, type StockExtraInfo, type CryptoExtraInfo } from '../services/api';
-import type { NewsItem, Kline } from '../services/api';
-import { Bell, BellOff } from 'lucide-react';
+import type { Kline } from '../services/api';
+import { Bell, BellOff, FlaskConical, ShieldAlert, Target, Trophy, Info, ChevronUp, ChevronDown } from 'lucide-react';
 import BacktestCard from './BacktestCard';
 import { formatSmartPrice, formatSmartNumber } from '../utils/formatters';
-import { APP_VERSION } from '../version';
 import { resolveOperationalTrade } from '../utils/operationalTrade';
 import { isCryptoAsset } from '../utils/tradeLevels';
+import { CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT } from '../utils/strategyEvaluators';
+import PositionCalculator from './PositionCalculator';
+import MarketContextTab from './MarketContextTab';
+import type { EarningsEvent } from '../utils/marketEvents';
 
 interface SignalPanelProps {
   symbol: string;
@@ -19,7 +21,7 @@ interface SignalPanelProps {
   notificationsEnabled: boolean;
   toggleNotifications: () => void;
   confluenceSignals: Record<string, string>;
-  earningsDate: number | null;
+  earningsEvent: EarningsEvent | null;
   allKlines: Record<string, Kline[]>;
   executionStyle: 'dayTrading' | 'swing';
   setExecutionStyle: (s: 'dayTrading' | 'swing') => void;
@@ -32,16 +34,8 @@ interface SignalPanelProps {
 function InformationalBadge() {
   return (
     <span
-      title="Sin ventaja neta validada en acciones 5m (60 días, 21 papeles): se muestra para que la evalúes, pero no compite en el torneo ni genera alertas principales. Activá 🔬 en el historial para registrar sus señales."
-      style={{
-        background: 'rgba(168, 85, 247, 0.12)',
-        color: '#c084fc',
-        fontSize: '0.55rem',
-        padding: '1px 6px',
-        borderRadius: '4px',
-        fontWeight: '800',
-        border: '1px solid rgba(168, 85, 247, 0.3)',
-      }}
+      className="term-badge term-badge--purple"
+      title="Sin ventaja neta validada en acciones 5m (60 días, 21 papeles): se muestra para que la evalúes, pero no compite en el torneo ni genera alertas principales. Activá el modo laboratorio en el historial para registrar sus señales."
     >
       INFORMATIVA
     </span>
@@ -56,7 +50,7 @@ export default function SignalPanel({
   notificationsEnabled, 
   toggleNotifications,
   confluenceSignals,
-  earningsDate,
+  earningsEvent,
   allKlines,
   executionStyle,
   setExecutionStyle,
@@ -66,199 +60,18 @@ export default function SignalPanel({
   setWeights,
 }: SignalPanelProps) {
   const isCrypto = useMemo(() => isCryptoAsset(symbol), [symbol]);
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [loadingNews, setLoadingNews] = useState(false);
   const [showWeightsConfig, setShowWeightsConfig] = useState(false);
-
-  // ── Extra Info States & Effect ──────────────────────────────────────────
-  const [stockInfo, setStockInfo] = useState<StockExtraInfo | null>(null);
-  const [cryptoInfo, setCryptoInfo] = useState<CryptoExtraInfo | null>(null);
-  const [loadingExtra, setLoadingExtra] = useState(false);
-  const [accountDrawdown, setAccountDrawdown] = useState(0); // in percent
-  const [sameSectorPositions, setSameSectorPositions] = useState(0); // open correlated trades
-
-  /* eslint-disable react-hooks/set-state-in-effect -- intentional: reads localStorage cache synchronously to avoid flash of loading state */
-  useEffect(() => {
-    const cachedVersion = localStorage.getItem('terminal_app_version');
-    if (cachedVersion !== APP_VERSION) {
-      // Clear old terminal cache keys
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('terminal_extra_info_')) {
-          localStorage.removeItem(key);
-        }
-      }
-      localStorage.setItem('terminal_app_version', APP_VERSION);
-    }
-
-    let isMounted = true;
-    const cacheKey = `terminal_extra_info_${symbol}`;
-    const cachedData = localStorage.getItem(cacheKey);
-    const isCryptoSymbol = isCrypto;
-
-    if (cachedData) {
-      try {
-        const parsed = JSON.parse(cachedData);
-        // Cache is valid for 24 hours (24 * 60 * 60 * 1000 ms)
-        if (parsed && typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
-          if (isCryptoSymbol) {
-            setCryptoInfo(parsed.data);
-            setStockInfo(null);
-          } else {
-            setStockInfo(parsed.data);
-            setCryptoInfo(null);
-          }
-          setLoadingExtra(false);
-          return;
-        }
-      } catch (e) {
-        console.error("Error parsing cached extra info", e);
-      }
-    }
-
-    const loadExtraInfo = async () => {
-      setLoadingExtra(true);
-      try {
-        if (isCryptoSymbol) {
-          const data = await fetchCryptoFearAndGreed();
-          if (isMounted) {
-            if (data) {
-              setCryptoInfo(data);
-              setStockInfo(null);
-              localStorage.setItem(cacheKey, JSON.stringify({
-                timestamp: Date.now(),
-                data
-              }));
-            } else {
-              setCryptoInfo(null);
-            }
-          }
-        } else {
-          const data = await fetchStockExtraInfo(symbol);
-          if (isMounted) {
-            if (data) {
-              setStockInfo(data);
-              setCryptoInfo(null);
-              localStorage.setItem(cacheKey, JSON.stringify({
-                timestamp: Date.now(),
-                data
-              }));
-            } else {
-              setStockInfo(null);
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Error loading extra info in useEffect", err);
-      } finally {
-        if (isMounted) {
-          setLoadingExtra(false);
-        }
-      }
-    };
-
-    loadExtraInfo();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [symbol, isCrypto]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  // ── Navigation & Accordion States ──────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'strategies' | 'calculator' | 'market'>('strategies');
   const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null);
-
-  // ── Risk & Position Calculator States ────────────────────────────────────
-  const [capital, setCapital] = useState(() => {
-    const saved = localStorage.getItem('terminal_risk_capital');
-    return saved ? parseFloat(saved) : 10000;
+  // Informational engines (no alerts, no tournament) stay collapsed behind one row unless the user opens them
+  const [showInformational, setShowInformational] = useState<boolean>(() => {
+    try { return localStorage.getItem('terminal_show_informational') === 'true'; } catch { return false; }
   });
-  const [riskPercent, setRiskPercent] = useState(() => {
-    const saved = localStorage.getItem('terminal_risk_percent');
-    return saved ? parseFloat(saved) : 1.0;
+  const toggleInformational = () => setShowInformational(prev => {
+    try { localStorage.setItem('terminal_show_informational', String(!prev)); } catch { /* storage unavailable */ }
+    return !prev;
   });
-  const [leverage, setLeverage] = useState(() => {
-    const saved = localStorage.getItem('terminal_risk_leverage');
-    return saved ? parseInt(saved) : 1;
-  });
-  const [calcDirection, setCalcDirection] = useState<'BUY' | 'SELL'>('BUY');
 
-  // Save changes to localStorage
-  useEffect(() => {
-    localStorage.setItem('terminal_risk_capital', capital.toString());
-  }, [capital]);
-
-  useEffect(() => {
-    localStorage.setItem('terminal_risk_percent', riskPercent.toString());
-  }, [riskPercent]);
-
-  useEffect(() => {
-    localStorage.setItem('terminal_risk_leverage', leverage.toString());
-  }, [leverage]);
-
-  // ── Curated Macro Events Registry for 2026 ────────────────────────────────
-  const MACRO_EVENTS = useMemo(() => [
-    { date: '2026-01-14', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-01-28', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-02-11', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-03-11', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-03-18', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-04-15', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-04-29', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-05-13', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-06-10', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-06-17', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-07-15', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-07-29', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-08-12', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-09-16', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-09-23', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-10-14', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-11-04', title: 'Decisión de Tasas FOMC' },
-    { date: '2026-11-12', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-12-10', title: 'IPC de EEUU (CPI)' },
-    { date: '2026-12-16', title: 'Decisión de Tasas FOMC' },
-  ], []);
-
-  const getNextMacroEvent = () => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    for (const event of MACRO_EVENTS) {
-      const eventDate = new Date(event.date + 'T00:00:00');
-      if (eventDate >= today) {
-        const diffTime = eventDate.getTime() - today.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        return { ...event, daysLeft: diffDays };
-      }
-    }
-    return null;
-  };
-
-  const getEarningsInfo = () => {
-    if (!earningsDate) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const date = new Date(earningsDate * 1000);
-    const diffTime = date.getTime() - today.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return {
-      date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
-      daysLeft: diffDays
-    };
-  };
-
-  useEffect(() => {
-    const loadNews = async () => {
-      setLoadingNews(true);
-      const data = await fetchNews(symbol);
-      setNews(data);
-      setLoadingNews(false);
-    };
-    loadNews();
-  }, [symbol]);
-  
   // Closed candle confirmation: dynamically preserves confirmed closed candles without weekend/after-hours lag
   const closedKlines = useMemo(() => {
     return getConfirmedClosedKlines(klines, interval, symbol);
@@ -290,6 +103,7 @@ export default function SignalPanel({
   const leader = useMemo(() => resolveTournamentLeader(qveResult), [qveResult]);
   const bestStrategy = leader.strategyKey;
   const isInfo = (strategyKey: string) => isInformationalStrategy(strategyKey, qveResult.targetInterval, isCrypto);
+  const hideInfo = (strategyKey: string) => isInfo(strategyKey) && !showInformational;
 
   // ── Unified Backtest Results (Sourced directly from QVE Tournament SSOT) ─────────────
   const btStandard      = qveResult.btStd;
@@ -453,70 +267,6 @@ export default function SignalPanel({
     }
   }
 
-  // Automatically sync calculator direction with the active overallSignal
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (overallSignal.includes('BUY')) {
-        setCalcDirection('BUY');
-      } else if (overallSignal.includes('SELL')) {
-        setCalcDirection('SELL');
-      }
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [overallSignal]);
-
-  const calculatorPlan = useMemo(() => resolveOperationalTrade({
-    strategy: operationalStrategy, signal: calcDirection, executionStyle,
-    raw: { '5m': klines5m, '1h': klines1h },
-    closed: { '5m': closedKlines5m, '1h': closedKlines1h },
-    vcme: multi, multifractal, mfls,
-    isCrypto,
-  }), [operationalStrategy, calcDirection, executionStyle, klines5m, klines1h, closedKlines5m, closedKlines1h, multi, multifractal, mfls, isCrypto]);
-  const entryPrice = calculatorPlan.entryPrice;
-  const slPrice = calculatorPlan.valid ? calculatorPlan.levels.stopLoss : 0;
-  const tpPrice = calculatorPlan.valid ? calculatorPlan.levels.takeProfit1 : 0;
-  const slPct = calculatorPlan.riskDistance;
-  const tpPct = calculatorPlan.valid ? Math.abs(tpPrice - entryPrice) / entryPrice : 0;
-  const maxRiskPerTrade = capital * (riskPercent / 100);
-  const riskDistance = calculatorPlan.riskDistance;
-  const basePositionUSD = calculatorPlan.valid && riskDistance > 0 ? maxRiskPerTrade / riskDistance : 0;
-
-  let confidenceMultiplier = 1.0;
-  let scoreTier = 'N/A';
-  if (operationalStrategy === 'multitemporal') {
-    const score = multi.score;
-    if (score >= 90) { confidenceMultiplier = 1.65; scoreTier = 'ELITE'; }
-    else if (score >= 82) { confidenceMultiplier = 1.35; scoreTier = 'HIGH'; }
-    else if (score >= 76) { confidenceMultiplier = 1.10; scoreTier = 'GOOD'; }
-    else if (score >= 70) { confidenceMultiplier = 0.75; scoreTier = 'MEDIUM'; }
-    else { confidenceMultiplier = 0.40; scoreTier = 'LOW'; }
-  }
-
-  let volatilityMultiplier = 1.0;
-  if (operationalStrategy === 'multitemporal') {
-    const atrPct = multi.atrPercent;
-    if (atrPct > 3.0) volatilityMultiplier = 0.70;
-    else if (atrPct > 2.0) volatilityMultiplier = 0.85;
-    else if (atrPct < 0.8) volatilityMultiplier = 1.25;
-  }
-
-  let healthMultiplier = 1.0;
-  if (accountDrawdown > 15) healthMultiplier = 0.40;
-  else if (accountDrawdown > 8) healthMultiplier = 0.65;
-  else if (accountDrawdown > 3) healthMultiplier = 0.85;
-
-  let correlationPenalty = 1.0;
-  if (sameSectorPositions >= 3) correlationPenalty = 0.45;
-  else if (sameSectorPositions === 2) correlationPenalty = 0.70;
-
-  let totalPositionValue = basePositionUSD * confidenceMultiplier * volatilityMultiplier * healthMultiplier * correlationPenalty;
-  
-  // Hard limit: Max 25% of capital in one position
-  totalPositionValue = Math.min(totalPositionValue, capital * 0.25);
-  
-  const positionUnits = entryPrice > 0 ? totalPositionValue / entryPrice : 0;
-  const requiredMargin = totalPositionValue / (isCrypto ? leverage : 1);
-  const riskUSD = totalPositionValue * riskDistance;
   return (
     <div className="signal-panel-content" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
       
@@ -586,7 +336,11 @@ export default function SignalPanel({
             border: `1px solid ${displayedConfidence === 'HIGH' ? 'rgba(34, 197, 94, 0.3)' : displayedConfidence === 'LIMITED' ? 'rgba(234, 179, 8, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
             color: displayedConfidence === 'HIGH' ? 'var(--accent-green)' : displayedConfidence === 'LIMITED' ? '#eab308' : 'var(--text-muted)'
           }}>
-            <span>{displayedConfidence === 'HIGH' ? '✅ Confianza Alta' : displayedConfidence === 'LIMITED' ? '⚠️ Alternativa Validada' : '🛡️ Sin Ventaja Estadística'}</span>
+            <span title={isCrypto
+              ? 'Resume el backtest reciente de este activo. En cripto no se validó fuera de muestra: no garantiza ventaja futura.'
+              : 'Resume el backtest reciente de este papel. En acciones, ningún motor mostró ventaja fuera de muestra (5m: oct-2026; 1h: 2023–2026, incluso antes de costos).'}>
+              {displayedConfidence === 'HIGH' ? '📊 Backtest favorable (no validado fuera de muestra)' :displayedConfidence === 'LIMITED' ? '⚠️ Backtest con muestra limitada' : '🛡️ Sin ventaja en el backtest'}
+            </span>
             <span style={{ opacity: 0.85, fontWeight: '500' }}>· {displayedReasoning}</span>
           </div>
         )}
@@ -765,6 +519,7 @@ export default function SignalPanel({
           {/* 1. Estrategia Standard */}
           {(() => {
             const id = 'standard';
+            if (hideInfo(id)) return null;
             const isExpanded = expandedStrategy === id;
             const isRecommended = bestStrategy === id;
             const sig = rawSignal;
@@ -983,6 +738,24 @@ export default function SignalPanel({
                               {exp.validVolume ? 'VÁLIDO' : 'BAJO'}
                             </span>
                           </div>
+                          {!isCrypto && qveResult.targetInterval === '5m' && klines.length > 0 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span
+                                style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}
+                                title="En acciones 5m, Confluencia solo opera si el ATR(14) de la vela es al menos 0,5% del precio. Con menos volatilidad, la comisión y el deslizamiento se comen demasiado del stop."
+                              >
+                                Volatilidad (ATR ≥ 0,5%):
+                              </span>
+                              <span style={{
+                                color: (exp.atrPct ?? 0) >= CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT ? 'var(--accent-green)' : 'var(--accent-red)',
+                                fontSize: '0.75rem',
+                                fontWeight: '600',
+                                fontFamily: 'var(--font-mono)'
+                              }}>
+                                {((exp.atrPct ?? 0) * 100).toFixed(2)}%{exp.lowVolatility ? ' · SEÑAL BLOQUEADA' : (exp.atrPct ?? 0) >= CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT ? '' : ' · INSUFICIENTE'}
+                              </span>
+                            </div>
+                          )}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Cruce EMA 9/20:</span>
                             {klines.length > 0 ? (() => {
@@ -1014,6 +787,7 @@ export default function SignalPanel({
           {/* 3. Estrategia Scoring */}
           {(() => {
             const id = 'scoring';
+            if (hideInfo(id)) return null;
             const isExpanded = expandedStrategy === id;
             const isRecommended = bestStrategy === id;
             const sig = score.signal;
@@ -1111,7 +885,7 @@ export default function SignalPanel({
                               background: 'rgba(59, 130, 246, 0.03)',
                             }}
                           >
-                            {showWeightsConfig ? 'Ocultar Pesos ✕' : 'Ajustar Pesos ⚙️'}
+                            {showWeightsConfig ? 'Ocultar Pesos ✕' : 'Avanzado: Pesos ⚙️'}
                           </button>
                         </div>
 
@@ -1126,6 +900,9 @@ export default function SignalPanel({
                             flexDirection: 'column',
                             gap: '8px'
                           }}>
+                            <div style={{ fontSize: '0.6rem', color: '#eab308', lineHeight: 1.35 }}>
+                              Ajuste avanzado. Ninguna combinación de pesos mostró ventaja medida; mover los pesos hasta que el backtest de un papel mejore es sobreajuste. Los pesos también cambian las señales y el torneo.
+                            </div>
                             <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: '800', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px', display: 'flex', justifyContent: 'space-between', letterSpacing: '0.5px' }}>
                               <span>CAPA</span>
                               <span>PESO</span>
@@ -1234,6 +1011,7 @@ export default function SignalPanel({
           {/* 4. Estrategia VCME Sniper */}
           {(() => {
             const id = 'multitemporal';
+            if (hideInfo(id)) return null;
             const isExpanded = expandedStrategy === id;
             const isRecommended = bestStrategy === id;
             const sig = multi.signal;
@@ -1284,17 +1062,20 @@ export default function SignalPanel({
                       {closes.length === 0 ? 'WAITING...' : sig === 'NEUTRAL' ? 'NEUTRO' : `${sig} ${modeLabel}`}
                     </span>
                     {sig !== 'NEUTRAL' && multi.confidence && (
-                      <span style={{
-                        fontSize: '0.55rem',
-                        fontWeight: '800',
-                        color: multi.confidence === 'ALTA' ? 'var(--accent-green)' : 'var(--text-secondary)',
-                        backgroundColor: multi.confidence === 'ALTA' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.05)',
-                        border: `1px solid ${multi.confidence === 'ALTA' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.1)'}`,
-                        padding: '2px 6px',
-                        borderRadius: '3px',
-                        letterSpacing: '0.5px'
-                      }}>
-                        {multi.confidence}
+                      <span
+                        title="Puntaje interno del motor (0–100). Ordena los setups según sus propias reglas; no es una probabilidad de acierto ni está validado fuera de muestra."
+                        style={{
+                          fontSize: '0.55rem',
+                          fontWeight: '800',
+                          color: 'var(--text-secondary)',
+                          backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          padding: '2px 6px',
+                          borderRadius: '3px',
+                          letterSpacing: '0.5px'
+                        }}
+                      >
+                        PUNTAJE {multi.score}
                       </span>
                     )}
                     <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: '600', fontFamily: 'var(--font-mono)' }}>
@@ -1366,8 +1147,13 @@ export default function SignalPanel({
                         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: '800', letterSpacing: '0.5px' }}>CONFLUENCIA & SCORING ADAPTATIVO</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(59, 130, 246, 0.04)', padding: '10px 12px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.15)', marginBottom: '10px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>🎯 Score de Confianza Final:</span>
-                            <span style={{ color: multi.score >= 76 ? 'var(--accent-green)' : 'var(--text-muted)', fontWeight: '800', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
+                            <span
+                              style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}
+                              title="Ordena los setups según las reglas del propio motor; no es una probabilidad de acierto ni está validado fuera de muestra."
+                            >
+                              🎯 Puntaje interno del motor:
+                            </span>
+                            <span style={{ color: multi.score >= 76 ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: '800', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
                               {multi.score} / 100
                             </span>
                           </div>
@@ -1468,6 +1254,7 @@ export default function SignalPanel({
           {/* 5. Estrategia Multifractal MTF Engine */}
           {(() => {
             const id = 'multifractal';
+            if (hideInfo(id)) return null;
             const isExpanded = expandedStrategy === id;
             const isRecommended = bestStrategy === id;
             const sig = multifractal.signal;
@@ -1713,6 +1500,7 @@ export default function SignalPanel({
 
           {/* 6. Estrategia MACD Failure & Liquidity Sweep (MFLS) */}
           {(() => {
+            if (hideInfo('mfls')) return null;
             const isBest = bestStrategy === 'mfls';
             const cardSignal = mfls.signal;
             const sigColor = cardSignal === 'BUY' ? 'var(--accent-green)' : cardSignal === 'SELL' ? 'var(--accent-red)' : 'var(--text-secondary)';
@@ -1870,45 +1658,48 @@ export default function SignalPanel({
                           flexDirection: 'column',
                           gap: '6px'
                         }}>
-                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>GESTIÓN DE RIESGO (0.11% COMISIÓN)</div>
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontWeight: '800', letterSpacing: '0.5px' }}>GESTIÓN DE RIESGO (0.11% COMISIÓN)</div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)' }}>🛑 Stop Loss:</span>
-                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.stopLoss)}</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}><ShieldAlert size={13} /> Stop Loss:</span>
+                            <span style={{ color: 'var(--accent-red)', fontWeight: '700', fontSize: '0.78rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.stopLoss)}</span>
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🎯 TP1 (50% Ineficiencia / 1.75R):</span>
-                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit1)}</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}><Target size={13} /> TP1 (50% Ineficiencia / 1.75R):</span>
+                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.78rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit1)}</span>
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>🏆 TP2 (Runner 3.0R):</span>
-                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit2)}</span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}><Trophy size={13} /> TP2 (Runner 3.0R):</span>
+                            <span style={{ color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.78rem', fontFamily: 'var(--font-mono)' }}>{formatSmartPrice(mfls.takeProfit2)}</span>
                           </div>
                           <div style={{
-                            fontSize: '0.65rem',
+                            fontSize: 'var(--text-xs)',
                             color: 'var(--text-secondary)',
-                            fontStyle: 'italic',
-                            lineHeight: '1.3',
+                            lineHeight: '1.35',
                             padding: '6px 8px',
                             background: 'rgba(56, 189, 248, 0.04)',
                             border: '1px solid rgba(56, 189, 248, 0.1)',
                             borderRadius: '4px',
-                            marginTop: '2px'
+                            marginTop: '2px',
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '6px'
                           }}>
-                            💡 {mfls.reasoning}
+                            <Info size={13} style={{ flexShrink: 0, marginTop: '2px', color: 'var(--accent-blue)' }} />
+                            <span>{mfls.reasoning}</span>
                           </div>
                         </div>
                       )}
 
+                      {/* Reasoning when NEUTRAL */}
                       {mfls.signal === 'NEUTRAL' && (
                         <div style={{
-                          fontSize: '0.7rem',
-                          color: 'var(--text-muted)',
-                          fontStyle: 'italic',
+                          fontSize: '0.72rem',
+                          color: 'var(--text-secondary)',
                           padding: '8px 10px',
                           background: 'rgba(0,0,0,0.1)',
                           border: '1px solid var(--border-color)',
                           borderRadius: '6px',
-                          lineHeight: '1.3'
+                          lineHeight: '1.35'
                         }}>
                           {mfls.reasoning}
                         </div>
@@ -1919,814 +1710,70 @@ export default function SignalPanel({
               </div>
             );
           })()}
+
+          {/* Informational engines toggle (only where some engine is informational, i.e. 5m equities) */}
+          {(() => {
+            const infoSignals = [
+              ['standard', rawSignal], ['scoring', score.signal], ['multitemporal', multi.signal],
+              ['multifractal', multifractal.signal], ['mfls', mfls.signal],
+            ].filter(([key]) => isInfo(key));
+            if (infoSignals.length === 0) return null;
+            const withSignal = infoSignals.filter(([, sig]) => sig.includes('BUY') || sig.includes('SELL')).length;
+            return (
+              <button
+                onClick={toggleInformational}
+                title="Estándar, Scoring, VCME, Multifractal y MFLS no generan alertas ni compiten en el torneo en acciones 5m. Quedan plegados para no distraer; abrilos si querés revisarlos."
+                style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
+                  padding: '8px 12px', borderRadius: '8px', cursor: 'pointer',
+                  background: 'rgba(168, 85, 247, 0.05)', border: '1px solid rgba(168, 85, 247, 0.25)',
+                  color: '#c084fc', fontSize: 'var(--text-xs)', fontWeight: 700,
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <FlaskConical size={13} />
+                  {showInformational ? 'Ocultar' : 'Ver'} {infoSignals.length} motores informativos
+                  {!showInformational && closes.length > 0 && (
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>
+                      · {withSignal === 0 ? 'ninguno con señal' : `${withSignal} con señal`}
+                    </span>
+                  )}
+                </span>
+                {showInformational ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
+            );
+          })()}
         </div>
       )}
 
       {/* ── TAB CONTENT: CALCULATOR ─────────────────── */}
       {activeTab === 'calculator' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          
-          <div style={{
-            backgroundColor: 'var(--bg-panel)',
-            border: '1px solid var(--border-color)',
-            padding: '16px 14px',
-            borderRadius: 'var(--border-radius-md)',
-            boxShadow: 'var(--shadow-sm)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '14px'
-          }}>
-            
-            {/* Direction Selection & Parameter Sync Info */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', gap: '4px', background: 'rgba(0,0,0,0.25)', padding: '2px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                <button
-                  onClick={() => setCalcDirection('BUY')}
-                  style={{
-                    padding: '4px 12px',
-                    fontSize: '0.7rem',
-                    fontWeight: 'bold',
-                    background: calcDirection === 'BUY' ? 'var(--accent-green)' : 'transparent',
-                    color: calcDirection === 'BUY' ? '#fff' : 'var(--text-muted)',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  COMPRA
-                </button>
-                <button
-                  onClick={() => setCalcDirection('SELL')}
-                  style={{
-                    padding: '4px 12px',
-                    fontSize: '0.7rem',
-                    fontWeight: 'bold',
-                    background: calcDirection === 'SELL' ? 'var(--accent-red)' : 'transparent',
-                    color: calcDirection === 'SELL' ? '#fff' : 'var(--text-muted)',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  VENTA
-                </button>
-              </div>
-              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-                Gestión Dinámica: {operationalStrategy === 'multitemporal' ? 'VCME Sniper v2' : 'Estándar'}
-              </span>
-            </div>
-
-            {/* Inputs Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: isCrypto ? '1fr 1fr 1fr' : '1fr 1fr', gap: '8px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>CAPITAL ($)</label>
-                <input 
-                  type="number" 
-                  value={capital} 
-                  onChange={e => setCapital(Math.max(1, parseFloat(e.target.value) || 0))}
-                  style={{
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    padding: '6px 8px',
-                    color: '#fff',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.75rem',
-                    outline: 'none',
-                    width: '100%',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>RIESGO BASE (%)</label>
-                <input 
-                  type="number" 
-                  step="0.1"
-                  value={riskPercent} 
-                  onChange={e => setRiskPercent(Math.max(0.1, parseFloat(e.target.value) || 0))}
-                  style={{
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    padding: '6px 8px',
-                    color: '#fff',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.75rem',
-                    outline: 'none',
-                    width: '100%',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
-              {isCrypto && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold', whiteSpace: 'nowrap' }}>APALANC. (x)</label>
-                  <input 
-                    type="number" 
-                    min="1"
-                    max="50"
-                    value={leverage} 
-                    onChange={e => setLeverage(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
-                    style={{
-                      background: 'rgba(0,0,0,0.3)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      color: '#fff',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.75rem',
-                      outline: 'none',
-                      width: '100%',
-                      boxSizing: 'border-box'
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Advanced Position Sizing Controls */}
-            <div style={{ 
-              display: 'flex', 
-              flexDirection: 'column', 
-              gap: '10px',
-              padding: '10px 12px',
-              background: 'rgba(0, 0, 0, 0.15)',
-              borderRadius: '6px',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'var(--accent-blue)', letterSpacing: '0.5px' }}>
-                PARÁMETROS DE CUENTA & CONTROL DE RIESGO
-              </div>
-              
-              {/* Account Drawdown Slider */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Drawdown de Cuenta:</span>
-                  <span style={{ color: accountDrawdown > 8 ? 'var(--accent-red)' : 'var(--text-primary)', fontWeight: 'bold', fontFamily: 'var(--font-mono)' }}>
-                    {accountDrawdown}%
-                  </span>
-                </div>
-                <input 
-                  type="range"
-                  min="0"
-                  max="30"
-                  value={accountDrawdown}
-                  onChange={e => setAccountDrawdown(parseInt(e.target.value))}
-                  style={{
-                    width: '100%',
-                    height: '4px',
-                    borderRadius: '2px',
-                    background: 'rgba(255,255,255,0.1)',
-                    outline: 'none',
-                    cursor: 'pointer'
-                  }}
-                />
-              </div>
-
-              {/* Correlation Positions Dropdown */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Posiciones correlacionadas abiertas:</span>
-                <select 
-                  value={sameSectorPositions}
-                  onChange={e => setSameSectorPositions(parseInt(e.target.value))}
-                  style={{
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
-                    color: '#fff',
-                    fontSize: '0.7rem',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    fontFamily: 'var(--font-mono)',
-                    outline: 'none'
-                  }}
-                >
-                  <option value={0}>0 posiciones</option>
-                  <option value={1}>1 posición</option>
-                  <option value={2}>2 posiciones (Penaliz. 30%)</option>
-                  <option value={3}>3+ posiciones (Penaliz. 55%)</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Price Plan (SL & TP Levels) */}
-            <div style={{ fontSize: '0.75rem', color: calculatorPlan.valid ? 'var(--text-muted)' : '#eab308' }} role="status">
-              {calculatorPlan.valid
-                ? `${overallSignal.includes(calcDirection) ? 'Plan operativo' : 'Escenario manual (no es una alerta)'} ${calculatorPlan.interval.toUpperCase()} · precio de ejecución actual`
-                : `${calculatorPlan.reason} Dimensionamiento desactivado.`}
-            </div>
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              background: 'rgba(0,0,0,0.2)', 
-              padding: '10px 12px', 
-              borderRadius: '6px', 
-              border: '1px solid var(--border-color)',
-              fontSize: '0.75rem',
-              fontFamily: 'var(--font-mono)'
-            }}>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Entrada:</span>
-                <div style={{ color: '#fff', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  {formatSmartPrice(entryPrice)}
-                </div>
-              </div>
-              <div>
-                <span style={{ color: 'var(--accent-red)' }}>Stop Loss (-{(slPct*100).toFixed(1)}%):</span>
-                <div style={{ color: 'var(--accent-red)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  {formatSmartPrice(slPrice)}
-                </div>
-              </div>
-              <div>
-                <span style={{ color: 'var(--accent-green)' }}>Target 1 (+{(tpPct*100).toFixed(1)}%):</span>
-                <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.75rem', marginTop: '2px' }}>
-                  {formatSmartPrice(tpPrice)}
-                </div>
-              </div>
-              <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '10px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>R:R Ratio:</span>
-                <div style={{ 
-                  color: slPct > 0 && (tpPct / slPct) >= 1.5 ? 'var(--accent-green)' : 'var(--accent-red)', 
-                  fontWeight: 'bold', 
-                  fontSize: '0.75rem', 
-                  marginTop: '2px' 
-                }}>
-                  {slPct > 0 ? `${(tpPct / slPct).toFixed(1)}:1` : 'N/A'} {slPct > 0 && (tpPct / slPct) >= 1.5 ? '✓' : '⚠️'}
-                </div>
-              </div>
-            </div>
-
-            {/* Sizing Multipliers Breakdown */}
-            {operationalStrategy === 'multitemporal' && (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-                padding: '10px 12px',
-                background: 'rgba(59, 130, 246, 0.03)',
-                border: '1px solid rgba(59, 130, 246, 0.1)',
-                borderRadius: '6px',
-                fontSize: '0.7rem'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '4px', fontWeight: 'bold', color: 'var(--accent-blue)' }}>
-                  <span>Multiplicadores de Capital (VCME v2)</span>
-                  <span>Impacto</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>1. Factor Confianza ({scoreTier} - {multi.score} pts):</span>
-                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{confidenceMultiplier.toFixed(2)}x</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>2. Factor Volatilidad (ATR 5m {multi.atrPercent}%):</span>
-                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{volatilityMultiplier.toFixed(2)}x</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>3. Protección Drawdown ({accountDrawdown}%):</span>
-                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{healthMultiplier.toFixed(2)}x</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>4. Penalización Correlación ({sameSectorPositions} open):</span>
-                  <span style={{ fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>{correlationPenalty.toFixed(2)}x</span>
-                </div>
-              </div>
-            )}
-
-            {/* Sizing Outputs */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '8px',
-              padding: '10px 12px',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.01) 0%, rgba(59,130,246,0.03) 100%)',
-              border: '1px solid rgba(59, 130, 246, 0.12)',
-              borderRadius: '6px',
-            }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RIESGO NETO EN USD:</span>
-                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>
-                  ${riskUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>TAMAÑO RECOMENDADO:</span>
-                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
-                  {positionUnits >= 1000 ? positionUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : formatSmartNumber(positionUnits, 4)} {isCrypto ? symbol.replace('USDT', '') : 'Acciones'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '6px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>VALOR TOTAL DE POSICIÓN:</span>
-                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  ${totalPositionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '6px' }}>
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>MARGEN NECESARIO:</span>
-                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  ${requiredMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <PositionCalculator
+          symbol={symbol}
+          isCrypto={isCrypto}
+          executionStyle={executionStyle}
+          overallSignal={overallSignal}
+          operationalStrategy={operationalStrategy}
+          klines5m={klines5m}
+          klines1h={klines1h}
+          closedKlines5m={closedKlines5m}
+          closedKlines1h={closedKlines1h}
+          multi={multi}
+          multifractal={multifractal}
+          mfls={mfls}
+        />
       )}
 
       {/* ── TAB CONTENT: MARKET ─────────────────────── */}
       {activeTab === 'market' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          
-          {/* Métricas de Contexto (Complementary Info) */}
-          {(() => {
-            if (loadingExtra) {
-              return (
-                <div style={{
-                  backgroundColor: 'var(--bg-panel)',
-                  border: '1px solid var(--border-color)',
-                  padding: '16px',
-                  borderRadius: 'var(--border-radius-md)',
-                  textAlign: 'center',
-                  color: 'var(--text-muted)',
-                  fontSize: '0.75rem',
-                  animation: 'pulse 1.5s infinite'
-                }}>
-                  Cargando métricas de contexto...
-                </div>
-              );
-            }
-
-            const isCryptoSymbol = isCrypto;
-
-            if (isCryptoSymbol && cryptoInfo) {
-              const value = cryptoInfo.value;
-              const classification = cryptoInfo.classification;
-              
-              // Determine color based on Fear & Greed value
-              let color = 'var(--text-secondary)';
-              let bgGlow = 'none';
-              if (value <= 25) {
-                color = 'var(--accent-red)'; // Extreme Fear
-                bgGlow = '0 0 10px rgba(244, 63, 94, 0.1)';
-              } else if (value < 45) {
-                color = '#f59e0b'; // Fear (orange)
-              } else if (value <= 55) {
-                color = 'var(--text-secondary)'; // Neutral
-              } else if (value < 75) {
-                color = 'var(--accent-green)'; // Greed
-              } else {
-                color = '#059669'; // Extreme Greed (darker green)
-                bgGlow = '0 0 10px rgba(16, 185, 129, 0.1)';
-              }
-
-              return (
-                <div style={{
-                  backgroundColor: 'var(--bg-panel)',
-                  border: '1px solid var(--border-color)',
-                  padding: '16px 14px 14px 14px',
-                  borderRadius: 'var(--border-radius-md)',
-                  position: 'relative',
-                  boxShadow: bgGlow || 'var(--shadow-sm)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px'
-                }}>
-                  <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-                      SENTIMIENTO DE MERCADO CRIPTO
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>F&G INDEX (GLOBAL)</span>
-                      <span style={{ fontSize: '1.25rem', fontWeight: '800', color: '#fff' }}>
-                        {value} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
-                      </span>
-                    </div>
-                    <span style={{ 
-                      fontSize: '0.75rem', 
-                      fontWeight: '800', 
-                      padding: '4px 10px', 
-                      borderRadius: '6px',
-                      color: color,
-                      backgroundColor: `${color}15`,
-                      border: `1px solid ${color}30`,
-                      letterSpacing: '0.5px',
-                      textTransform: 'uppercase'
-                    }}>
-                      {classification === 'Greed' ? 'Codicia' : classification === 'Extreme Greed' ? 'Codicia Extrema' : classification === 'Fear' ? 'Miedo' : classification === 'Extreme Fear' ? 'Miedo Extremo' : 'Neutral'}
-                    </span>
-                  </div>
-
-                  {/* Gradient Progress Bar */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ height: '8px', borderRadius: '4px', background: 'linear-gradient(to right, var(--accent-red) 0%, #f59e0b 50%, var(--accent-green) 100%)', position: 'relative', border: '1px solid rgba(255,255,255,0.05)' }}>
-                      {/* Indicator Needle */}
-                      <div style={{
-                        position: 'absolute',
-                        top: '-3px',
-                        left: `${value}%`,
-                        width: '4px',
-                        height: '14px',
-                        backgroundColor: '#fff',
-                        borderRadius: '2px',
-                        border: '1px solid #000',
-                        boxShadow: '0 0 4px rgba(0,0,0,0.5)',
-                        transform: 'translateX(-50%)',
-                        transition: 'left 0.8s cubic-bezier(0.25, 0.8, 0.25, 1)'
-                      }} />
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      <span>MIEDO EXTREMO</span>
-                      <span>NEUTRAL</span>
-                      <span>CODICIA EXTREMA</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            }
-
-            if (!isCryptoSymbol) {
-              if (!stockInfo) {
-                return (
-                  <div style={{
-                    backgroundColor: 'var(--bg-panel)',
-                    border: '1px solid var(--border-color)',
-                    padding: '20px 14px 18px 14px',
-                    borderRadius: 'var(--border-radius-md)',
-                    position: 'relative',
-                    boxShadow: 'var(--shadow-sm)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px'
-                  }}>
-                    <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-                      <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-                        ZACKS RANK & FUNDAMENTALES
-                      </span>
-                    </div>
-                    <div style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      gap: '8px',
-                      color: 'var(--text-muted)',
-                      textAlign: 'center',
-                      padding: '10px 10px 4px 10px'
-                    }}>
-                      <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-                      <span style={{ fontSize: '0.75rem', fontWeight: '500', lineHeight: '1.4', color: 'var(--text-secondary)' }}>
-                        Datos de consenso y fundamentales no disponibles
-                      </span>
-                      <span style={{ fontSize: '0.65rem', lineHeight: '1.4' }}>
-                        Los servicios de Zacks y Yahoo Finance han limitado las peticiones desde este servidor o no hay conexión a internet.
-                      </span>
-                    </div>
-                  </div>
-                );
-              }
-
-              const recMean = stockInfo.recommendationMean;
-              const recColor = recMean !== null
-                ? (recMean <= 2.0 ? 'var(--accent-green)' : recMean <= 3.5 ? 'var(--text-secondary)' : 'var(--accent-red)')
-                : 'var(--text-secondary)';
-              
-              let recLabel = 'MANTENER';
-              if (recMean !== null) {
-                if (recMean <= 1.5) recLabel = 'FUERTE COMPRA';
-                else if (recMean <= 2.5) recLabel = 'COMPRA';
-                else if (recMean <= 3.5) recLabel = 'MANTENER';
-                else if (recMean <= 4.5) recLabel = 'VENTA';
-                else recLabel = 'FUERTE VENTA';
-              }
-
-              const target = stockInfo.targetMeanPrice;
-              const beta = stockInfo.beta;
-
-              // Calculate Upside
-              let upsidePct = 0;
-              if (target && entryPrice > 0) {
-                upsidePct = ((target - entryPrice) / entryPrice) * 100;
-              }
-
-              return (
-                <div style={{
-                  backgroundColor: 'var(--bg-panel)',
-                  border: '1px solid var(--border-color)',
-                  padding: '16px 14px 14px 14px',
-                  borderRadius: 'var(--border-radius-md)',
-                  position: 'relative',
-                  boxShadow: 'var(--shadow-sm)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px'
-                }}>
-                  <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-                      ZACKS RANK & FUNDAMENTALES
-                    </span>
-                  </div>
-
-                  {/* Analyst Consensus Rating Scale */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>ZACKS RANK</span>
-                      {recMean !== null && (
-                        <span style={{ 
-                          fontSize: '0.7rem', 
-                          fontWeight: '800', 
-                          padding: '2px 8px', 
-                          borderRadius: '4px',
-                          color: recColor,
-                          backgroundColor: `${recColor}12`,
-                          border: `1px solid ${recColor}25`
-                        }}>
-                          {recLabel} ({recMean})
-                        </span>
-                      )}
-                    </div>
-
-                    {recMean !== null ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ height: '8px', borderRadius: '4px', background: 'linear-gradient(to right, var(--accent-green) 0%, #a7f3d0 25%, var(--text-muted) 50%, #fca5a5 75%, var(--accent-red) 100%)', position: 'relative', border: '1px solid rgba(255,255,255,0.05)' }}>
-                          {/* Rating Needle: maps 1.0 (left) to 5.0 (right) */}
-                          <div style={{
-                            position: 'absolute',
-                            top: '-3px',
-                            left: `${((recMean - 1) / 4) * 100}%`,
-                            width: '4px',
-                            height: '14px',
-                            backgroundColor: '#fff',
-                            borderRadius: '2px',
-                            border: '1px solid #000',
-                            boxShadow: '0 0 4px rgba(0,0,0,0.5)',
-                            transform: 'translateX(-50%)',
-                            transition: 'left 0.8s cubic-bezier(0.25, 0.8, 0.25, 1)'
-                          }} />
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.55rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                          <span>1.0 FUERTE COMPRA</span>
-                          <span>3.0 MANTENER</span>
-                          <span>5.0 FUERTE VENTA</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Sin Zacks Rank disponible</div>
-                    )}
-                  </div>
-
-                  <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '2px 0' }} />
-
-                  {/* Target Price & Beta */}
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    {/* Target Price & Beta Conditionally rendered */}
-                    {target ? (
-                      <>
-                        <div style={{ 
-                          flex: 1.2, 
-                          padding: '8px 10px', 
-                          background: 'rgba(0, 0, 0, 0.12)', 
-                          border: '1px solid var(--border-color)', 
-                          borderRadius: '6px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '4px'
-                        }}>
-                          <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>PRECIO OBJETIVO (YAHOO)</span>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                              ${target.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                            <span style={{ 
-                              fontSize: '0.65rem', 
-                              fontWeight: 'bold', 
-                              color: upsidePct >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'
-                            }}>
-                              {upsidePct >= 0 ? '+' : ''}{upsidePct.toFixed(1)}% Upside
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Beta */}
-                        <div style={{ 
-                          flex: 0.8, 
-                          padding: '8px 10px', 
-                          background: 'rgba(0, 0, 0, 0.12)', 
-                          border: '1px solid var(--border-color)', 
-                          borderRadius: '6px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '4px'
-                        }}>
-                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>BETA (VOLATILIDAD)</span>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                              {beta !== null ? beta.toFixed(2) : 'N/A'}
-                            </span>
-                            {beta !== null && (
-                              <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', lineHeight: '1.1' }} title={beta > 1 ? "Más volátil que el mercado" : "Menos volátil que el mercado"}>
-                                {beta > 1 ? "📈 Alta" : beta < 1 ? "📉 Baja" : "Neutral"}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      /* Beta only, full width */
-                      <div style={{ 
-                        flex: 1, 
-                        padding: '8px 10px', 
-                        background: 'rgba(0, 0, 0, 0.12)', 
-                        border: '1px solid var(--border-color)', 
-                        borderRadius: '6px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px'
-                      }}>
-                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>BETA (VOLATILIDAD)</span>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                            {beta !== null ? beta.toFixed(2) : 'N/A'}
-                          </span>
-                          {beta !== null && (
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', lineHeight: '1.1' }} title={beta > 1 ? "Más volátil que el mercado" : "Menos volátil que el mercado"}>
-                              {beta > 1 ? "📈 Alta (más volátil que el mercado)" : beta < 1 ? "📉 Baja (menos volátil que el mercado)" : "Neutral"}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                </div>
-              );
-            }
-
-            return null;
-          })()}
-
-          {/* Volatility Catalysts (Earnings & Macro events) */}
-          {(() => {
-            const nextMacro = getNextMacroEvent();
-            const earningsInfo = getEarningsInfo();
-            const hasEvents = nextMacro || earningsInfo;
-            
-            if (!hasEvents) return null;
-            
-            return (
-              <div style={{
-                backgroundColor: 'var(--bg-panel)',
-                border: '1px solid var(--border-color)',
-                padding: '16px 14px 14px 14px',
-                borderRadius: 'var(--border-radius-md)',
-                position: 'relative',
-                boxShadow: 'var(--shadow-sm)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '10px'
-              }}>
-                <div style={{ position: 'absolute', top: '-10px', left: '14px', background: 'var(--bg-dark)', padding: '0 8px', borderRadius: '4px' }}>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: '800', letterSpacing: '1px' }}>
-                    CATALIZADORES DE VOLATILIDAD
-                  </span>
-                </div>
-                
-                {earningsInfo && (
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between', 
-                    alignItems: 'center',
-                    padding: '6px 10px',
-                    background: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.05)' : 'rgba(255, 255, 255, 0.01)',
-                    border: `1px solid ${earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.2)' : 'var(--border-color)'}`,
-                    borderRadius: '6px'
-                  }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Reporte de Ganancias (Stock)</span>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{earningsInfo.date}</span>
-                    </div>
-                    <span style={{ 
-                      fontSize: '0.65rem', 
-                      fontWeight: '800', 
-                      padding: '2px 8px', 
-                      borderRadius: '4px',
-                      color: earningsInfo.daysLeft <= 2 ? 'var(--accent-red)' : 'var(--accent-blue)',
-                      backgroundColor: earningsInfo.daysLeft <= 2 ? 'rgba(244, 63, 94, 0.08)' : 'rgba(0, 229, 255, 0.08)'
-                    }}>
-                      {earningsInfo.daysLeft <= 0 ? 'Hoy' : earningsInfo.daysLeft === 1 ? 'Mañana' : `en ${earningsInfo.daysLeft} días`}
-                    </span>
-                  </div>
-                )}
-                
-                {nextMacro ? (
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between', 
-                    alignItems: 'center',
-                    padding: '6px 10px',
-                    background: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.05)' : 'rgba(255, 255, 255, 0.01)',
-                    border: `1px solid ${nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.2)' : 'var(--border-color)'}`,
-                    borderRadius: '6px'
-                  }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>{nextMacro.title} (Macro 2026)</span>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{new Date(nextMacro.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                    </div>
-                    <span style={{ 
-                      fontSize: '0.65rem', 
-                      fontWeight: '800', 
-                      padding: '2px 8px', 
-                      borderRadius: '4px',
-                      color: nextMacro.daysLeft <= 2 ? 'var(--accent-yellow)' : 'var(--text-secondary)',
-                      backgroundColor: nextMacro.daysLeft <= 2 ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255, 255, 255, 0.03)'
-                    }}>
-                      {nextMacro.daysLeft === 0 ? 'Hoy' : nextMacro.daysLeft === 1 ? 'Mañana' : `en ${nextMacro.daysLeft} días`}
-                    </span>
-                  </div>
-                ) : (
-                  <div style={{
-                    padding: '6px 10px',
-                    background: 'rgba(255, 255, 255, 0.01)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px'
-                  }}>
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Calendario Macro pendiente de actualización</span>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* News Feed */}
-          <div style={{
-            backgroundColor: 'var(--bg-panel)',
-            border: '1px solid var(--border-color)',
-            padding: '16px',
-            borderRadius: 'var(--border-radius-md)'
-          }}>
-            <div style={{ 
-              color: 'var(--text-secondary)', 
-              fontSize: '0.75rem', 
-              fontWeight: '800', 
-              letterSpacing: '1px', 
-              marginBottom: '14px', 
-              borderBottom: '1px solid var(--border-color)', 
-              paddingBottom: '8px',
-              textTransform: 'uppercase'
-            }}>
-              ÚLTIMAS NOTICIAS
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {loadingNews ? (
-                <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Cargando noticias...</div>
-              ) : news.length > 0 ? (
-                news.map((item, index) => (
-                  <a 
-                    key={index} 
-                    href={item.url} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    style={{ 
-                      textDecoration: 'none', 
-                      display: 'block',
-                      padding: '10px 12px',
-                      borderRadius: '6px',
-                      background: 'rgba(255, 255, 255, 0.01)',
-                      border: '1px solid rgba(255, 255, 255, 0.03)',
-                      transition: 'var(--transition-smooth)',
-                    }}
-                    className="news-card"
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(59, 130, 246, 0.03)';
-                      e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.15)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.01)';
-                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.03)';
-                    }}
-                  >
-                    <div style={{ 
-                      color: 'var(--accent-blue)', 
-                      marginBottom: '6px', 
-                      lineHeight: '1.4', 
-                      fontWeight: '600',
-                      fontSize: '0.8rem'
-                    }}>
-                      {item.title}
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
-                      <span>{item.source}</span>
-                      <span>{item.time}</span>
-                    </div>
-                  </a>
-                ))
-              ) : (
-                <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', fontSize: '0.8rem' }}>Sin noticias recientes</div>
-              )}
-            </div>
-          </div>
-        </div>
+        <MarketContextTab
+          symbol={symbol}
+          isCrypto={isCrypto}
+          earningsEvent={earningsEvent}
+          entryPrice={closes.length > 0 ? closes[closes.length - 1] : 0}
+        />
       )}
     </div>
   );
 }
+

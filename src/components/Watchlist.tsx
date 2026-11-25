@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import { fetchTickerSummary, fetchKlines } from '../services/api';
 import { isCryptoAsset } from '../utils/tradeLevels';
 import { X } from 'lucide-react';
+import { getEarningsNotice, type EarningsEvent } from '../utils/marketEvents';
+import EventBadge from './EventBadge';
 
 interface WatchlistProps {
   symbols: string[];
@@ -9,6 +11,7 @@ interface WatchlistProps {
   onRemoveAsset: (asset: string) => void;
   currentAsset: string;
   activeSignals?: Record<string, string>;
+  earningsEvents?: Record<string, EarningsEvent>;
 }
 
 interface AssetData {
@@ -17,7 +20,7 @@ interface AssetData {
   change: string;
 }
 
-export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, currentAsset, activeSignals = {} }: WatchlistProps) {
+function Watchlist({ symbols, onSelectAsset, onRemoveAsset, currentAsset, activeSignals = {}, earningsEvents = {} }: WatchlistProps) {
   const [assets, setAssets] = useState<AssetData[]>([]);
   const assetsRef = useRef<AssetData[]>([]);
 
@@ -72,12 +75,12 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
                 };
               }
             }
-            if (isMounted) setAssets([...seeded]);
           } catch (e) {
             console.error('Error fetching watchlist data for', sym, e);
           }
         })
       );
+      if (isMounted) setAssets([...seeded]);
     };
 
     fetchPrices();
@@ -98,7 +101,8 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
         const activeSig = activeSignals[asset.symbol];
         const isBuySig = activeSig && activeSig.includes('BUY');
         const isSellSig = activeSig && activeSig.includes('SELL');
-        
+        const earningsNotice = getEarningsNotice(earningsEvents[asset.symbol.toUpperCase()]);
+
         return (
           <div 
             key={asset.symbol}
@@ -160,6 +164,11 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
                   </span>
                 )}
               </div>
+              {earningsNotice && (
+                <div style={{ marginTop: '3px' }}>
+                  <EventBadge notice={earningsNotice} />
+                </div>
+              )}
             </div>
             <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '10px' }}>
               <div>
@@ -220,3 +229,5 @@ export default function Watchlist({ symbols, onSelectAsset, onRemoveAsset, curre
     </div>
   );
 }
+
+export default memo(Watchlist);

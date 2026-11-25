@@ -12,10 +12,20 @@ interface AlertReportModalProps {
   onClose: () => void;
 }
 
-const PERIODS = [7, 14, 30] as const;
+const PERIODS = [7, 14, 30, 90] as const;
 
 function formatR(r: number): string {
   return `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`;
+}
+
+/** YYYY-MM-DD → DD/MM */
+function formatDay(day: string): string {
+  const [, month, dayOfMonth] = day.split('-');
+  return `${dayOfMonth}/${month}`;
+}
+
+function rColor(r: number): string {
+  return r >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
 }
 
 function BucketRow({ label, bucket, muted }: { label: string; bucket: ReportBucket; muted?: boolean }) {
@@ -64,7 +74,14 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
   const [days, setDays] = useState<number>(7);
   // The report window is anchored to the moment it is opened
   const [nowMs] = useState(() => Date.now());
-  const report = useMemo(() => buildAlertPerformanceReport(alerts, nowMs, days), [alerts, nowMs, days]);
+  const [minVersion, setMinVersion] = useState<string>('');
+  const report = useMemo(
+    () => buildAlertPerformanceReport(alerts, nowMs, days, { minVersion: minVersion || undefined }),
+    [alerts, nowMs, days, minVersion]
+  );
+  const { byDay } = report;
+  const ci = byDay.ci95HalfWidth;
+  const ciExcludesZero = ci !== undefined && Math.abs(report.primary.avgR) > ci;
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -109,6 +126,23 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
             </div>
           </div>
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {(report.versions.length > 0 || minVersion) && (
+              <select
+                value={minVersion}
+                onChange={e => setMinVersion(e.target.value)}
+                title={`Limita el informe a las alertas emitidas desde una versión de la app, para no mezclar reglas viejas con las actuales.${report.unversioned > 0 ? ` Hay ${report.unversioned} alertas del período anteriores a v2026.11.16.1, que no guardan versión.` : ''}`}
+                style={{
+                  background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-color)', borderRadius: '4px',
+                  padding: '2px 4px', fontSize: '0.66rem', fontWeight: 700, cursor: 'pointer',
+                }}
+              >
+                <option value="">Todas las reglas</option>
+                {[...new Set([...report.versions, ...(minVersion ? [minVersion] : [])])].map(v => (
+                  <option key={v} value={v}>Desde {v}</option>
+                ))}
+              </select>
+            )}
             {PERIODS.map(p => (
               <button
                 key={p}
@@ -140,16 +174,56 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
                 <BucketTable rows={[{ label: 'Total', bucket: report.primary }]} />
               </Section>
 
+              {byDay.days.length > 0 && (
+                <Section
+                  title="POR DÍA (ET) · ALERTAS PRINCIPALES"
+                  note="Las alertas de un mismo día suelen moverse juntas (un solo movimiento del mercado dispara muchos papeles), así que la unidad de medida es el día, no la alerta. Si el intervalo incluye el 0, el resultado no se distingue del azar."
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                    <div>
+                      R medio por alerta:{' '}
+                      <strong style={{ color: rColor(report.primary.avgR) }}>{formatR(report.primary.avgR)}</strong>
+                      {ci !== undefined ? (
+                        <>
+                          {' '}± {ci.toFixed(2)} <span style={{ color: 'var(--text-muted)' }}>(IC 95%, {byDay.days.length} días)</span>
+                          {' · '}
+                          <span style={{ color: ciExcludesZero ? rColor(report.primary.avgR) : '#eab308' }}>
+                            {ciExcludesZero ? 'el intervalo no incluye el 0' : 'no se distingue del azar'}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)' }}> · hacen falta al menos 3 días para estimar el intervalo</span>
+                      )}
+                    </div>
+                    {byDay.bestDay && byDay.avgRWithoutBestDay !== undefined && (
+                      <div>
+                        Sin el mejor día <span style={{ color: 'var(--text-muted)' }}>({formatDay(byDay.bestDay.day)}: {formatR(byDay.bestDay.bucket.totalR)} en {byDay.bestDay.bucket.n} alertas)</span>:{' '}
+                        <strong style={{ color: rColor(byDay.avgRWithoutBestDay) }}>{formatR(byDay.avgRWithoutBestDay)}</strong>
+                      </div>
+                    )}
+                    {byDay.worstDay && byDay.avgRWithoutWorstDay !== undefined && (
+                      <div>
+                        Sin el peor día <span style={{ color: 'var(--text-muted)' }}>({formatDay(byDay.worstDay.day)}: {formatR(byDay.worstDay.bucket.totalR)} en {byDay.worstDay.bucket.n} alertas)</span>:{' '}
+                        <strong style={{ color: rColor(byDay.avgRWithoutWorstDay) }}>{formatR(byDay.avgRWithoutWorstDay)}</strong>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ maxHeight: '170px', overflowY: 'auto' }}>
+                    <BucketTable rows={byDay.days.map(d => ({ label: formatDay(d.day), bucket: d.bucket }))} />
+                  </div>
+                </Section>
+              )}
+
               <Section
                 title="POR FRANJA HORARIA (ET)"
-                note="La ventaja medida en 60 días se concentra antes de las 10:00 ET; de 10:00 a 11:00 rondaba el empate."
+                note="En la muestra de calibración (60 días) el mejor resultado estaba antes de las 10:00 ET, pero esa ventaja no se sostuvo fuera de muestra."
               >
                 <BucketTable rows={REPORT_TIME_SLOTS.filter(s => report.bySlot[s].n > 0).map(s => ({ label: s, bucket: report.bySlot[s] }))} />
               </Section>
 
               <Section
                 title="PRIMERA ALERTA DEL DÍA"
-                note="Primera alerta principal de cada sesión en toda la watchlist, contra el resto. En 60 días las primeras rindieron +0,15R y las siguientes cerca de 0."
+                note="Primera alerta principal de cada sesión en toda la watchlist, contra el resto. En la muestra de calibración (60 días) las primeras rindieron +0,15R y las siguientes cerca de 0; no está validado fuera de muestra."
               >
                 <BucketTable rows={[
                   { label: 'Primera del día', bucket: report.firstOfDay },
@@ -166,7 +240,7 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
 
               <Section
                 title="DEMORA Y EJECUCIÓN"
-                note="La ventaja de Confluencia cae con la demora: ~0R a 1 minuto, −0,05R a 2 y −0,08R a 3. El costo de ejecución sale del precio que cargás en cada alerta (positivo = pagaste peor que el precio de la alerta)."
+                note="La demora mide los segundos entre el cierre de la vela y la alerta. En la medición de noviembre de 2026, entrar más tarde no rindió peor que entrar en la vela de la señal. El costo de ejecución sale del precio que cargás en cada alerta (positivo = pagaste peor que el precio de la alerta)."
               >
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
                   <div>Demora media: <strong style={{ color: '#fff' }}>{report.latency.n > 0 ? `${Math.round(report.latency.avgSec)} s` : '—'}</strong></div>
@@ -180,7 +254,7 @@ export default function AlertReportModal({ alerts, onClose }: AlertReportModalPr
 
               <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', lineHeight: 1.4, borderTop: '1px dashed rgba(255,255,255,0.1)', paddingTop: '10px' }}>
                 En las ventas, el R equivale a vender y recomprar contra conservar la tenencia: si no se recompra en el día, cuenta la recompra al cierre de la sesión.
-                Con pocas semanas de datos, diferencias menores a ±0,1R pueden ser azar.
+                Las tablas por franja y por estrategia cuentan alertas, no días: con pocas semanas de datos sus diferencias pueden ser azar.
               </div>
             </>
           )}

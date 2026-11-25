@@ -140,7 +140,7 @@ test('Leader shown in radar/panel: Confluencia on 5m equities even when the per-
   assert.equal(leader.strategyKey, 'confluencia');
   assert.equal(leader.label, 'confluencia');
   assert.equal(leader.confidence, 'LIMITED');
-  assert.match(leader.reasoning, /conjunto de la watchlist/);
+  assert.match(leader.reasoning, /ATR ≥ 0,5%/);
 
   const withStats = (longToxic: boolean, shortToxic: boolean): QVESelectionResult => ({
     ...qve,

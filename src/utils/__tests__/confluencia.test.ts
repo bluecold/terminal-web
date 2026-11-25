@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Kline } from '../../services/api';
-import { buildConfluenciaContext, evaluateConfluenciaAt } from '../strategyEvaluators';
+import { buildConfluenciaContext, evaluateConfluenciaAt, CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT } from '../strategyEvaluators';
 import { computeConfluenciaSignalsSeries } from '../backtester';
 import { getEasternTime } from '../indicators';
 
@@ -20,7 +20,8 @@ function zigzag(startSec: number, n: number, p0: number): Kline[] {
 }
 
 // 2026-09-28 14:00–16:00 ET, then 2026-09-29 from the 09:30 ET open (index 24)
-const prevSession = zigzag(Date.UTC(2026, 8, 28, 18, 0) / 1000, 24, 100);
+// Base price 15 keeps ATR(14) around 0.7–0.9% of the price, above the 0.5% volatility guard
+const prevSession = zigzag(Date.UTC(2026, 8, 28, 18, 0) / 1000, 24, 15);
 const uptrend = [...prevSession, ...zigzag(Date.UTC(2026, 8, 29, 13, 30) / 1000, 66, prevSession[prevSession.length - 1].close)];
 const idxAt = (klines: Kline[], hourEt: number, minuteEt: number) =>
   klines.findIndex(k => k.time === Date.UTC(2026, 8, 29, hourEt + 4, minuteEt) / 1000);
@@ -36,7 +37,7 @@ const boundary = uptrend.map((k, i) => (i === I1100
   : k));
 
 // Mirror image of the uptrend (same geometry, falling prices)
-const mirror = (klines: Kline[]): Kline[] => klines.map(k => ({ ...k, open: 200 - k.open, close: 200 - k.close, high: 200 - k.low, low: 200 - k.high }));
+const mirror = (klines: Kline[]): Kline[] => klines.map(k => ({ ...k, open: 40 - k.open, close: 40 - k.close, high: 40 - k.low, low: 40 - k.high }));
 const downtrend = mirror(uptrend);
 
 const equityCtx = (klines: Kline[] = uptrend) => buildConfluenciaContext(klines, '5m', 'MSFT');
@@ -119,4 +120,32 @@ test('Confluencia backtest series: every 5m equity signal falls inside 09:35–1
     const minute = getEasternTime(uptrend[i].time * 1000).minuteOfDay;
     assert.ok(minute >= 575 && minute < 660, `signal at minute ${minute}`);
   }
+});
+
+test('Confluencia 5m equities: volatility guard blocks setups with ATR(14) below 0.5% of the price', () => {
+  // Same geometry shifted +400: identical ATR in price units, but ATR% ≈ 0.04%
+  const quiet = uptrend.map(k => ({ ...k, open: k.open + 400, close: k.close + 400, high: k.high + 400, low: k.low + 400 }));
+  const volatile = evaluateConfluenciaAt(equityCtx(), I0940);
+  assert.equal(volatile.signal, 'BUY');
+  assert.ok((volatile.atrPct ?? 0) >= CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT, 'precondition: fixture above the guard');
+  assert.equal(volatile.lowVolatility, false);
+
+  const blocked = evaluateConfluenciaAt(equityCtx(quiet), I0940);
+  assert.equal(blocked.signal, 'NEUTRAL');
+  assert.equal(blocked.lowVolatility, true);
+  assert.equal(blocked.blockedSignal, 'BUY');
+  assert.ok((blocked.atrPct ?? 1) < CONFLUENCIA_EQUITY_5M_MIN_ATR_PCT);
+
+  // A quiet candle that would not have fired anyway is not reported as blocked
+  const noSetup = evaluateConfluenciaAt(equityCtx(quiet), I1100);
+  assert.equal(noSetup.lowVolatility, false);
+
+  // The backtest uses the same evaluator, so the quiet series never trades
+  assert.ok(computeConfluenciaSignalsSeries(quiet, '5m', 'MSFT').every(s => s === 'NEUTRAL'));
+});
+
+test('Confluencia: the volatility guard only applies to 5m equities', () => {
+  const quiet = uptrend.map(k => ({ ...k, open: k.open + 400, close: k.close + 400, high: k.high + 400, low: k.low + 400 }));
+  assert.equal(evaluateConfluenciaAt(buildConfluenciaContext(quiet, '5m', 'BTCUSDT'), I0940).signal, 'BUY');
+  assert.equal(evaluateConfluenciaAt(buildConfluenciaContext(quiet, '1h', 'MSFT'), I0940).signal, 'BUY');
 });
